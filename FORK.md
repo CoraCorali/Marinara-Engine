@@ -11,9 +11,12 @@ upstream file it touches, so conflicts after a sync are quick to find.
 - **Edit & resend.** While editing your newest message in a Roleplay chat, a blue send button next to Save keeps the
   edit and gets a fresh reply in one tap. The old reply stays as a swipe. With no reply yet, it retries like an empty
   Send. Only the newest user turn offers it, so later turns are never left built on old wording.
+  In a group chat set to manual reply order with no reply yet, it saves the edit and lets you pick the speaker,
+  the same as an empty Send.
 - **New lorebook entries match whole words by default**, so a key like "ass" no longer fires inside "class".
   Imports and the per-entry toggle still decide for themselves. Existing entries are unchanged; use the lorebook's
-  batch edit to switch them.
+  batch edit to switch them. Whole words means a key like "kiss" no longer catches "kissed", so add the forms
+  you want as extra keys.
 - **Re-roll works for custom choice agents.** The choice bar remembers which agent made its choices, so Re-roll
   reruns that agent (for example Scene Spark) instead of only the official CYOA Choices agent.
 

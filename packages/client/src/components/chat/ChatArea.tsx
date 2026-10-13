@@ -2317,6 +2317,10 @@ const LocalChatArea = memo(function LocalChatArea({
       const index = messages?.findIndex((message) => message.id === messageId) ?? -1;
       const reply = messages?.[index + 1];
       await updateMessageAsync({ messageId, content });
+      // Manual group order: an empty Send never auto-replies either, so pick the speaker as usual.
+      const manualGroupOrder =
+        chatCharIds.length > 1 && groupChatMode === "individual" && chatMeta.groupResponseOrder === "manual";
+      if (!reply && manualGroupOrder) return;
       // The old reply stays as a swipe; with no reply yet this is the same retry as an empty Send.
       void generate(
         reply
@@ -2326,7 +2330,16 @@ const LocalChatArea = memo(function LocalChatArea({
         // The generate hook already shows the error toast.
       });
     },
-    [activeChatId, generate, isStreaming, messages, updateMessageAsync],
+    [
+      activeChatId,
+      chatCharIds.length,
+      chatMeta.groupResponseOrder,
+      generate,
+      groupChatMode,
+      isStreaming,
+      messages,
+      updateMessageAsync,
+    ],
   );
 
   const handleToggleConversationStart = useCallback(
