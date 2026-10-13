@@ -11941,6 +11941,8 @@ export async function generateRoutes(app: FastifyInstance, options: GenerateRout
                 try {
                   await chats.updateMessageExtraForSwipe(messageId, targetSwipeIndex, {
                     cyoaChoices: cyoaData.choices,
+                    // Fork: remember which agent made the choices so Re-roll can rerun it.
+                    cyoaChoicesAgentType: result.agentType,
                   });
                 } catch {
                   /* non-critical */

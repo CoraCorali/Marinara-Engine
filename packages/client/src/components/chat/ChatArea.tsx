@@ -35,6 +35,7 @@ import {
 
 import { getCurrentInputSnapshot, useChatStore } from "../../stores/chat.store";
 import { hasActiveTextSelection } from "../../lib/text-selection";
+import { getResendableUserMessageId } from "../../lib/fork/edit-and-resend";
 import { readChatMetadata } from "../../lib/chat-wizard-defaults";
 import { useChatWindowLayout } from "../../hooks/use-chat-window-layout";
 import { ChatSettingsBubble } from "./ChatSettingsBubble";
@@ -2306,6 +2307,28 @@ const LocalChatArea = memo(function LocalChatArea({
     [updateMessageAsync],
   );
 
+  // Fork: Edit & resend. Only the newest user turn qualifies, with at most one reply after it,
+  // so a fresh reply never leaves later turns built on the old wording.
+  const resendableUserMessageId = useMemo(() => getResendableUserMessageId(messages), [messages]);
+
+  const handleEditAndResend = useCallback(
+    async (messageId: string, content: string) => {
+      if (!activeChatId || isStreaming || messageId !== getResendableUserMessageId(messages)) return;
+      const index = messages?.findIndex((message) => message.id === messageId) ?? -1;
+      const reply = messages?.[index + 1];
+      await updateMessageAsync({ messageId, content });
+      // The old reply stays as a swipe; with no reply yet this is the same retry as an empty Send.
+      void generate(
+        reply
+          ? { chatId: activeChatId, connectionId: null, regenerateMessageId: reply.id }
+          : { chatId: activeChatId, connectionId: null },
+      ).catch(() => {
+        // The generate hook already shows the error toast.
+      });
+    },
+    [activeChatId, generate, isStreaming, messages, updateMessageAsync],
+  );
+
   const handleToggleConversationStart = useCallback(
     (messageId: string, sharedStart: boolean, conversationStartForCharacterIds: string[]) => {
       updateMessageExtra({ messageId, extra: { isConversationStart: sharedStart, conversationStartForCharacterIds } });
@@ -3497,6 +3520,8 @@ const LocalChatArea = memo(function LocalChatArea({
           onDelete={handleDelete}
           onRegenerate={handleRegenerate}
           onEdit={handleRoleplayEdit}
+          resendableUserMessageId={isStreaming ? null : resendableUserMessageId}
+          onEditAndResend={handleEditAndResend}
           onSetActiveSwipe={handleSetActiveSwipe}
           onToggleConversationStart={handleToggleConversationStart}
           onToggleHiddenFromAI={handleToggleHiddenFromAI}

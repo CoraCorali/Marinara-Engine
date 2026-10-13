@@ -759,6 +759,9 @@ type RoleplaySurfaceProps = {
   onDelete: (messageId: string) => void;
   onRegenerate: (messageId: string) => void;
   onEdit: (messageId: string, content: string) => void | Promise<void>;
+  /** Fork: the one user message that offers Edit & resend, or null. */
+  resendableUserMessageId?: string | null;
+  onEditAndResend?: (messageId: string, content: string) => Promise<void>;
   onSetActiveSwipe: (messageId: string, index: number) => void;
   onToggleConversationStart: (
     messageId: string,
@@ -876,6 +879,8 @@ export function ChatRoleplaySurface({
   onDelete,
   onRegenerate,
   onEdit,
+  resendableUserMessageId = null,
+  onEditAndResend,
   onSetActiveSwipe,
   onToggleConversationStart,
   onToggleHiddenFromAI,
@@ -1952,6 +1957,7 @@ export function ChatRoleplaySurface({
                           onDelete={onDelete}
                           onRegenerate={onRegenerate}
                           onEdit={onEdit}
+                          onEditAndResend={msg.id === resendableUserMessageId ? onEditAndResend : undefined}
                           onSetActiveSwipe={onSetActiveSwipe}
                           onToggleConversationStart={onToggleConversationStart}
                           onToggleHiddenFromAI={onToggleHiddenFromAI}

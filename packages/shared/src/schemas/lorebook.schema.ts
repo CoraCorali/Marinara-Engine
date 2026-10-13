@@ -195,7 +195,8 @@ export const createLorebookEntrySchema = z.object({
   selectiveLogic: selectiveLogicSchema.default("and"),
   probability: z.number().nullable().default(null),
   scanDepth: z.number().nullable().default(null),
-  matchWholeWords: z.boolean().default(false),
+  // Fork: new entries match whole words, so a key like "ass" no longer fires inside "class".
+  matchWholeWords: z.boolean().default(true),
   caseSensitive: z.boolean().default(false),
   useRegex: z.boolean().default(false),
   characterFilterMode: lorebookFilterModeSchema.default("any"),

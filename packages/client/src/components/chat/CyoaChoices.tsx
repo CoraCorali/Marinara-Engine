@@ -78,7 +78,9 @@ export function CyoaChoices({ messages }: Props) {
       return null;
     }
     const saved = extra.cyoaChoices as CyoaChoice[] | undefined;
-    return saved && saved.length > 0 ? { messageId: lastAssistant.id, choices: saved } : null;
+    // Fork: custom choice agents (like Scene Spark) record their type so Re-roll reruns them.
+    const agentType = typeof extra.cyoaChoicesAgentType === "string" ? extra.cyoaChoicesAgentType : "cyoa";
+    return saved && saved.length > 0 ? { messageId: lastAssistant.id, choices: saved, agentType } : null;
   }, [messages]);
 
   useEffect(() => {
@@ -211,11 +213,11 @@ export function CyoaChoices({ messages }: Props) {
       // Re-runs ONLY the CYOA agent with fresh context (latest messages + last
       // assistant's extras). The retry route persists the new choices to the
       // message's extra and the SSE handler swaps them into the store.
-      await retryAgents(activeChatId, ["cyoa"]);
+      await retryAgents(activeChatId, [persistedChoiceState?.agentType ?? "cyoa"]);
     } finally {
       setIsRerolling(false);
     }
-  }, [activeChatId, isStreaming, isEditing, isRerolling, retryAgents]);
+  }, [activeChatId, isStreaming, isEditing, isRerolling, persistedChoiceState?.agentType, retryAgents]);
 
   const handleStartEdit = useCallback(() => {
     setDraftChoices(choices.map((choice) => ({ ...choice })));

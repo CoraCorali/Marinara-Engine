@@ -929,7 +929,7 @@ export function createLorebooksStorage(db: DB) {
         selectiveLogic: input.selectiveLogic ?? "and",
         probability: input.probability ?? null,
         scanDepth: input.scanDepth ?? null,
-        matchWholeWords: String(input.matchWholeWords ?? false),
+        matchWholeWords: String(input.matchWholeWords ?? true), // Fork: whole words by default
         caseSensitive: String(input.caseSensitive ?? false),
         useRegex: String(input.useRegex ?? false),
         characterFilterMode: input.characterFilterMode ?? "any",

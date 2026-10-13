@@ -65,6 +65,7 @@ import {
   ChevronRight,
   EyeOff,
   Shield,
+  SendHorizontal,
 } from "lucide-react";
 import { decodeEncodedSpeakerTags, formatTextQuotes, type Message, type QuoteFormat } from "@marinara-engine/shared";
 import type { GameTurnStoryboard, GameTurnStoryboardKeyframe } from "@marinara-engine/shared";
@@ -858,6 +859,7 @@ const EditTextarea = memo(function EditTextarea({
   quoteFormat,
   saving,
   onSave,
+  onSaveAndResend,
   onCancel,
 }: {
   initialContent: string;
@@ -865,6 +867,8 @@ const EditTextarea = memo(function EditTextarea({
   quoteFormat: QuoteFormat;
   saving: boolean;
   onSave: (content: string) => void | Promise<void>;
+  /** Fork: Edit & resend. Shown only on the user message that can get a fresh reply. */
+  onSaveAndResend?: (content: string) => void | Promise<void>;
   onCancel: () => void;
 }) {
   const { t: localizeUi } = useUiTranslation();
@@ -917,6 +921,10 @@ const EditTextarea = memo(function EditTextarea({
     if (ref.current) void onSave(formatTextQuotes(ref.current.value, quoteFormat));
   }, [onSave, quoteFormat]);
 
+  const handleSaveAndResend = useCallback(() => {
+    if (ref.current && onSaveAndResend) void onSaveAndResend(formatTextQuotes(ref.current.value, quoteFormat));
+  }, [onSaveAndResend, quoteFormat]);
+
   return (
     <div className="relative isolate z-20 flex flex-col gap-2 max-md:gap-0">
       <textarea
@@ -960,6 +968,18 @@ const EditTextarea = memo(function EditTextarea({
         >
           <Check size="0.8125rem" />
         </button>
+        {onSaveAndResend && (
+          <button
+            type="button"
+            onClick={handleSaveAndResend}
+            disabled={saving}
+            aria-label={localizeUi("ui.chat.edittextarea.saveAndResend")}
+            className="pointer-events-auto relative z-30 flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-sky-400/70 hover:bg-sky-400/10 hover:text-sky-400 disabled:pointer-events-none disabled:opacity-50"
+            title={localizeUi("ui.chat.edittextarea.saveAndResendTitle")}
+          >
+            <SendHorizontal size="0.8125rem" />
+          </button>
+        )}
       </div>
     </div>
   );
@@ -986,6 +1006,8 @@ interface ChatMessageProps {
   onDelete?: (messageId: string) => void;
   onRegenerate?: (messageId: string) => void;
   onEdit?: (messageId: string, content: string) => void | Promise<void>;
+  /** Fork: save this user message and get a fresh reply in one step. */
+  onEditAndResend?: (messageId: string, content: string) => Promise<void>;
   onSetActiveSwipe?: (messageId: string, index: number) => void;
   onToggleConversationStart?: ToggleConversationStart;
   memoryStartCharacterIds?: string[];
@@ -1862,6 +1884,7 @@ export const ChatMessage = memo(function ChatMessage({
   onDelete,
   onRegenerate,
   onEdit,
+  onEditAndResend,
   onSetActiveSwipe,
   onToggleConversationStart,
   memoryStartCharacterIds,
@@ -2542,6 +2565,29 @@ export const ChatMessage = memo(function ChatMessage({
       setEditing(false);
     },
     [isUser, localizeUi, message.activeSwipeIndex, message.content, message.id, onEdit, quoteFormat],
+  );
+
+  // Fork: Edit & resend. Unlike a plain save, an unchanged message still resends, so this also
+  // works as "just get me a new reply to what I wrote".
+  const handleSaveAndResend = useCallback(
+    async (content: string) => {
+      if (editSavePendingRef.current || !onEditAndResend || content.trim().length === 0) return;
+      editSavePendingRef.current = true;
+      setEditSavePending(true);
+      try {
+        await onEditAndResend(message.id, content);
+        recordClientRuntimeEvent("message-edited");
+      } catch {
+        toast.error(localizeUi("ui.chat.chatmessage.couldNotSaveThatEdit"));
+        return;
+      } finally {
+        editSavePendingRef.current = false;
+        setEditSavePending(false);
+      }
+      editSwipeIndexRef.current = null;
+      setEditing(false);
+    },
+    [localizeUi, message.id, onEditAndResend],
   );
 
   const handleCancelEdit = useCallback(() => {
@@ -3318,6 +3364,7 @@ export const ChatMessage = memo(function ChatMessage({
       quoteFormat={quoteFormat}
       saving={editSavePending}
       onSave={handleSaveEdit}
+      onSaveAndResend={isUser && onEditAndResend ? handleSaveAndResend : undefined}
       onCancel={handleCancelEdit}
     />
   ) : (
@@ -4378,6 +4425,7 @@ export const ChatMessage = memo(function ChatMessage({
                 quoteFormat={quoteFormat}
                 saving={editSavePending}
                 onSave={handleSaveEdit}
+                onSaveAndResend={isUser && onEditAndResend ? handleSaveAndResend : undefined}
                 onCancel={handleCancelEdit}
               />
             ) : (

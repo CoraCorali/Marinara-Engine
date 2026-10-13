@@ -3468,7 +3468,11 @@ async function applyRetryResultEffects(args: {
         const cyoaData = result.data as { choices?: Array<{ label: string; text: string }> };
         if (retryMessageId && cyoaData.choices && cyoaData.choices.length > 0) {
           assertRetryActive();
-          await chats.updateMessageExtraForSwipe(retryMessageId, retrySwipeIndex, { cyoaChoices: cyoaData.choices });
+          await chats.updateMessageExtraForSwipe(retryMessageId, retrySwipeIndex, {
+            cyoaChoices: cyoaData.choices,
+            // Fork: remember which agent made the choices so Re-roll can rerun it.
+            cyoaChoicesAgentType: result.agentType,
+          });
           assertRetryActive();
           logger.info(
             "[retry-agents] CYOA choices persisted chatId=%s messageId=%s swipeIndex=%d choiceCount=%d",
