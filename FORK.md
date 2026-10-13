@@ -19,6 +19,11 @@ upstream file it touches, so conflicts after a sync are quick to find.
   you want as extra keys.
 - **Re-roll works for custom choice agents.** The choice bar remembers which agent made its choices, so Re-roll
   reruns that agent (for example Scene Spark) instead of only the official CYOA Choices agent.
+- **Spark button.** When a Roleplay chat has an active custom agent whose result type is Interactive Choices
+  (Scene Spark), a 💡 **Spark** button appears above the message box. It runs that agent right now, skipping its
+  keyword, cadence and Decision-model gates. It also works on a chat with no story yet, where Scene Spark offers
+  opening scenes. Choices from any choice agent now reach the choice bar, not only the official CYOA agent's.
+  On a chat with no messages the choices live until the page reloads, since there is no message to store them on.
 
 ## Upstream files touched
 
@@ -32,6 +37,8 @@ Edits to upstream files are marked with a `Fork:` comment.
 | `packages/client/src/components/chat/ChatMessage.tsx` | Resend button in the message editor |
 | `packages/client/src/localization/locales/en.json` | Two strings for the resend button |
 | `packages/client/src/components/chat/CyoaChoices.tsx` | Re-roll reruns the agent that made the choices |
+| `packages/client/src/components/chat/ChatInput.tsx` | Spark button |
+| `packages/client/src/hooks/use-generate.ts` | Choice results from any choice agent reach the choice bar |
 | `packages/server/src/routes/generate.routes.ts` | Saves which agent made the choices |
 | `packages/server/src/routes/generate/retry-agents-route.ts` | Same, for re-rolled choices |
 | `packages/shared/src/schemas/lorebook.schema.ts` | Whole-word default |

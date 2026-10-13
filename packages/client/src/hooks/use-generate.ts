@@ -2149,7 +2149,8 @@ export function useGenerate() {
                 }
 
                 // Push CYOA choices to the dedicated store
-                if (result.agentType === "cyoa") {
+                // Fork: any choice agent (like Scene Spark), not only the official one.
+                if (result.resultType === "cyoa_choices") {
                   const d = result.data as Record<string, unknown>;
                   const choices = (d.choices as Array<{ label: string; text: string }>) ?? [];
                   if (choices.length > 0) {
@@ -3782,7 +3783,8 @@ export function useGenerate() {
                 }
                 // CYOA re-roll: push the freshly generated choices into the store
                 // so the buttons in CyoaChoices.tsx swap in immediately.
-                if (result.agentType === "cyoa") {
+                // Fork: any choice agent (like Scene Spark), not only the official one.
+                if (result.resultType === "cyoa_choices") {
                   const d = result.data as Record<string, unknown>;
                   const choices = (d.choices as Array<{ label: string; text: string }>) ?? [];
                   if (shouldApplyVisibleResult) setCyoaChoices(choices, chatId);

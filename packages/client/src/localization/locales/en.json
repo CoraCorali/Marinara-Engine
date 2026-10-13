@@ -4946,6 +4946,8 @@
   "ui.chat.chatinput.randomly_4f73f1a": "randomly",
   "ui.chat.chatinput.readingFile": "Reading file...",
   "ui.chat.chatinput.smartResponse": "Smart",
+  "ui.chat.chatinput.spark": "Spark",
+  "ui.chat.chatinput.sparkTitle": "Get scene ideas right now",
   "ui.chat.chatinput.startCombatEncounter": "Start Combat Encounter",
   "ui.chat.chatinput.stillReadingAttachedFilesPostWillBeReadyIn": "Still reading attached files. Post will be ready in a moment.",
   "ui.chat.chatinput.stillReadingAttachedFilesSendWillBeReadyIn": "Still reading attached files. Send will be ready in a moment.",

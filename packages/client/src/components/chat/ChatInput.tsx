@@ -16,6 +16,7 @@ import {
   Sparkles,
   WandSparkles,
   Swords,
+  Lightbulb,
 } from "lucide-react";
 import { createPortal } from "react-dom";
 import { toast } from "sonner";
@@ -26,6 +27,8 @@ import { useAgentStore } from "../../stores/agent.store";
 import { useUIStore } from "../../stores/ui.store";
 import { useSidecarStore } from "../../stores/sidecar.store";
 import { useGenerate } from "../../hooks/use-generate";
+import { useAgentConfigs } from "../../hooks/use-agents";
+import { findSparkAgentType } from "../../lib/fork/spark-button";
 import { useCommitSpatialOwnerTurn } from "../../hooks/use-spatial-context";
 import { useApplyRegex } from "../../hooks/use-apply-regex";
 import { useInstalledCapabilityPackages } from "../../hooks/use-capability-packages";
@@ -328,7 +331,7 @@ export const ChatInput = memo(function ChatInput({
     () => new Map(responseQueue.map((characterId, index) => [characterId, index + 1])),
     [responseQueue],
   );
-  const { generate } = useGenerate();
+  const { generate, retryAgents } = useGenerate();
   const { applyToUserInput } = useApplyRegex();
   const enterToSend = useUIStore((s) => s.enterToSendRP);
   const guideGenerations = useUIStore((s) => s.guideGenerations);
@@ -358,7 +361,25 @@ export const ChatInput = memo(function ChatInput({
     mode === "roleplay" && chatMetadata.enableAgents === true && activeAgentIds.includes("hierarchical-maps");
   const combatActionActive =
     mode === "roleplay" && combatAgentEnabled === true && typeof onStartEncounter === "function";
-  const showRoleplayAgentActions = narrativeDirectorActive || combatActionActive;
+  // Fork: Spark button. Runs the active Interactive Choices agent on demand, skipping its
+  // keyword, cadence and Decision-model gates, and works on a fresh chat too.
+  const sparkEligible = mode === "roleplay" && chatMetadata.enableAgents === true;
+  const { data: sparkAgentConfigs } = useAgentConfigs(sparkEligible);
+  const sparkAgentType = useMemo(
+    () => (sparkEligible ? findSparkAgentType(activeAgentIds, sparkAgentConfigs) : null),
+    [activeAgentIds, sparkAgentConfigs, sparkEligible],
+  );
+  const [sparkRunning, setSparkRunning] = useState(false);
+  const handleSparkClick = useCallback(async () => {
+    if (!activeChatId || !sparkAgentType || isInputBusy || sparkRunning) return;
+    setSparkRunning(true);
+    try {
+      await retryAgents(activeChatId, [sparkAgentType]);
+    } finally {
+      setSparkRunning(false);
+    }
+  }, [activeChatId, isInputBusy, retryAgents, sparkAgentType, sparkRunning]);
+  const showRoleplayAgentActions = narrativeDirectorActive || combatActionActive || sparkAgentType !== null;
   const consumeNarrativeDirectorMode = useCallback((): NarrativeDirectorMode | undefined => {
     if (!pushStoryMode || !narrativeDirectorActive) return undefined;
     setPushStoryMode(null);
@@ -1974,6 +1995,21 @@ export const ChatInput = memo(function ChatInput({
                 </div>
               )}
             </div>
+          )}
+          {sparkAgentType !== null && (
+            <button
+              type="button"
+              onClick={() => void handleSparkClick()}
+              disabled={isInputBusy || sparkRunning}
+              className={cn(
+                ROLEPLAY_AGENT_ACTION_BUTTON_CLASS,
+                "text-foreground/50 hover:bg-foreground/10 hover:text-foreground/80 disabled:hover:bg-transparent disabled:hover:text-foreground/50",
+              )}
+              title={localizeUi("ui.chat.chatinput.sparkTitle")}
+            >
+              {sparkRunning ? <Loader2 size="0.875rem" className="animate-spin" /> : <Lightbulb size="0.875rem" />}
+              <span>{localizeUi("ui.chat.chatinput.spark")}</span>
+            </button>
           )}
           {combatActionActive && (
             <button
