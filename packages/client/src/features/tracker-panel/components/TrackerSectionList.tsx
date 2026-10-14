@@ -29,6 +29,7 @@ import { SectionIconButton } from "./controls/SectionControls";
 import { CharacterTrackerPanel } from "./sections/CharacterTrackerPanel";
 import { CustomTrackerPanel } from "./sections/CustomTrackerPanel";
 import { PersonaInventoryPanel } from "./sections/PersonaInventoryPanel";
+import { ForkPersonaCard } from "./character-card/ForkPersonaCard";
 import { InventoryTrackerPanel } from "./sections/InventoryTrackerPanel";
 import { QuestTrackerPanel } from "./sections/quest-tracker/QuestTrackerPanel";
 import { WorldStatePanel } from "./sections/WorldStatePanel";
@@ -251,6 +252,21 @@ export function TrackerSectionList({
             flushPersonaPortraitSave={flushPersonaPortraitSave}
             collapsed={isPanelCollapsed("persona")}
             onToggleCollapsed={() => toggleTrackerPanelSectionCollapsed("persona")}
+            // Fork: the persona card, linked to the board, the world state and People.
+            forkCard={
+              <ForkPersonaCard
+                activeChatId={activeChatId}
+                persona={activePersona}
+                status={playerStats?.status ?? ""}
+                onSaveStatus={savePersonaStatus}
+                personaStats={personaStats}
+                location={currentGameState.location ?? null}
+                holding={[...inventoryTrackerEquipped, ...inventoryTrackerInventory]
+                  .map((row) => row.name)
+                  .filter(Boolean)}
+                presentCharacters={presentCharacters}
+              />
+            }
           />
         );
       case "characters":

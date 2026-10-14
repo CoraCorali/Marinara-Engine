@@ -7763,6 +7763,10 @@ export async function generateRoutes(app: FastifyInstance, options: GenerateRout
                 personaName,
               ),
               boardPinsNoteLine(forkBoardPins, forkPinNameFor, forkMentionedPinIds),
+              // The persona card's "Appearance today" note: hair up, last night's lashes, and so on.
+              typeof chatMeta.forkPersonaToday === "string" && chatMeta.forkPersonaToday.trim()
+                ? `${personaName} today: ${chatMeta.forkPersonaToday.trim().slice(0, 400)}`
+                : "",
             ].filter(Boolean);
             if (forkNoteParts.length > 0) {
               const forkNote = {

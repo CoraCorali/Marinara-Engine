@@ -77,6 +77,7 @@ export function PersonaInventoryPanel({
   flushPersonaPortraitSave,
   collapsed = false,
   onToggleCollapsed,
+  forkCard,
 }: {
   persona: Persona | null;
   status: string;
@@ -95,6 +96,8 @@ export function PersonaInventoryPanel({
   flushPersonaPortraitSave: (personaId: string) => void;
   collapsed?: boolean;
   onToggleCollapsed?: () => void;
+  /** Fork: the persona card shown in place of the cockpit outside the edit modes. */
+  forkCard?: ReactNode;
 }) {
   const { t: localizeUi } = useUiTranslation();
   const { fieldLocks, lockMode, onToggleFieldLock } = useTrackerLockContext();
@@ -216,7 +219,13 @@ export function PersonaInventoryPanel({
         onToggle={onToggleCollapsed}
       />
 
-      {!collapsed && (
+      {/* Fork: the persona card (Option A) in place of the cockpit, outside the edit modes. */}
+      {!collapsed && forkCard && !deleteMode && !addMode && !lockMode && (
+        <div className="relative px-1 pb-1.5" style={getPersonaAmbienceStyle(persona, { paintBackground: false })}>
+          {forkCard}
+        </div>
+      )}
+      {!collapsed && !(forkCard && !deleteMode && !addMode && !lockMode) && (
         <div className="relative px-1 pb-1 @min-[380px]:pb-1.5">
           <div
             className={TRACKER_PROFILE_CARD_SURFACE_CLASS}

@@ -36,6 +36,7 @@ import {
 import { getCurrentInputSnapshot, useChatStore } from "../../stores/chat.store";
 import { hasActiveTextSelection } from "../../lib/text-selection";
 import { getResendableUserMessageId } from "../../lib/fork/edit-and-resend";
+import { onForkPanelRequest } from "../../lib/fork/open-panel";
 import { ForkReferenceBoard } from "./ForkReferenceBoard";
 import { ForkBondsPanel } from "./ForkBondsPanel";
 import { ForkDirectorPanel, type DirectorTurn } from "./ForkDirectorPanel";
@@ -2334,6 +2335,11 @@ const LocalChatArea = memo(function LocalChatArea({
     [chatCharIds, characterMap],
   );
   const handleOpenForkBonds = useCallback(() => setForkBondsOpen(true), []);
+  // Fork: the persona card in the tracker asks for the board or People this way.
+  useEffect(
+    () => onForkPanelRequest((panel) => (panel === "board" ? setForkBoardOpen(true) : setForkBondsOpen(true))),
+    [],
+  );
 
   const handleRoleplayEdit = useCallback(
     async (messageId: string, content: string) => {
