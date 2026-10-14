@@ -65,7 +65,7 @@ export function ForkPinToBoardButton({ url }: { url: string }) {
       disabled={pinning}
       aria-label={localizeUi("ui.chat.forkboard.pinToBoard")}
       title={localizeUi("ui.chat.forkboard.pinToBoard")}
-      className="flex items-center gap-1.5 rounded-lg bg-black/60 p-2 text-xs font-semibold text-white transition-colors hover:bg-black/80 disabled:opacity-60"
+      className="flex min-h-11 items-center gap-1.5 rounded-lg bg-black/60 px-3 text-xs font-semibold text-white transition-colors hover:bg-black/80 disabled:opacity-60"
     >
       {pinning ? <Loader2 size="0.875rem" className="animate-spin" /> : <Images size="0.875rem" />}
       <span>{localizeUi("ui.chat.forkboard.board")}</span>
