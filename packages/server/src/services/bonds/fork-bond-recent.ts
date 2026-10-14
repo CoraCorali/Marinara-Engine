@@ -75,13 +75,15 @@ export async function listRecentBondChanges(
   for (const row of rows) {
     const repliesAgo = position.get(row.messageId);
     if (repliesAgo === undefined || repliesAgo >= withinReplies) continue;
-    let changes: { bondId: string; before?: Values; after?: Values; pair?: boolean }[] = [];
+    let changes: { bondId: string; before?: Values; after?: Values; pair?: boolean; thing?: boolean }[] = [];
     try {
       changes = JSON.parse(row.changes);
     } catch {
       continue;
     }
     for (const change of Array.isArray(changes) ? changes : []) {
+      // A board thing's change rides in the same turn; it is not a relationship's.
+      if (change.thing) continue;
       const move = headline(change.before ?? {}, change.after ?? {});
       if (!move) continue;
       const known = newest.get(change.bondId);

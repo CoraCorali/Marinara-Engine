@@ -242,6 +242,7 @@ import {
   loadBondsAgentState,
 } from "../services/bonds/fork-bond-updates.js";
 import { pairsPromptBlock } from "../services/bonds/fork-bond-pairs.js";
+import { storyNowFromScene } from "../services/board/fork-story-now.js";
 import {
   chaptersBefore,
   combineWithRollingSummary,
@@ -5271,6 +5272,7 @@ export async function generateRoutes(app: FastifyInstance, options: GenerateRout
                     input.chatId,
                     (characterId) => charInfo.find((character) => character.id === characterId)?.name ?? "",
                     input.regenerateMessageId,
+                    personaName,
                   ),
                 }
               : {},
@@ -7771,9 +7773,19 @@ export async function generateRoutes(app: FastifyInstance, options: GenerateRout
             chatMode === "roleplay"
               ? await forkBoardStorage.listMentioned(input.chatId, personaId, forkLatestUserText)
               : [];
+          // Places, people and things that follow the story come in by the world state: where the
+          // scene is, who is present, the hour and the weather.
+          const forkStoryNow = storyNowFromScene(
+            gameState,
+            charInfo,
+            (forkChapterCut.finished[forkChapterCut.finished.length - 1]?.number ?? 0) + 1,
+          );
           const forkBoardPins =
             chatMode === "roleplay"
-              ? pinsForReply(await forkBoardStorage.listForPrompt(input.chatId, personaId), forkMentionedPins)
+              ? pinsForReply(
+                  await forkBoardStorage.listForPrompt(input.chatId, personaId, forkStoryNow),
+                  forkMentionedPins,
+                )
               : [];
           const forkMentionedPinIds = new Set(forkMentionedPins.map((pin) => pin.id));
           const forkPinNameFor = pinNameResolver(
@@ -12705,6 +12717,7 @@ export async function generateRoutes(app: FastifyInstance, options: GenerateRout
                     return charInfo.find((character) => normalizeTextForMatch(character.name) === wanted)?.id ?? null;
                   },
                   messageId,
+                  personaName,
                 );
                 if (moved.changed > 0 || moved.added > 0) {
                   logger.debug("[fork_bonds] %d bonds changed, %d added", moved.changed, moved.added);

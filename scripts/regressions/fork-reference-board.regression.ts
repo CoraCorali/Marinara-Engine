@@ -98,34 +98,35 @@ assert.equal(entries[0]!.name, "Thing (always on): wedding ring", "persona pins 
 assert.equal(entries[0]!.images[0]!.path, "/api/lorebooks/entry-images/e.png");
 assert.equal(entries[0]!.position, 2, "pins use the same position as AI-output lorebook images");
 assert.ok(
-  entries.some((entry) => entry.name === "The mood: red slip dress"),
-  "a chat pin reads as its category and caption",
+  entries.some((entry) => entry.name === "The mood (tone only, never literal objects in the scene): red slip dress"),
+  "a chat pin reads as its category and caption; a vibe is tone only",
 );
 // A pin with no caption still names its category.
-const captionless = boardPinsAsImageEntries([
-  {
-    id: "x",
-    scopeType: "chat",
-    scopeId: "c",
-    imagePath: "/p.png",
-    caption: "  ",
-    category: "place",
-    inScene: true,
-    who: "",
-    slot: "",
-    shows: "model",
-    order: 0,
-    createdAt: "",
-  },
-]);
+const captionlessPin = {
+  id: "x",
+  scopeType: "chat",
+  scopeId: "c",
+  imagePath: "/p.png",
+  caption: "  ",
+  category: "place",
+  inScene: true,
+  who: "",
+  slot: "",
+  shows: "model",
+  name: "",
+  details: {},
+  order: 0,
+  createdAt: "",
+} as const;
+const captionless = boardPinsAsImageEntries([captionlessPin]);
 assert.equal(captionless[0]!.name, "Place");
 
 // The captions also go as words, for providers that never see the pictures. No caption, no line.
 const noteLine = boardPinsNoteLine(await pins.listForPrompt("chat-1", "persona-1"));
 assert.ok(noteLine.startsWith("Pinned for reference in this scene"));
 assert.ok(noteLine.includes("Anyone modelling the clothes is not the character"), "the body rule goes with the pins");
-assert.ok(noteLine.includes("- The mood: red slip dress"));
-assert.equal(boardPinsNoteLine([{ ...captionless[0]!, caption: " " } as never]), "");
+assert.ok(noteLine.includes("- The mood (tone only, never literal objects in the scene): red slip dress"));
+assert.equal(boardPinsNoteLine([{ ...captionlessPin, caption: " " }]), "");
 
 // ── Who, slots, and one of each per person ──
 const { forkMessageMentionsPin } = await import("../../packages/shared/src/features/fork-board-shapes.js");
@@ -238,17 +239,44 @@ assert.deepEqual(
   readPinDescription(
     'Sure! {"caption": " navy pinstripe shirt,  black pencil skirt ", "category": "wearing", "slot": "outfit", "shows": "clothes"}',
   ),
-  { caption: "navy pinstripe shirt, black pencil skirt", category: "wearing", slot: "outfit", shows: "clothes" },
+  {
+    caption: "navy pinstripe shirt, black pencil skirt",
+    category: "wearing",
+    slot: "outfit",
+    shows: "clothes",
+    name: "",
+    palette: [],
+    words: [],
+  },
 );
 assert.deepEqual(
-  readPinDescription('{"caption": "the bakery at night", "category": "place", "slot": "shoes"}'),
+  readPinDescription(
+    '{"caption": "the bakery at night", "category": "place", "slot": "shoes", "name": "the bakery", "palette": ["#112233"]}',
+  ),
   {
     caption: "the bakery at night",
     category: "place",
     slot: "",
     shows: "model",
+    name: "the bakery",
+    palette: [],
+    words: [],
   },
-  "only wearing pins keep a slot",
+  "only wearing pins keep a slot; only a vibe keeps colours",
+);
+assert.deepEqual(
+  readPinDescription(
+    '{"caption": "rainy and slow", "category": "vibe", "name": "", "palette": ["#2B1838", "nope"], "words": ["rainy", "slow burn"]}',
+  ),
+  {
+    caption: "rainy and slow",
+    category: "vibe",
+    slot: "",
+    shows: "model",
+    name: "",
+    palette: ["#2b1838"],
+    words: ["rainy", "slow burn"],
+  },
 );
 assert.equal(readPinDescription("I can't see images."), null);
 assert.equal(readPinDescription('{"caption": ""}'), null);

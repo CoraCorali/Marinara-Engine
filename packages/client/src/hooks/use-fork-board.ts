@@ -2,7 +2,7 @@
 // Fork: Reference board pins (React Query)
 // ──────────────────────────────────────────────
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { ForkPinShows, ForkWearSlot } from "@marinara-engine/shared";
+import type { ForkPinDetails, ForkPinShows, ForkPlaceLook, ForkWearSlot } from "@marinara-engine/shared";
 import { toast } from "sonner";
 import { api } from "../lib/api-client";
 import { translate } from "../localization/i18n";
@@ -23,6 +23,10 @@ export interface BoardPin {
   /** For a wearing pin, what it covers. */
   slot: ForkWearSlot | "";
   shows: ForkPinShows;
+  /** A place's building, a thing's or person's name, a vibe's title. */
+  name: string;
+  /** What the pin's category knows beyond the picture. */
+  details: ForkPinDetails;
   order: number;
   createdAt?: string;
 }
@@ -33,6 +37,9 @@ export interface PinDescription {
   category: BoardPinCategory;
   slot: ForkWearSlot | "";
   shows: ForkPinShows;
+  name: string;
+  palette: string[];
+  words: string[];
 }
 
 /** A chat's board, a persona's always-on board, or one outfit in the closet. */
@@ -93,6 +100,9 @@ export function useUpdateBoardPin(scope: BoardScope) {
       who?: string;
       slot?: ForkWearSlot | "";
       shows?: ForkPinShows;
+      name?: string;
+      /** Merged into the pin's details: a key set to null or "" clears it. */
+      details?: Partial<Record<keyof ForkPinDetails, unknown>>;
     }) => api.patch<BoardPin>(`/fork-board/pins/${id}`, data),
     // Captions, categories, in-scene and order all save through here; a failure says so once,
     // instead of the change quietly snapping back on the next read.
@@ -109,6 +119,33 @@ export function useDeleteBoardPin(scope: BoardScope) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: string) => api.delete<{ success: boolean }>(`/fork-board/pins/${id}`),
+    onSuccess: () => invalidateScope(qc, scope),
+  });
+}
+
+/** One more picture of a place, for day, night or rain. */
+export function useAddAlbumPicture(scope: BoardScope) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, file, look }: { id: string; file: File; look: ForkPlaceLook | "" }) => {
+      const form = new FormData();
+      form.append("look", look);
+      form.append("file", file);
+      return api.upload<BoardPin>(`/fork-board/pins/${id}/album`, form);
+    },
+    onError: (error: unknown) =>
+      toast.error(
+        error instanceof Error && error.message ? error.message : translate("ui.chat.forkboard.couldNotSave"),
+      ),
+    onSuccess: () => invalidateScope(qc, scope),
+  });
+}
+
+export function useRemoveAlbumPicture(scope: BoardScope) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, path }: { id: string; path: string }) =>
+      api.delete<BoardPin>(`/fork-board/pins/${id}/album?path=${encodeURIComponent(path)}`),
     onSuccess: () => invalidateScope(qc, scope),
   });
 }

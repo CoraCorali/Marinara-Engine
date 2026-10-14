@@ -8,10 +8,17 @@
 // use, so it needs no storage-format bump and an older Marinara simply ignores the file.
 import {
   FORK_PIN_WHO_PERSONA,
+  FORK_THING_AT_PLACE,
   forkMessageMentionsPin,
+  forkPinFollowsStory,
+  forkPlaceLookFor,
+  forkPlaceMatchesLocation,
   forkWearSlotsReplacedBy,
+  normalizeForkPinDetails,
+  normalizeForkPinName,
   normalizeForkPinShows,
   normalizeForkWearSlot,
+  type ForkPinDetails,
   type ForkPinShows,
   type ForkWearSlot,
 } from "@marinara-engine/shared";
@@ -46,6 +53,10 @@ export const boardPins = fileTable("fork_board_pins", {
   slot: text("slot").notNull().default(""),
   /** "model" when the picture shows the clothes on someone, "clothes" when it shows only them. */
   shows: text("shows").notNull().default("model"),
+  /** A place's building, a thing's or a person's name, a vibe's title. */
+  name: text("name").notNull().default(""),
+  /** What the pin's category knows beyond the picture (see fork-pin-details), as JSON. */
+  details: text("details").notNull().default("{}"),
   order: integer("order").notNull().default(0),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
@@ -62,6 +73,8 @@ export type BoardPinRow = {
   who?: string;
   slot?: string;
   shows?: string;
+  name?: string;
+  details?: string;
   order: number;
   createdAt: string;
   updatedAt: string;
@@ -78,8 +91,23 @@ export type BoardPin = {
   who: string;
   slot: ForkWearSlot | "";
   shows: ForkPinShows;
+  name: string;
+  details: ForkPinDetails;
   order: number;
   createdAt: string;
+};
+
+/** What the story looks like right now, for the pins that follow it. */
+export type BoardStoryNow = {
+  location?: string;
+  night?: boolean;
+  raining?: boolean;
+  /** Who is in the scene: "persona" and character ids. */
+  presentIds?: readonly string[];
+  /** Names the scene lists as present (side characters without a card included). */
+  presentNames?: readonly string[];
+  /** The current chapter, for vibes set for one chapter. */
+  chapter?: number;
 };
 
 export type BoardPinFields = {
@@ -89,6 +117,9 @@ export type BoardPinFields = {
   who?: unknown;
   slot?: unknown;
   shows?: unknown;
+  name?: unknown;
+  /** Merged into the pin's details: a key set to null or "" clears it. */
+  details?: Record<string, unknown>;
   order?: number;
 };
 
@@ -113,9 +144,60 @@ export function toBoardPin(row: BoardPinRow): BoardPin {
     who: row.who || (row.scopeType === "persona" ? FORK_PIN_WHO_PERSONA : ""),
     slot: normalizeCategory(row.category) === "wearing" ? normalizeForkWearSlot(row.slot) : "",
     shows: normalizeForkPinShows(row.shows),
+    name: normalizeForkPinName(row.name),
+    details: normalizeForkPinDetails(row.details),
     order: row.order ?? 0,
     createdAt: row.createdAt ?? "",
   };
+}
+
+/** Clears a key with null, "" or an empty list; anything else replaces it. */
+export function mergePinDetails(current: ForkPinDetails, patch: Record<string, unknown>): ForkPinDetails {
+  const next: Record<string, unknown> = { ...current };
+  for (const [key, value] of Object.entries(patch)) {
+    if (value === null || value === "" || (Array.isArray(value) && value.length === 0)) delete next[key];
+    else next[key] = value;
+  }
+  return normalizeForkPinDetails(next);
+}
+
+/** Every picture a pin owns: its own and its album's. */
+export function pinImagePaths(pin: BoardPin): string[] {
+  return [pin.imagePath, ...(pin.details.album ?? []).map((entry) => entry.path)];
+}
+
+/**
+ * Whether a pin that follows the story is part of the scene now: a place the story is in, a person
+ * who is present, a thing someone present has, or a thing left at (or inside something at) such a
+ * place. Vibes and clothes never come in by themselves.
+ */
+export function pinFollowsInto(pin: BoardPin, now: BoardStoryNow, all: readonly BoardPin[], depth = 0): boolean {
+  if (!forkPinFollowsStory(pin.category, pin.details) || depth > 4) return false;
+  if (pin.category === "place") return forkPlaceMatchesLocation(now.location ?? "", pin.name, pin.details.room);
+  if (pin.category === "person") {
+    const linked = pin.details.characterId ?? "";
+    if (linked && now.presentIds?.includes(linked)) return true;
+    const name = pin.name || pin.caption;
+    return Boolean(name) && (now.presentNames ?? []).some((present) => forkMessageMentionsPin(present, name));
+  }
+  if (pin.category === "thing") {
+    const holder = pin.details.holder ?? "";
+    if (holder.startsWith(FORK_THING_AT_PLACE)) {
+      const place = all.find((entry) => entry.id === holder.slice(FORK_THING_AT_PLACE.length));
+      return Boolean(place && (place.inScene || pinFollowsInto(place, now, all, depth + 1)));
+    }
+    if (holder && now.presentIds?.includes(holder)) return true;
+    const container = pin.details.inside ? all.find((entry) => entry.id === pin.details.inside) : null;
+    return Boolean(container && (container.inScene || pinFollowsInto(container, now, all, depth + 1)));
+  }
+  return false;
+}
+
+/** A vibe set for one chapter stays in that chapter. */
+function vibeFits(pin: BoardPin, now: BoardStoryNow): boolean {
+  return pin.category !== "vibe" || pin.details.span !== "chapter" || !pin.details.chapter || !now.chapter
+    ? true
+    : pin.details.chapter === now.chapter;
 }
 
 export function createBoardPinsStorage(db: DB) {
@@ -156,6 +238,8 @@ export function createBoardPinsStorage(db: DB) {
         who: cleanWho(input.who),
         slot: normalizeForkWearSlot(input.slot),
         shows: normalizeForkPinShows(input.shows),
+        name: normalizeForkPinName(input.name),
+        details: JSON.stringify(input.details ? mergePinDetails({}, input.details) : {}),
         order: existing.length > 0 ? existing[existing.length - 1]!.order + 1 : 0,
         createdAt: timestamp,
         updatedAt: timestamp,
@@ -197,6 +281,11 @@ export function createBoardPinsStorage(db: DB) {
       if (data.who !== undefined) fields.who = cleanWho(data.who);
       if (data.slot !== undefined) fields.slot = normalizeForkWearSlot(data.slot);
       if (data.shows !== undefined) fields.shows = normalizeForkPinShows(data.shows);
+      if (data.name !== undefined) fields.name = normalizeForkPinName(data.name);
+      if (data.details !== undefined) {
+        const current = await this.getById(id);
+        fields.details = JSON.stringify(mergePinDetails(current?.details ?? {}, data.details));
+      }
       if (data.order !== undefined && Number.isFinite(data.order)) fields.order = Math.trunc(data.order);
       await db
         .update(boardPins)
@@ -217,20 +306,35 @@ export function createBoardPinsStorage(db: DB) {
       await db.delete(boardPins).where(eq(boardPins.id, id));
     },
 
-    /** Every pin for a scope, with its picture, so deleting a chat or persona leaves nothing behind. */
+    /** Every pin for a scope, with its pictures, so deleting a chat or persona leaves nothing behind. */
     async removeScope(scopeType: BoardScopeType, scopeId: string): Promise<string[]> {
       const pins = await this.listForScope(scopeType, scopeId);
       for (const pin of pins) await this.remove(pin.id);
-      return pins.map((pin) => pin.imagePath);
+      return pins.flatMap(pinImagePaths);
     },
 
-    /** Pins a reply should carry: this chat's in-scene pins, then the persona's. */
-    async listForPrompt(chatId: string, personaId: string | null): Promise<BoardPin[]> {
+    /**
+     * Pins a reply should carry: the persona's, then this chat's in-scene pins and the ones that
+     * follow the story into it. A place shows its day, night or rain picture when it has one.
+     */
+    async listForPrompt(chatId: string, personaId: string | null, now: BoardStoryNow = {}): Promise<BoardPin[]> {
       const [chatPins, personaPins] = await Promise.all([
         this.listForScope("chat", chatId),
         personaId ? this.listForScope("persona", personaId) : Promise.resolve([]),
       ]);
-      const inChat = chatPins.filter((pin) => pin.inScene);
+      const inChat = chatPins
+        .filter((pin) => (pin.inScene || pinFollowsInto(pin, now, chatPins)) && vibeFits(pin, now))
+        .map((pin) =>
+          pin.category === "place"
+            ? {
+                ...pin,
+                imagePath: forkPlaceLookFor(pin.details, pin.imagePath, {
+                  night: now.night === true,
+                  raining: now.raining === true,
+                }),
+              }
+            : pin,
+        );
       // A chat's outfit covers the persona board's always-on one for the same person and slot, so
       // the writer is never told two outfits at once. The persona board itself is left alone.
       const coveredByChat = (pin: BoardPin) =>
@@ -256,7 +360,10 @@ export function createBoardPinsStorage(db: DB) {
         personaId ? this.listForScope("persona", personaId) : Promise.resolve([]),
       ]);
       return [...personaPins, ...chatPins].filter(
-        (pin) => !pin.inScene && pin.caption.trim() && forkMessageMentionsPin(message, pin.caption),
+        (pin) =>
+          !pin.inScene &&
+          ((pin.caption.trim() && forkMessageMentionsPin(message, pin.caption)) ||
+            (pin.name && forkMessageMentionsPin(message, pin.name))),
       );
     },
   };

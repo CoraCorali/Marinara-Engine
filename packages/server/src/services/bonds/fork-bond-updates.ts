@@ -47,6 +47,15 @@ import {
   planPairUpdates,
   type BondPair,
 } from "./fork-bond-pairs.js";
+import { createBoardPinsStorage } from "../board/fork-board-pins.js";
+import {
+  applyThingUpdates,
+  thingsAgentFormatLine,
+  thingsAgentStateLines,
+  thingsBeforeChanges,
+  undoThingChange,
+  type ThingTurnChange,
+} from "../board/fork-thing-updates.js";
 
 /** The most rungs a romance's status may travel in one reply. People do not go from talking to married. */
 export const MAX_STATUS_STEP = 1;
@@ -287,6 +296,8 @@ export async function applyBondsAgentResult(
   resolveCharacterId: (name: string) => string | null,
   /** The reply this run read. A second run for the same reply (a swipe, a re-roll) replaces the first. */
   messageId?: string,
+  /** The user's character, so "with Kyli" on a thing means the persona. */
+  personaName = "",
 ): Promise<{ changed: number; added: number; moments: number }> {
   const store = createBondsStorage(db);
   if (messageId) await undoBondTurn(db, chatId, messageId);
@@ -301,11 +312,18 @@ export async function applyBondsAgentResult(
   const pairPlan = planPairUpdates(data, pairsBefore, resolveCharacterId);
   for (const { id, ...patch } of pairPlan.changes) await pairStore.update(id, patch);
   for (const creation of pairPlan.creations) await pairStore.create({ chatId, ...creation });
+  // The board's things, in the same run, so a swipe takes their changes back too.
+  const thingChanges = await applyThingUpdates(db, chatId, data, resolveCharacterId, personaName);
   if (messageId) {
-    await recordBondTurn(db, chatId, messageId, before, await store.listForChat(chatId), {
-      before: pairsBefore,
-      after: await pairStore.listForChat(chatId),
-    });
+    await recordBondTurn(
+      db,
+      chatId,
+      messageId,
+      before,
+      await store.listForChat(chatId),
+      { before: pairsBefore, after: await pairStore.listForChat(chatId) },
+      thingChanges,
+    );
   }
   return { changed: plan.changes.length, added: plan.creations.length, moments: plan.moments.length };
 }
@@ -326,8 +344,9 @@ async function recordBondTurn(
   before: Bond[],
   after: Bond[],
   pairs: { before: BondPair[]; after: BondPair[] } = { before: [], after: [] },
+  things: readonly ThingTurnChange[] = [],
 ) {
-  const changes: TurnChange[] = [];
+  const changes: (TurnChange | ThingTurnChange)[] = [...things];
   for (const pair of pairs.after) {
     const old = pairs.before.find((candidate) => candidate.id === pair.id);
     if (!old || (old.kind === pair.kind && old.rung === pair.rung)) continue;
@@ -377,6 +396,10 @@ export async function undoBondTurn(db: DB, chatId: string, messageId: string): P
       continue;
     }
     for (const change of Array.isArray(changes) ? changes : []) {
+      if ((change as unknown as { thing?: boolean }).thing) {
+        await undoThingChange(db, change as unknown as ThingTurnChange);
+        continue;
+      }
       if (change.pair) {
         const pair = await createBondPairsStorage(db).getById(change.bondId);
         if (!pair) continue;
@@ -427,6 +450,7 @@ export function bondsAgentFormatBlock(): string {
     'Reply with JSON only: {"bonds":[{"who":"","kind":"","rung":"","status":"","route":"","condition":"","drift":"","heart":"","trust":"", ...}]}',
     "This format replaces any older one you were given (first/second numbers and a note are no longer used).",
     pairsAgentFormatLine(),
+    thingsAgentFormatLine(),
     "Kinds, their rungs (lowest first) and their fields:",
     ...kinds,
     `- status applies to love only: ${FORK_LOVE_STATUSES.join(", ")}. It is where the romance has got to, separate from how they feel.`,
@@ -455,6 +479,7 @@ export function bondsAgentStateBlock(
   allBonds: readonly Bond[],
   nameFor: (characterId: string) => string,
   pairs: readonly BondPair[] = [],
+  thingLines: readonly string[] = [],
 ): string {
   const current = allBonds.map((bond) => ({
     who: bond.label.trim() || nameFor(bond.characterId) || bond.characterId,
@@ -482,6 +507,7 @@ export function bondsAgentStateBlock(
           "</current_pairs>",
         ]
       : []),
+    ...thingLines,
   ].join("\n");
 }
 
@@ -492,12 +518,35 @@ export async function loadBondsAgentState(
   nameFor: (characterId: string) => string,
   /** A reply being swiped or re-read: the agent sees the bonds as they were before it. */
   messageId?: string | null,
+  personaName = "the user's character",
 ): Promise<string> {
+  const pins = await createBoardPinsStorage(db).listForScope("chat", chatId);
+  const thingChanges = messageId
+    ? (await readTurnChanges(db, chatId, messageId)).filter(
+        (change): change is ThingTurnChange => (change as { thing?: boolean }).thing === true,
+      )
+    : [];
   return bondsAgentStateBlock(
     await listBondsBeforeTurn(db, chatId, messageId),
     nameFor,
     await listPairsBeforeTurn(db, chatId, messageId),
+    thingsAgentStateLines(thingsBeforeChanges(pins, thingChanges), nameFor, personaName),
   );
+}
+
+async function readTurnChanges(db: DB, chatId: string, messageId: string): Promise<unknown[]> {
+  const rows = (await db
+    .select()
+    .from(bondTurns)
+    .where(and(eq(bondTurns.chatId, chatId), eq(bondTurns.messageId, messageId)))) as unknown as { changes: string }[];
+  return rows.flatMap((row) => {
+    try {
+      const parsed = JSON.parse(row.changes) as unknown;
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  });
 }
 
 /**

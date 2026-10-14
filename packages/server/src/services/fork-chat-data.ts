@@ -8,6 +8,7 @@ import { bondMoments, bondTurns, bonds, createBondsStorage } from "./bonds/fork-
 import { bondPairs, createBondPairsStorage } from "./bonds/fork-bond-pairs.js";
 import { undoBondTurn } from "./bonds/fork-bond-updates.js";
 import { createChaptersStorage } from "./chapters/fork-chapters.js";
+import { FORK_THING_AT_PLACE } from "@marinara-engine/shared";
 import { eq } from "../db/file-query.js";
 import { readLorebookImageDataUrl, saveLorebookImage } from "./lorebook/lorebook-images.js";
 import { logger } from "../lib/logger.js";
@@ -60,21 +61,45 @@ export async function copyForkChatData(
   }
   try {
     const pins = createBoardPinsStorage(db);
+    const copyPicture = async (path: string) => {
+      const dataUrl = await readLorebookImageDataUrl(path);
+      return dataUrl
+        ? (await saveLorebookImage(Buffer.from(dataUrl.slice(dataUrl.indexOf(",") + 1), "base64"))).path
+        : null;
+    };
+    const pinIds = new Map<string, string>();
+    const copies: { id: string; details: Record<string, unknown> }[] = [];
     for (const pin of await pins.listForScope("chat", fromChatId)) {
-      const dataUrl = await readLorebookImageDataUrl(pin.imagePath);
-      if (!dataUrl) continue;
-      const image = await saveLorebookImage(Buffer.from(dataUrl.slice(dataUrl.indexOf(",") + 1), "base64"));
-      await pins.create({
+      const imagePath = await copyPicture(pin.imagePath);
+      if (!imagePath) continue;
+      const album = [];
+      for (const entry of pin.details.album ?? []) {
+        const path = await copyPicture(entry.path);
+        if (path) album.push({ ...entry, path });
+      }
+      const copy = await pins.create({
         scopeType: "chat",
         scopeId: toChatId,
-        imagePath: image.path,
+        imagePath,
         caption: pin.caption,
         category: pin.category,
         inScene: pin.inScene,
         who: pin.who,
         slot: pin.slot,
         shows: pin.shows,
+        name: pin.name,
       });
+      if (!copy) continue;
+      pinIds.set(pin.id, copy.id);
+      copies.push({ id: copy.id, details: { ...pin.details, album } });
+    }
+    // A thing left at a place or inside another thing points at the branch's own copy of it.
+    for (const copy of copies) {
+      const details = copy.details as { holder?: string; inside?: string };
+      if (details.holder?.startsWith(FORK_THING_AT_PLACE))
+        details.holder = FORK_THING_AT_PLACE + (pinIds.get(details.holder.slice(FORK_THING_AT_PLACE.length)) ?? "");
+      if (details.inside) details.inside = pinIds.get(details.inside) ?? "";
+      await pins.update(copy.id, { details: copy.details });
     }
   } catch (error) {
     logger.warn(error, "[fork-board] Could not copy the board from chat %s to %s", fromChatId, toChatId);

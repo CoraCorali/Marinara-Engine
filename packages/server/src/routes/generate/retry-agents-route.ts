@@ -1228,6 +1228,7 @@ async function buildRetryAgentContext(args: {
               chatId,
               (characterId) => charInfo.find((character) => character.id === characterId)?.name ?? "",
               retryVisibleAnchor?.messageId,
+              personaContext.personaName,
             ),
           }
         : {},
@@ -3365,6 +3366,7 @@ async function applyRetryResultEffects(args: {
             );
           },
           retryMessageId || undefined,
+          agentContext.persona?.name ?? "",
         );
         assertRetryActive();
       } catch (err) {

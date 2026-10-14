@@ -10,6 +10,7 @@ import { listBondsBeforeTurn, listPairsBeforeTurn } from "../bonds/fork-bond-upd
 import { bondsPromptBlock } from "../generation/fork-bonds-prompt.js";
 import { pairsPromptBlock } from "../bonds/fork-bond-pairs.js";
 import { logDebugOverride, logger } from "../../lib/logger.js";
+import { rememberThingsFromRecap } from "../board/fork-thing-updates.js";
 import {
   buildEarlierMergeMessages,
   buildMergeMessages,
@@ -224,6 +225,13 @@ export function createChapterWriter(db: DB) {
     }
   }
 
+  /** The board's things keep what the recap says about them. Never throws: the recap is saved. */
+  async function rememberThings(chatId: string, number: number, recap: string): Promise<void> {
+    await rememberThingsFromRecap(db, chatId, number, recap).catch((error) =>
+      logger.warn(error, "[fork-chapters] Could not add chapter %d's memories to the board", number),
+    );
+  }
+
   async function getChat(chatId: string): Promise<ChatRow> {
     const chat = await chats.getById(chatId);
     if (!chat) throw new ChapterError("Chat not found", 404);
@@ -280,6 +288,7 @@ export function createChapterWriter(db: DB) {
           recap: recap.recap,
         });
         await mergeEarlierIfNeeded(chat, [...all, chapter], debug);
+        await rememberThings(chatId, chapter.number, chapter.recap);
         return chapter;
       });
     },
@@ -305,6 +314,7 @@ export function createChapterWriter(db: DB) {
         );
         const updated = await store.update(chapter.id, { recap: recap.recap });
         await dropEarlierFrom(chat, chapter.number);
+        await rememberThings(chapter.chatId, chapter.number, recap.recap);
         return updated!;
       });
     },

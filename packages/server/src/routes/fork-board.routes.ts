@@ -1,8 +1,10 @@
 // Fork feature: reference board API (see FORK.md).
 import type { FastifyInstance } from "fastify";
+import { MAX_FORK_PIN_ALBUM, FORK_PLACE_LOOKS, type ForkPlaceLook } from "@marinara-engine/shared";
 import {
   createBoardPinsStorage,
   MAX_BOARD_PINS_PER_SCOPE,
+  pinImagePaths,
   type BoardScopeType,
 } from "../services/board/fork-board-pins.js";
 import {
@@ -43,7 +45,7 @@ export async function forkBoardRoutes(app: FastifyInstance) {
 
   /** Upload a picture and pin it. Multipart so a phone can send straight from its gallery. */
   app.post("/pins", async (req, reply) => {
-    const file = await req.file({ limits: { fields: 8, parts: 10, files: 1, fileSize: LOREBOOK_IMAGE_MAX_BYTES } });
+    const file = await req.file({ limits: { fields: 10, parts: 12, files: 1, fileSize: LOREBOOK_IMAGE_MAX_BYTES } });
     if (!file) return reply.status(400).send({ error: "No image uploaded" });
     const fields = file.fields as Record<string, { value?: unknown } | undefined>;
     const readField = (name: string) => {
@@ -72,6 +74,7 @@ export async function forkBoardRoutes(app: FastifyInstance) {
       who: readField("who"),
       slot: readField("slot"),
       shows: readField("shows"),
+      name: readField("name"),
       // A closet piece is never "in scene": that happens when an outfit is worn in a chat.
       inScene: scope.scopeType !== "outfit" && readField("inScene") !== "false",
     });
@@ -94,8 +97,18 @@ export async function forkBoardRoutes(app: FastifyInstance) {
       who?: unknown;
       slot?: unknown;
       shows?: unknown;
+      name?: unknown;
+      details?: unknown;
     };
+    const details =
+      body.details && typeof body.details === "object" && !Array.isArray(body.details)
+        ? (body.details as Record<string, unknown>)
+        : undefined;
+    // The album is changed only through its own routes, which own the pictures in it.
+    if (details) delete details.album;
     const updated = await storage.update(req.params.id, {
+      ...(typeof body.name === "string" ? { name: body.name } : {}),
+      ...(details ? { details } : {}),
       ...(typeof body.caption === "string" ? { caption: body.caption } : {}),
       ...(body.category !== undefined ? { category: body.category } : {}),
       ...(typeof body.inScene === "boolean" ? { inScene: body.inScene } : {}),
@@ -126,7 +139,15 @@ export async function forkBoardRoutes(app: FastifyInstance) {
 
     const messages = [
       { role: "system" as const, content: PIN_DESCRIBE_PROMPT },
-      { role: "user" as const, content: "Label this picture.", images: [image] },
+      {
+        role: "user" as const,
+        // A pin already filed as a place, thing, person or vibe keeps that unless the picture is clearly not one.
+        content:
+          pin.category === "wearing"
+            ? "Label this picture."
+            : `Label this picture. The board has it as a ${pin.category}; keep that category unless the picture is clearly something else.`,
+        images: [image],
+      },
     ];
     logDebugOverride(
       body.debugMode === true || isDebugAgentsEnabled(),
@@ -157,10 +178,53 @@ export async function forkBoardRoutes(app: FastifyInstance) {
     const pin = await storage.getById(req.params.id);
     if (!pin) return reply.status(404).send({ error: "Pin not found" });
     await storage.remove(pin.id);
-    // The picture goes too: a pin is the only thing that ever points at it.
-    await discardLorebookImage({ path: pin.imagePath, caption: "" }).catch((error) =>
-      logger.warn(error, "[fork-board] Could not delete a pin image"),
-    );
+    // The pictures go too: a pin is the only thing that ever points at them.
+    for (const path of pinImagePaths(pin)) {
+      await discardLorebookImage({ path, caption: "" }).catch((error) =>
+        logger.warn(error, "[fork-board] Could not delete a pin image"),
+      );
+    }
     return { success: true };
+  });
+
+  /** One more picture of a place, for day, night, rain or none of them. */
+  app.post<{ Params: { id: string } }>("/pins/:id/album", async (req, reply) => {
+    const pin = await storage.getById(req.params.id);
+    if (!pin) return reply.status(404).send({ error: "Pin not found" });
+    if ((pin.details.album ?? []).length >= MAX_FORK_PIN_ALBUM) {
+      return reply.status(400).send({ error: `An album holds at most ${MAX_FORK_PIN_ALBUM} pictures` });
+    }
+    const file = await req.file({ limits: { fields: 2, parts: 3, files: 1, fileSize: LOREBOOK_IMAGE_MAX_BYTES } });
+    if (!file) return reply.status(400).send({ error: "No image uploaded" });
+    const lookField = (file.fields as Record<string, { value?: unknown } | undefined>).look?.value;
+    const look = FORK_PLACE_LOOKS.includes(lookField as ForkPlaceLook) ? (lookField as ForkPlaceLook) : "";
+    let image;
+    try {
+      image = await saveLorebookImage(await file.toBuffer());
+    } catch (error) {
+      return reply.status(400).send({ error: error instanceof Error ? error.message : "Could not save that image" });
+    }
+    // A new picture for a look replaces the old one for that look, whose file then goes.
+    const current = (await storage.getById(pin.id))?.details.album ?? [];
+    const replaced = look ? current.filter((entry) => entry.look === look) : [];
+    const album = [...current.filter((entry) => !look || entry.look !== look), { path: image.path, look }];
+    const updated = await storage.update(pin.id, { details: { album } });
+    for (const entry of replaced) {
+      await discardLorebookImage({ path: entry.path, caption: "" }).catch(() => undefined);
+    }
+    return updated;
+  });
+
+  app.delete<{ Params: { id: string } }>("/pins/:id/album", async (req, reply) => {
+    const path = typeof (req.query as { path?: unknown }).path === "string" ? (req.query as { path: string }).path : "";
+    const pin = await storage.getById(req.params.id);
+    if (!pin) return reply.status(404).send({ error: "Pin not found" });
+    const album = pin.details.album ?? [];
+    if (!album.some((entry) => entry.path === path)) return reply.status(404).send({ error: "Picture not found" });
+    const updated = await storage.update(pin.id, { details: { album: album.filter((entry) => entry.path !== path) } });
+    await discardLorebookImage({ path, caption: "" }).catch((error) =>
+      logger.warn(error, "[fork-board] Could not delete an album picture"),
+    );
+    return updated;
   });
 }

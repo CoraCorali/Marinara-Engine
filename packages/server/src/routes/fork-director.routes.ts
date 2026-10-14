@@ -39,6 +39,8 @@ import {
   readEarlierRecap,
   storySoFarBlock,
 } from "../services/chapters/fork-chapters.js";
+import { storyNowFromScene } from "../services/board/fork-story-now.js";
+import { createGameStateStorage } from "../services/storage/game-state.storage.js";
 import { isDebugAgentsEnabled } from "../config/runtime-config.js";
 import { logDebugOverride, logger } from "../lib/logger.js";
 
@@ -223,7 +225,15 @@ export async function forkDirectorRoutes(app: FastifyInstance) {
       recentChangesPromptBlock(recentMoves, bondList, pairList, cardNameFor),
       milestoneNudgeLine(recentMoves, bondList, pairList, cardNameFor),
       boardPinsNoteLine(
-        await createBoardPinsStorage(app.db).listForPrompt(chatId, identity?.source === "persona" ? identity.id : null),
+        await createBoardPinsStorage(app.db).listForPrompt(
+          chatId,
+          identity?.source === "persona" ? identity.id : null,
+          // The places, people and things following the story come in for the Director too.
+          storyNowFromScene(
+            await createGameStateStorage(app.db).getLatest(chatId),
+            cardRows.map((row, index) => ({ id: row.id, name: String(cards[index]?.name ?? "") })),
+          ),
+        ),
         pinNameResolver(persona?.name ?? "", (characterId) =>
           String(cards[cardRows.findIndex((row) => row.id === characterId)]?.name ?? ""),
         ),
