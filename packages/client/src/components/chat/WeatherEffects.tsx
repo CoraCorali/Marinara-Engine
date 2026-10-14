@@ -67,15 +67,19 @@ export function WeatherEffects({
     resumeFallbackRef.current?.();
   }, [paused]);
 
+  // Fork: a canvas can be handed to the worker only once, so the drawing is rebuilt (on a new
+  // canvas) exactly when what is drawn changes. Both hang off this one key: had the config followed
+  // the tuning object's identity instead, an equal but new object would rerun the effect on the
+  // same canvas, the second hand-over would throw, and the worker would be lost for the session.
+  // Opacity, brightness and tint are CSS on top, so they are left out and cost no redraw.
+  const tuningKey = tuning ? JSON.stringify({ ...tuning, opacity: 1, brightness: 1, tint: "" }) : "";
   const config = useMemo(() => {
     const resolved = resolveWeatherRenderConfig(weather, timeOfDay, date);
-    return tuning ? applyWeatherTuning(resolved, tuning) : resolved;
-  }, [weather, timeOfDay, date, tuning]);
+    return tuningKey ? applyWeatherTuning(resolved, JSON.parse(tuningKey) as WeatherPrefs) : resolved;
+  }, [weather, timeOfDay, date, tuningKey]);
   const fireplace = useForkWeatherStore((s) => s.fireplace);
   const soundScene = useMemo(() => weatherSoundScene(config, fireplace), [config, fireplace]);
   const sound = withSound ? <ForkWeatherSound scene={soundScene} /> : null;
-  // Fork: a canvas can be handed to the worker only once, so new tuning means a new canvas.
-  const tuningKey = tuning ? JSON.stringify(tuning) : "";
 
   // Render when we have particles, celestial bodies, or time-based ambient effects
   const shouldDrawCelestial = showCelestial && config.celestial !== "none";
@@ -332,14 +336,17 @@ export function WeatherEffects({
   if (!shouldRender) {
     return (
       <>
-        {tint}
         {sound}
+        {tint}
       </>
     );
   }
 
+  // Fork: the sound comes first in both branches, so a canvas appearing or going does not move it
+  // and restart the audio.
   return (
     <>
+      {sound}
       <canvas
         key={`${weather ?? ""}:${timeOfDay ?? ""}:${date ?? ""}:${showCelestial ? "celestial" : "particles"}:${workerFailed ? "fallback" : "worker"}:${tuningKey}`}
         ref={canvasRef}
@@ -352,7 +359,6 @@ export function WeatherEffects({
         }
       />
       {tint}
-      {sound}
     </>
   );
 }

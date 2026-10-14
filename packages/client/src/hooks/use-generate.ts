@@ -3151,8 +3151,14 @@ export function useGenerate() {
               setProcessingRun(agentProcessingRunId, false, params.chatId);
               clearMariPhaseForThisChat();
               // Fork: a plain reply that failed can be tried again from the error itself. A new message
-              // the server already saved is not sent twice; one it never saved is sent again.
-              const forkCanRetry = !params.impersonate && !params.autonomous && !params.turnGameBots;
+              // the server already saved is not sent twice; one it never saved is sent again. Once any
+              // reply of this run was saved (one character in a group, or a reply whose
+              // post-processing failed), a fresh run would add a second one, so it is not offered.
+              const forkCanRetry =
+                !params.impersonate &&
+                !params.autonomous &&
+                !params.turnGameBots &&
+                latestAssistantMessage(persistedMessages.values()) === null;
               showError(
                 (event.data as string) || "Generation failed",
                 forkCanRetry
@@ -3165,7 +3171,14 @@ export function useGenerate() {
                             const next =
                               submittedUserTurn && !saved
                                 ? params
-                                : { ...params, userMessage: undefined, attachments: undefined, replyTo: undefined };
+                                : {
+                                    ...params,
+                                    userMessage: undefined,
+                                    attachments: undefined,
+                                    replyTo: undefined,
+                                    // A map move is saved with the message; sending it again is refused.
+                                    pendingSpatialTransition: undefined,
+                                  };
                             await forkGenerateRef.current?.(next as never);
                           })();
                         },

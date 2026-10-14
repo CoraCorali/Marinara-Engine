@@ -81,6 +81,9 @@ assert.deepEqual(
 const small = createWeatherParticle("snow", 400, 800, false, 1);
 const large = createWeatherParticle("snow", 400, 800, false, 2);
 assert.ok(large.size >= 4 && small.size <= 5, "size scales a particle at birth");
+// Stars and fireflies were born with no opacity, and nothing without alpha is drawn.
+assert.ok(createWeatherParticle("star", 400, 800, false).opacity > 0, "a star can be seen");
+assert.ok(createWeatherParticle("firefly", 400, 800, false).opacity > 0, "a firefly can be seen");
 
 // ── Sounds follow the weather ──
 const scene = (weather: string, fireplace = false) =>

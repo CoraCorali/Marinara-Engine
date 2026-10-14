@@ -84,7 +84,9 @@ export class WeatherSoundEngine {
 
   /** A short burst of filtered noise with its own envelope: a crackle, or a roll of thunder. */
   private burst(options: { filter: BiquadFilterType; frequency: number; peak: number; attack: number; decay: number }) {
-    if (this.closed) return;
+    // A suspended context's clock stands still, so bursts scheduled while it waits for a first touch
+    // (or while the tab is hidden) would all start at the same instant once it wakes: one loud pop.
+    if (this.closed || this.ctx.state !== "running") return;
     const now = this.ctx.currentTime;
     const source = this.ctx.createBufferSource();
     source.buffer = this.noise;

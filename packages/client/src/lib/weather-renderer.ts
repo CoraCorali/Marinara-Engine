@@ -443,14 +443,16 @@ export function createWeatherParticle(
       base.vy = -0.2 + Math.random() * 0.4;
       base.vx = -0.3 + Math.random() * 0.6;
       base.size = 2 + Math.random() * 2;
-      base.opacity = 0;
+      // Fork: these were 0, and the draw step skips anything with no alpha, so no firefly or star
+      // was ever drawn. Each one pulses or twinkles on its own; this is only its ceiling.
+      base.opacity = 0.9;
       base.maxLife = 300 + Math.random() * 300;
       break;
     case "star":
       base.vy = 0;
       base.vx = 0;
       base.size = 1 + Math.random() * 1.5;
-      base.opacity = 0;
+      base.opacity = 1;
       base.maxLife = 400 + Math.random() * 400;
       base.y = Math.random() * h * 0.4; // upper portion
       break;

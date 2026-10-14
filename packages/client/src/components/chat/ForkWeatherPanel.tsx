@@ -283,13 +283,15 @@ export function ForkWeatherSound({ scene }: { scene: WeatherSoundScene }) {
     if (!engine) return;
     engineRef.current = engine;
     engine.resume();
-    // Browsers keep audio suspended until the page is touched, so any touch wakes it.
+    // Browsers keep audio suspended until the page is touched. A touch counts only once the finger
+    // lifts, and a key press counts too, so each of those wakes it.
     const wake = () => engine.resume();
+    const wakeEvents = ["pointerdown", "pointerup", "touchend", "keydown"] as const;
     const onVisibility = () => engine.setHidden(document.hidden);
-    window.addEventListener("pointerdown", wake);
+    for (const name of wakeEvents) window.addEventListener(name, wake);
     document.addEventListener("visibilitychange", onVisibility);
     return () => {
-      window.removeEventListener("pointerdown", wake);
+      for (const name of wakeEvents) window.removeEventListener(name, wake);
       document.removeEventListener("visibilitychange", onVisibility);
       engine.close();
       if (engineRef.current === engine) engineRef.current = null;

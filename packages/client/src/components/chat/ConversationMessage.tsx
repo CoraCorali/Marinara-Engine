@@ -58,6 +58,7 @@ import {
   type ReactionSegmentTarget,
 } from "../../lib/reactions";
 import { useTranslation as useUiTranslation } from "react-i18next";
+import { useForkRegexStore } from "../../stores/fork-regex.store";
 
 const EMPTY_CUSTOM_EMOJI_MAP = new Map<string, string>();
 const EMPTY_CUSTOM_STICKER_MAP = new Map<string, string>();
@@ -190,6 +191,9 @@ export const ConversationMessage = memo(function ConversationMessage({
   const presetVariables = useMessagePresetVariables(`${message.id}:${message.activeSwipeIndex ?? 0}`);
   const scopedRegexMode = useMemo(() => parseChatMetadata(activeChatMetadata).scopedRegexMode, [activeChatMetadata]);
   const { applyToAIOutput } = useApplyRegex();
+  // Fork: regex scripts that wait until a reply has finished streaming.
+  const forkRegexWaitList = useForkRegexStore((state) => state.waitForFinish);
+  const forkRegexWaitIds = useMemo(() => new Set(forkRegexWaitList), [forkRegexWaitList]);
 
   // ── Translation ──
   const { translate, translations, translationSources, translating } = useTranslate();
@@ -387,12 +391,15 @@ export const ConversationMessage = memo(function ConversationMessage({
           resolveMacros: resolveDisplayMacros,
           scopedMode: scopedRegexMode,
           characterId: message.characterId,
+          skipScriptIds: isStreaming ? forkRegexWaitIds : undefined,
         }),
       );
     }
     return formatTextQuotes(resolveDisplayMacros(message.content), quoteFormat);
   }, [
     applyToAIOutput,
+    forkRegexWaitIds,
+    isStreaming,
     isSystem,
     isUser,
     macroContext,
@@ -417,6 +424,7 @@ export const ConversationMessage = memo(function ConversationMessage({
             resolveMacros: resolveDisplayMacros,
             scopedMode: scopedRegexMode,
             characterId: message.characterId,
+            skipScriptIds: isStreaming ? forkRegexWaitIds : undefined,
           }),
         );
       }
@@ -425,6 +433,8 @@ export const ConversationMessage = memo(function ConversationMessage({
   }, [
     applyToAIOutput,
     contentParts,
+    forkRegexWaitIds,
+    isStreaming,
     isSystem,
     isUser,
     macroContext,
