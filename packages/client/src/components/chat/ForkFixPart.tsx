@@ -13,6 +13,7 @@ import { useUIStore } from "../../stores/ui.store";
 import { useForkSlopStore } from "../../stores/fork-slop.store";
 import { findSlopMatches, locatePassage, passageOccurrence, replacePassage, sentenceAround } from "../../lib/fork/slop";
 import { useBackDismiss } from "../../hooks/use-back-dismiss";
+import { FORK_SWITCH_CLASS } from "../../lib/fork/switch";
 import { isModalOverlayOpen } from "../../lib/modal-overlay-registry";
 
 type MessageLike = { id: string; role: string; content: string };
@@ -588,18 +589,20 @@ function SlopListEditor({ latestReply }: { latestReply: string }) {
         {localizeUi("ui.chat.forkfix.highlightInReplies")}
         <input
           type="checkbox"
+          role="switch"
           checked={highlight}
           onChange={(event) => setHighlight(event.target.checked)}
-          className="h-5 w-5 accent-[var(--primary)]"
+          className={FORK_SWITCH_CLASS}
         />
       </label>
       <label className="flex min-h-11 items-center justify-between gap-3 rounded-xl bg-[var(--secondary)] px-3 text-sm font-semibold text-foreground">
         {localizeUi("ui.chat.forkfix.showAddToLorebook")}
         <input
           type="checkbox"
+          role="switch"
           checked={lorebookButton}
           onChange={(event) => setLorebookButton(event.target.checked)}
-          className="h-5 w-5 accent-[var(--primary)]"
+          className={FORK_SWITCH_CLASS}
         />
       </label>
 

@@ -327,7 +327,7 @@ function BondCard({
             <span aria-hidden="true">{KIND_EMOJI[bond.kind]} </span>
             {name || localizeUi("ui.chat.forkbonds.whoIsIt")}
           </span>
-          <span className="truncate text-xs text-[var(--primary)]">
+          <span className="line-clamp-2 text-xs text-[var(--primary)]">
             {[bond.status ? localizeUi(STATUS_LABEL_KEYS[bond.status]) : "", summary].filter(Boolean).join(" · ")}
           </span>
         </span>
@@ -366,7 +366,7 @@ function BondCard({
               onCommit={(label) => patch({ label })}
               aria-label={localizeUi("ui.chat.forkbonds.whoThisIs")}
               placeholder={localizeUi("ui.chat.forkbonds.whoIsIt")}
-              className="min-h-11 min-w-0 flex-1 bg-transparent text-lg font-extrabold text-foreground outline-none"
+              className="min-h-11 min-w-0 flex-1 bg-transparent text-base font-extrabold text-foreground outline-none"
             />
           </div>
 
@@ -479,16 +479,17 @@ function BondCard({
             <div className="mb-1 text-[0.625rem] font-bold uppercase tracking-wide text-[var(--muted-foreground)]">
               {localizeUi("ui.chat.forkbonds.progress")}
             </div>
-            <div className="flex items-center gap-1.5 text-xs font-semibold">
-              <span className="min-w-0 flex-1 truncate rounded-full bg-foreground/[0.06] px-2.5 py-1.5 text-center text-[var(--muted-foreground)]">
+            {/* Rung names wrap rather than cut off: "Annoya…" and "Inti…" said nothing. */}
+            <div className="flex items-center gap-1 text-[0.6875rem] font-semibold leading-tight">
+              <span className="min-w-0 flex-1 break-words rounded-full bg-foreground/[0.06] px-2 py-1.5 text-center text-[var(--muted-foreground)]">
                 {below ?? "—"}
               </span>
-              <span aria-hidden="true" className="h-px w-3 bg-[var(--primary)]" />
-              <span className="min-w-0 flex-[1.3] truncate rounded-full bg-[var(--primary)] px-2.5 py-1.5 text-center text-[var(--primary-foreground)] shadow-[0_0_12px_color-mix(in_srgb,var(--primary)_45%,transparent)]">
+              <span aria-hidden="true" className="h-px w-2 shrink-0 bg-[var(--primary)]" />
+              <span className="min-w-0 flex-[1.3] break-words rounded-full bg-[var(--primary)] px-2 py-1.5 text-center text-[var(--primary-foreground)] shadow-[0_0_12px_color-mix(in_srgb,var(--primary)_45%,transparent)]">
                 ♥ {bond.rung}
               </span>
-              <span aria-hidden="true" className="h-px w-3 bg-[var(--primary)]" />
-              <span className="min-w-0 flex-1 truncate rounded-full border border-dashed border-[color-mix(in_srgb,var(--primary)_50%,transparent)] px-2.5 py-1.5 text-center text-[var(--muted-foreground)]">
+              <span aria-hidden="true" className="h-px w-2 shrink-0 bg-[var(--primary)]" />
+              <span className="min-w-0 flex-1 break-words rounded-full border border-dashed border-[color-mix(in_srgb,var(--primary)_50%,transparent)] px-2 py-1.5 text-center text-[var(--muted-foreground)]">
                 🔒 {above ?? "—"}
               </span>
             </div>
@@ -635,7 +636,9 @@ export function ForkBondsPanel({ chatId, cast }: Props) {
   const memberFor = (bond: Bond) => cast.find((member) => member.id === bond.characterId);
 
   return (
-    <div className="flex max-h-[75vh] min-h-[20rem] flex-col gap-3">
+    // The whole panel scrolls as one in its dialog. Its own inner scroller used to leave a phone a
+    // window a few cards tall between the pinned intro and the pinned add row.
+    <div className="flex flex-col gap-3">
       <style>{TINT_STYLES}</style>
       <p className="text-xs text-[var(--muted-foreground)]">{localizeUi("ui.chat.forkbonds.intro")}</p>
       {autoUpdating ? (
@@ -655,7 +658,7 @@ export function ForkBondsPanel({ chatId, cast }: Props) {
         </button>
       )}
 
-      <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto">
+      <div className="flex flex-col gap-3">
         {isLoading && (
           <div className="flex justify-center py-8">
             <Loader2 size="1.25rem" className="animate-spin text-[var(--muted-foreground)]" />

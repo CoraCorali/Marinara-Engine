@@ -7,6 +7,7 @@ import { useTranslation as useUiTranslation } from "react-i18next";
 import { cn } from "../../lib/utils";
 import { useForkDraftField } from "../../hooks/use-fork-draft-field";
 import { WeatherSoundEngine } from "../../lib/fork/weather-sound";
+import { FORK_SWITCH_CLASS } from "../../lib/fork/switch";
 import { WEATHER_PICKS, WEATHER_TIMES, type WeatherPrefs, type WeatherSoundScene } from "../../lib/fork/weather-prefs";
 import { useChatWeatherPrefs, useForkWeatherStore } from "../../stores/fork-weather.store";
 
@@ -72,9 +73,10 @@ function Switch({ label, checked, onChange }: { label: string; checked: boolean;
       {label}
       <input
         type="checkbox"
+        role="switch"
         checked={checked}
         onChange={(event) => onChange(event.target.checked)}
-        className="h-5 w-5 accent-[var(--primary)]"
+        className={FORK_SWITCH_CLASS}
       />
     </label>
   );

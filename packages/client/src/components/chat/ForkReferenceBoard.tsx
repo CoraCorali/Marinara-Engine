@@ -206,11 +206,11 @@ export function ForkReferenceBoard({ chatScope, personaScope }: Props) {
   return (
     <div className="flex flex-col gap-3 p-3">
       <div className="flex items-center gap-2">
-        <div className="flex gap-1 rounded-lg bg-[var(--secondary)] p-1">
+        <div className="flex gap-1 rounded-full bg-[var(--secondary)] p-1">
           <button
             type="button"
             onClick={() => setTab("chat")}
-            className={`min-h-11 rounded-md px-3 text-sm font-semibold ${tab === "chat" ? "bg-[var(--primary)] text-[var(--primary-foreground)]" : "text-foreground/70"}`}
+            className={`min-h-10 whitespace-nowrap rounded-full px-3 text-[0.8125rem] font-semibold ${tab === "chat" ? "bg-[var(--primary)] text-[var(--primary-foreground)]" : "text-foreground/70"}`}
           >
             {localizeUi("ui.chat.forkboard.thisChat")}
           </button>
@@ -218,7 +218,7 @@ export function ForkReferenceBoard({ chatScope, personaScope }: Props) {
             type="button"
             onClick={() => setTab("persona")}
             disabled={!personaScope}
-            className={`min-h-11 rounded-md px-3 text-sm font-semibold disabled:opacity-40 ${tab === "persona" ? "bg-[var(--primary)] text-[var(--primary-foreground)]" : "text-foreground/70"}`}
+            className={`min-h-10 whitespace-nowrap rounded-full px-3 text-[0.8125rem] font-semibold disabled:opacity-40 ${tab === "persona" ? "bg-[var(--primary)] text-[var(--primary-foreground)]" : "text-foreground/70"}`}
           >
             {localizeUi("ui.chat.forkboard.alwaysOn")}
           </button>
@@ -228,7 +228,7 @@ export function ForkReferenceBoard({ chatScope, personaScope }: Props) {
           type="button"
           onClick={() => fileRef.current?.click()}
           disabled={!scope || addPin.isPending}
-          className="flex min-h-11 items-center gap-1.5 rounded-lg bg-[var(--primary)] px-3 text-sm font-semibold text-[var(--primary-foreground)] disabled:opacity-50"
+          className="flex min-h-11 items-center gap-1.5 whitespace-nowrap rounded-full bg-[var(--primary)] px-3.5 text-[0.8125rem] font-semibold text-[var(--primary-foreground)] disabled:opacity-50"
         >
           {addPin.isPending ? <Loader2 size="0.875rem" className="animate-spin" /> : <Plus size="0.875rem" />}
           {localizeUi("ui.chat.forkboard.pinAPicture")}
