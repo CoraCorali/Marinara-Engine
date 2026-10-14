@@ -43,7 +43,7 @@ upstream file it touches, so conflicts after a sync are quick to find.
   The board's table registers itself the way capability packages register theirs, so it needs no
   storage-format bump and stock Marinara simply ignores the file.
 - **Director's chair.** A 🎬 **Director** button above the message box opens an off-the-record chat
-  with the chat's own model. It can see the character cards and the recent scene, so you can say
+  with the chat's own model. It sees the same scene the writer model does, so you can say
   "that felt out of character" and work out what should happen instead. Nothing said there enters
   the roleplay. As you talk it keeps a short **note**, and **Rewrite reply** regenerates the last
   reply with that note as its direction, keeping the original as a swipe. **Save for next** puts the
@@ -59,6 +59,26 @@ upstream file it touches, so conflicts after a sync are quick to find.
   **Save for next** is available there.
 - **Save for next** refuses to overwrite a message you have already started typing.
 - The Director reads only the tail of a chat instead of loading every message on each turn.
+
+### What the Director reads
+
+Checked after the first build, because "it can see the cards and the scene" was only half true.
+It now gets five things, each left out when the chat has nothing to put in it:
+
+- **The character cards** in the scene (name, description, personality), up to six.
+- **Your own character** — the chat's persona or persona card, which it was missing entirely,
+  so "would she really say that" has something to answer from.
+- **The lore in play**: the chat's own lorebooks plus its characters' and its persona's, scanned
+  against the same recent messages the Director is reading, under the chat's lorebook token
+  budget. Constant entries come through, lorebooks you excluded for this chat do not, and at most
+  twelve entries go so lore cannot crowd out the scene. A lorebook that fails to load is logged
+  and skipped rather than failing the turn.
+- **The story so far**: the chat's running Roleplay summary, so it knows what happened before the
+  tail it can read.
+- **The recent scene**: the last ten messages, with system, hidden and command-only messages
+  dropped. Your turns read as the writer's, narration and replies read as the story.
+
+Markup is stripped and every part is length-capped before it is sent.
 
 ## Upstream files touched
 
@@ -80,7 +100,7 @@ Edits to upstream files are marked with a `Fork:` comment.
 | `packages/server/src/routes/prompts.routes.ts` | Preset export carries its regex pack |
 | `packages/server/src/app.ts` | Registers the board table at startup |
 | `packages/server/src/db/connection.ts` | `registerForkTables` helper |
-| `packages/server/src/routes/index.ts` | Registers the board routes |
+| `packages/server/src/routes/index.ts` | Registers the board and Director routes |
 | `packages/server/src/routes/generate.routes.ts` | Sends in-scene pins with the reply |
 | `packages/client/src/components/chat/ChatRoleplaySurface.tsx` | In-scene strip |
 | `packages/client/src/components/chat/ChatInput.tsx` | Director button (and the Spark button) |
