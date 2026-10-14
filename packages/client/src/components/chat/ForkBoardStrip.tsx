@@ -1,7 +1,7 @@
 // ──────────────────────────────────────────────
 // Fork: the board, people and slop pills that lead the row above the message box
 // ──────────────────────────────────────────────
-import { useState } from "react";
+import { useEffect } from "react";
 import { CloudSun, Images, HeartHandshake, Highlighter } from "lucide-react";
 import { useTranslation as useUiTranslation } from "react-i18next";
 import { useBoardPins, type BoardScope } from "../../hooks/use-fork-board";
@@ -10,6 +10,7 @@ import { cn } from "../../lib/utils";
 import { useForkSlopStore } from "../../stores/fork-slop.store";
 import { Modal } from "../ui/Modal";
 import { ForkWeatherPanel } from "./ForkWeatherPanel";
+import { useForkWeatherStore } from "../../stores/fork-weather.store";
 
 interface Props {
   chatScope: BoardScope;
@@ -27,7 +28,17 @@ export function ForkBoardStrip({ chatScope, personaScope, onOpenBoard, onOpenBon
   const { data: chatPins } = useBoardPins(chatScope);
   const { data: personaPins } = useBoardPins(personaScope);
   const openSlopList = useForkSlopStore((s) => s.setListOpen);
-  const [weatherOpen, setWeatherOpen] = useState(false);
+  // Kept in the weather store so the tracker's weather tile can open the same panel.
+  const weatherOpen = useForkWeatherStore((state) => state.panelOpen);
+  const setWeatherOpen = useForkWeatherStore((state) => state.setPanelOpen);
+  const setWeatherAvailable = useForkWeatherStore((state) => state.setPanelAvailable);
+  useEffect(() => {
+    setWeatherAvailable(true);
+    return () => {
+      setWeatherAvailable(false);
+      setWeatherOpen(false);
+    };
+  }, [setWeatherAvailable, setWeatherOpen]);
   const pins = [...(personaPins ?? []), ...(chatPins ?? [])].filter((pin) => pin.inScene);
   const shown = pins.slice(0, 3);
   const boardLabel = pins.length

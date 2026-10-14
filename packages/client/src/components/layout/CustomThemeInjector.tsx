@@ -4,6 +4,7 @@
 import { useEffect } from "react";
 import { useThemes } from "../../hooks/use-themes";
 import { sanitizeAppCss } from "../../lib/theme-css";
+import { ForkThemeEffects } from "./ForkThemeEffects";
 
 export function CustomThemeInjector() {
   const { data: syncedThemes = [] } = useThemes();
@@ -31,5 +32,6 @@ export function CustomThemeInjector() {
     };
   }, [activeTheme]);
 
-  return null;
+  // Fork: the theme's effect switches, from the weather panel.
+  return <ForkThemeEffects css={activeTheme?.css} />;
 }

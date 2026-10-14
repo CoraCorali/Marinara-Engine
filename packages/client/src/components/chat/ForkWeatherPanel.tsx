@@ -1,7 +1,7 @@
 // ──────────────────────────────────────────────
 // Fork: the weather panel — pick the weather, tune it, and hear it
 // ──────────────────────────────────────────────
-import { useEffect, useId, useRef, type ReactNode } from "react";
+import { useEffect, useId, useMemo, useRef, type ReactNode } from "react";
 import { RotateCcw } from "lucide-react";
 import { useTranslation as useUiTranslation } from "react-i18next";
 import { HelpTooltip } from "../ui/HelpTooltip";
@@ -9,7 +9,22 @@ import { cn } from "../../lib/utils";
 import { useForkDraftField } from "../../hooks/use-fork-draft-field";
 import { WeatherSoundEngine } from "../../lib/fork/weather-sound";
 import { FORK_SWITCH_CLASS } from "../../lib/fork/switch";
-import { WEATHER_PICKS, WEATHER_TIMES, type WeatherPrefs, type WeatherSoundScene } from "../../lib/fork/weather-prefs";
+import { isTrackerFieldLocked, worldTrackerLockKey } from "@marinara-engine/shared";
+import {
+  WEATHER_PICKS,
+  WORLD_TIME_FOR,
+  timeOfDayFor,
+  weatherPickFor,
+  worldWeatherFor,
+  type WeatherPrefs,
+  type WeatherSoundScene,
+} from "../../lib/fork/weather-prefs";
+import { patchGameStateField } from "../../hooks/use-game-state-patcher";
+import { useThemes } from "../../hooks/use-themes";
+import { isThemeEffectOn, parseThemeEffects } from "../../lib/fork/theme-effects";
+import { useGameStateStore } from "../../stores/game-state.store";
+
+const WORLD_TIMES = ["dawn", "day", "dusk", "night"] as const;
 import { useChatWeatherPrefs, useForkWeatherStore } from "../../stores/fork-weather.store";
 
 const CHIP =
@@ -99,6 +114,46 @@ export function ForkWeatherPanel({ chatId }: { chatId: string | null }) {
   const setFireplace = useForkWeatherStore((s) => s.setFireplace);
   const set = (patch: Partial<WeatherPrefs>) => chatId && setChatPrefs(chatId, patch);
   const tintId = useId();
+  // The active theme's own effects, each with a switch (one setting for every chat).
+  const { data: themes = [] } = useThemes();
+  const activeThemeCss = themes.find((theme) => theme.isActive)?.css ?? null;
+  const themeEffects = useMemo(() => parseThemeEffects(activeThemeCss), [activeThemeCss]);
+  const themeChoices = useForkWeatherStore((s) => s.themeEffects);
+  const setThemeEffect = useForkWeatherStore((s) => s.setThemeEffect);
+
+  // The story's own weather and time, from the world state the tracker shows.
+  const story = useGameStateStore((state) => (state.current && state.current.chatId === chatId ? state.current : null));
+  const storyWeather = story?.weather ?? null;
+  const storyTime = story?.time ?? null;
+  const currentPick = weatherPickFor(storyWeather);
+  const currentTime = timeOfDayFor(storyTime);
+  const lockKeys = [worldTrackerLockKey("weather"), worldTrackerLockKey("time")];
+  const kept = lockKeys.every((key) => isTrackerFieldLocked(story?.fieldLocks, key));
+  const setWorld = (field: "weather" | "time", value: string) => chatId && patchGameStateField(chatId, field, value);
+  const setKept = (on: boolean) => {
+    if (!chatId) return;
+    const next = { ...(story?.fieldLocks ?? {}) };
+    for (const key of lockKeys) {
+      if (on) next[key] = true;
+      else delete next[key];
+    }
+    patchGameStateField(chatId, "fieldLocks", next);
+  };
+
+  // A pick saved by the older panel only changed the picture; it moves into the story once.
+  useEffect(() => {
+    if (!chatId) return;
+    const patch: Partial<WeatherPrefs> = {};
+    if (!prefs.follow) {
+      patchGameStateField(chatId, "weather", worldWeatherFor(prefs.pick));
+      patch.follow = true;
+    }
+    if (prefs.time !== "story") {
+      patchGameStateField(chatId, "time", WORLD_TIME_FOR[prefs.time]);
+      patch.time = "story";
+    }
+    if (Object.keys(patch).length > 0) setChatPrefs(chatId, patch);
+  }, [chatId, prefs.follow, prefs.pick, prefs.time, setChatPrefs]);
 
   if (!chatId)
     return (
@@ -107,32 +162,22 @@ export function ForkWeatherPanel({ chatId }: { chatId: string | null }) {
 
   return (
     <div className="fork-ui flex flex-col gap-4">
-      <Section title={localizeUi("ui.chat.forkweather.weather")}>
-        <div className="flex rounded-full bg-[var(--secondary)] p-1 text-xs font-bold">
-          {[true, false].map((follow) => (
-            <button
-              key={String(follow)}
-              type="button"
-              onClick={() => set({ follow })}
-              aria-pressed={prefs.follow === follow}
-              className={cn(
-                "min-h-8 flex-1 rounded-full px-3 transition-colors",
-                prefs.follow === follow ? "bg-[var(--primary)] text-[var(--primary-foreground)]" : "text-foreground/70",
-              )}
-            >
-              {localizeUi(follow ? "ui.chat.forkweather.followStory" : "ui.chat.forkweather.pickMyself")}
-            </button>
-          ))}
-        </div>
+      {/* The weather and time live in the story's world state, so the tracker, the writer and the
+          screen all agree. A chip here writes the world state; the story can change it on a later
+          reply unless "Keep it this way" holds it with the tracker's own field locks. */}
+      <Section title={localizeUi("ui.chat.forkweather.weather")} help={localizeUi("ui.chat.forkweather.worldHelp")}>
+        <p className="rounded-xl bg-[var(--secondary)] px-3 py-2 text-xs text-foreground/85">
+          <span className="font-semibold text-[var(--primary)]">{localizeUi("ui.chat.forkweather.inTheStory")} </span>
+          {[storyWeather || localizeUi("ui.chat.forkweather.noWeatherYet"), storyTime].filter(Boolean).join(" · ")}
+        </p>
         <div className="grid grid-cols-2 gap-1.5 min-[420px]:grid-cols-3">
           {WEATHER_PICKS.map((pick) => (
             <button
               key={pick.id}
               type="button"
-              disabled={prefs.follow}
-              onClick={() => set({ pick: pick.id })}
-              aria-pressed={!prefs.follow && prefs.pick === pick.id}
-              className={cn(CHIP, "justify-start", !prefs.follow && prefs.pick === pick.id ? CHIP_ON : CHIP_OFF)}
+              onClick={() => setWorld("weather", worldWeatherFor(pick.id))}
+              aria-pressed={currentPick === pick.id}
+              className={cn(CHIP, "justify-start", currentPick === pick.id ? CHIP_ON : CHIP_OFF)}
             >
               <span aria-hidden="true">{pick.emoji}</span>
               {localizeUi(`ui.chat.forkweather.pick.${pick.id}`)}
@@ -143,18 +188,19 @@ export function ForkWeatherPanel({ chatId }: { chatId: string | null }) {
 
       <Section title={localizeUi("ui.chat.forkweather.time")}>
         <div className="flex flex-wrap gap-1.5">
-          {WEATHER_TIMES.map((time) => (
+          {WORLD_TIMES.map((time) => (
             <button
               key={time}
               type="button"
-              onClick={() => set({ time })}
-              aria-pressed={prefs.time === time}
-              className={cn(CHIP, prefs.time === time ? CHIP_ON : CHIP_OFF)}
+              onClick={() => setWorld("time", WORLD_TIME_FOR[time])}
+              aria-pressed={currentTime === time}
+              className={cn(CHIP, currentTime === time ? CHIP_ON : CHIP_OFF)}
             >
               {localizeUi(`ui.chat.forkweather.timeOption.${time}`)}
             </button>
           ))}
         </div>
+        <Switch label={localizeUi("ui.chat.forkweather.keepIt")} checked={kept} onChange={setKept} />
       </Section>
 
       <Section title={localizeUi("ui.chat.forkweather.tune")}>
@@ -249,6 +295,35 @@ export function ForkWeatherPanel({ chatId }: { chatId: string | null }) {
           />
         )}
       </Section>
+
+      {themeEffects.length > 0 && (
+        <Section
+          title={localizeUi("ui.chat.forkweather.themeEffects")}
+          help={localizeUi("ui.chat.forkweather.themeEffectsHelp")}
+        >
+          {(["roleplay", "everywhere"] as const).map((where) => {
+            const group = themeEffects.filter((effect) => effect.where === where);
+            if (group.length === 0) return null;
+            return (
+              <div key={where} className="flex flex-col gap-1.5">
+                <p className="text-[0.6875rem] font-semibold text-[var(--muted-foreground)]">
+                  {localizeUi(
+                    where === "roleplay" ? "ui.chat.forkweather.inRoleplay" : "ui.chat.forkweather.everywhere",
+                  )}
+                </p>
+                {group.map((effect) => (
+                  <Switch
+                    key={effect.id}
+                    label={effect.label}
+                    checked={isThemeEffectOn(effect, themeChoices)}
+                    onChange={(on) => setThemeEffect(effect.id, on)}
+                  />
+                ))}
+              </div>
+            );
+          })}
+        </Section>
+      )}
 
       <Section title={localizeUi("ui.chat.forkweather.sounds")} help={localizeUi("ui.chat.forkweather.soundHelp")}>
         <Switch label={localizeUi("ui.chat.forkweather.soundOn")} checked={soundOn} onChange={setSoundOn} />

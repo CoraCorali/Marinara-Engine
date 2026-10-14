@@ -7,8 +7,18 @@ import assert from "node:assert/strict";
 
 const { createWeatherField, createWeatherParticle, resolveWeatherRenderConfig, stepWeatherParticles } =
   await import("../../packages/client/src/lib/weather-renderer.js");
-const { DEFAULT_WEATHER_PREFS, applyWeatherTuning, effectiveWeatherInput, weatherSoundScene } =
-  await import("../../packages/client/src/lib/fork/weather-prefs.js");
+const {
+  DEFAULT_WEATHER_PREFS,
+  WORLD_TIME_FOR,
+  applyWeatherTuning,
+  effectiveWeatherInput,
+  timeOfDayFor,
+  weatherPickFor,
+  weatherSoundScene,
+  worldWeatherFor,
+} = await import("../../packages/client/src/lib/fork/weather-prefs.js");
+const { parseThemeEffects, themeEffectsOffAttribute } =
+  await import("../../packages/client/src/lib/fork/theme-effects.js");
 
 const story = { weather: "light drizzle", time: "9:40 PM" };
 
@@ -95,5 +105,34 @@ assert.ok(scene("rain and wind").wind > 0, "wind in the rain is heard as well as
 assert.equal(scene("clear").rain + scene("clear").wind, 0, "a clear sky is quiet");
 assert.equal(scene("clear", true).crackle, true, "the fireplace switch crackles whatever the weather");
 assert.equal(scene("embers").crackle, true);
+
+// ── The panel and the world state agree ──
+assert.equal(worldWeatherFor("storm"), "Thunderstorm", "a pick is written the way the tracker shows weather");
+assert.equal(weatherPickFor("Thunderstorm"), "storm", "and reads back as the same pick");
+assert.equal(weatherPickFor("light drizzle"), "drizzle", "the story's own words light up the matching chip");
+assert.equal(weatherPickFor("rain and wind"), "rain", "an extra layer does not stop a match");
+assert.equal(weatherPickFor(""), null);
+for (const time of ["dawn", "day", "dusk", "night"] as const) {
+  assert.equal(timeOfDayFor(WORLD_TIME_FOR[time]), time, `a ${time} pick reads back as ${time}`);
+}
+assert.equal(timeOfDayFor("9:40 PM"), "night");
+assert.equal(timeOfDayFor(null), null);
+
+// ── Theme effect switches ──
+const themeCss = `/* @fork-effect petals | 🌸 Falling petals | roleplay | off */
+/* @fork-effect glitter | ✨ Glitter | everywhere */
+/* @fork-effect petals | duplicate | everywhere | on */ .x { color: red; }`;
+const effects = parseThemeEffects(themeCss);
+assert.deepEqual(
+  effects.map((effect) => [effect.id, effect.label, effect.where, effect.defaultOn]),
+  [
+    ["petals", "🌸 Falling petals", "roleplay", false],
+    ["glitter", "✨ Glitter", "everywhere", true],
+  ],
+  "declarations are read in order, defaulting to on, first one wins",
+);
+assert.equal(themeEffectsOffAttribute(effects, {}), "petals", "the theme's defaults apply until a switch is flipped");
+assert.equal(themeEffectsOffAttribute(effects, { petals: true, glitter: false }), "glitter");
+assert.deepEqual(parseThemeEffects(".plain { color: blue; }"), [], "a theme without switches shows none");
 
 console.log("fork weather panel: ok");

@@ -5,6 +5,7 @@ import type { WorldStatePresentation } from "../../lib/world-state-display";
 import { useTrackerFieldLock } from "../TrackerLockContext";
 import { WORLD_INSTRUMENT_TEXT_STYLE, WorldRenderedEdit, WorldValueText } from "./WorldEditableTile";
 import { useTranslation as useUiTranslation } from "react-i18next";
+import { ForkWeatherTileButton } from "../../../../components/chat/ForkWeatherTileButton";
 
 const WORLD_FORECAST_PROFILE_STYLES: Record<
   TrackerPanelSizeProfile,
@@ -110,6 +111,8 @@ export function WorldForecastTile({
           />
         </WorldRenderedEdit>
       </div>
+      {/* Fork: the weather panel and this tile show the same weather; this opens the panel. */}
+      <ForkWeatherTileButton />
     </div>
   );
 }

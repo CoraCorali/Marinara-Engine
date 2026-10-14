@@ -1,7 +1,7 @@
 // ──────────────────────────────────────────────
 // Fork: the weather panel's choices, and what they do to the weather (see FORK.md)
 // ──────────────────────────────────────────────
-import type { WeatherParticle, WeatherRenderConfig } from "../weather-renderer";
+import { resolveWeatherRenderConfig, type WeatherParticle, type WeatherRenderConfig } from "../weather-renderer";
 
 /** Weather you can pick by hand. Each is the line the story's tracker would have written for it. */
 export const WEATHER_PICKS = [
@@ -30,6 +30,55 @@ const TIME_PHRASES: Record<Exclude<WeatherTime, "story">, string> = {
   dusk: "dusk",
   night: "night",
 };
+
+/**
+ * What a time pick writes into the story's world state. A clock time rather than "dusk", so the
+ * tracker's time tile reads the way the story writes it and the sky lands where it should.
+ */
+export const WORLD_TIME_FOR: Record<Exclude<WeatherTime, "story">, string> = {
+  dawn: "6:00 AM",
+  day: "12:00 PM",
+  dusk: "7:30 PM",
+  night: "11:00 PM",
+};
+
+/** A pick's line as the world state shows it: "Thunderstorm", not "thunderstorm". */
+export function worldWeatherFor(pick: WeatherPickId): string {
+  const phrase = (WEATHER_PICKS.find((entry) => entry.id === pick) ?? WEATHER_PICKS[0]).phrase;
+  return phrase.charAt(0).toUpperCase() + phrase.slice(1);
+}
+
+/** The pick that draws the same as the story's weather line, so the panel can light up its chip. */
+export function weatherPickFor(worldWeather: string | null | undefined): WeatherPickId | null {
+  if (!worldWeather?.trim()) return null;
+  const exact = WEATHER_PICKS.find((entry) => entry.phrase === worldWeather.trim().toLowerCase());
+  if (exact) return exact.id;
+  // Otherwise the pick that would be drawn the same way: "light rain and wind" lights up Rain.
+  const signature = (line: string) => {
+    const config = resolveWeatherRenderConfig(line, "noon");
+    const extras = config.extras.map((layer) => layer.type).sort();
+    return [config.count > 0 ? config.type : "", config.lightning, ...extras].join("|");
+  };
+  const drawn = signature(worldWeather);
+  const same = WEATHER_PICKS.find((entry) => signature(entry.phrase) === drawn);
+  if (same) return same.id;
+  // Then by the main weather alone, so "rain and wind" still lights up Rain.
+  const main = (line: string) => signature(line).split("|").slice(0, 2).join("|");
+  const drawnMain = main(worldWeather);
+  if (drawnMain.startsWith("|")) return null;
+  return WEATHER_PICKS.find((entry) => main(entry.phrase) === drawnMain)?.id ?? null;
+}
+
+/** Which part of the day the story's time line falls in. */
+export function timeOfDayFor(worldTime: string | null | undefined): Exclude<WeatherTime, "story"> | null {
+  if (!worldTime?.trim()) return null;
+  const hour = resolveWeatherRenderConfig(null, worldTime).hour;
+  if (hour < 0) return null;
+  if (hour >= 5 && hour < 9) return "dawn";
+  if (hour >= 9 && hour < 17) return "day";
+  if (hour >= 17 && hour < 20) return "dusk";
+  return "night";
+}
 
 export interface WeatherPrefs {
   /** Follow the story's weather line, or use the pick below. */
