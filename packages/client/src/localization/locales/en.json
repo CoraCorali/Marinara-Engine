@@ -2664,6 +2664,8 @@
   "settings.agentImports.results.character_card_create.label": "Character Card Creation",
   "settings.agentImports.results.cyoa_choices.description": "Adds interactive continuation choices to the generated message.",
   "settings.agentImports.results.cyoa_choices.label": "Interactive Choices",
+  "settings.agentImports.results.fork_bonds_update.description": "Reads the scene and moves the relationship tracker: each bond’s two meters, a romance’s stage, and a one-line note. Movement is capped per reply so the tracker never contradicts itself.",
+  "settings.agentImports.results.fork_bonds_update.label": "Relationship Tracker Update (Fork)",
   "settings.agentImports.results.haptic_command.description": "Sends bounded commands to a connected haptic device.",
   "settings.agentImports.results.haptic_command.label": "Haptic Command",
   "settings.agentImports.results.local_music_control.description": "Controls playback from the configured local music collection.",

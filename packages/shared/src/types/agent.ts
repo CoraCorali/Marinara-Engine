@@ -69,6 +69,8 @@ export const AGENT_RESULT_TYPE_VALUES = [
   "frontend_theme_update",
   "about_me_update",
   "memory_nag",
+  // Fork: the relationship tracker (see FORK.md)
+  "fork_bonds_update",
 ] as const;
 
 /** The result type an agent can produce. */
@@ -715,6 +717,7 @@ const CUSTOM_AGENT_RESULT_CAPABILITY: Partial<Record<AgentResultType, CustomAgen
   local_music_control: "control_media",
   haptic_command: "control_haptics",
   about_me_update: "edit_about_me",
+  fork_bonds_update: "edit_trackers",
   cyoa_choices: "edit_messages",
   echo_message: "edit_messages",
 };

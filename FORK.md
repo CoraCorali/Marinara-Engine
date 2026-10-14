@@ -159,6 +159,40 @@ Markup is stripped and every part is length-capped before it is sent.
   card in the chat was tracked, so a neighbour, a boss or the man at the door could never be
   tracked at all. There is a "someone else" option now, and the row no longer hides itself.
 
+### The tracker fills itself in
+
+- **An agent can now move the tracker.** Storage, the panel and the prompt note shipped first,
+  which left the numbers to be dragged by hand; this is the half that watches the scene. A custom
+  agent set to the **Relationship Tracker Update (Fork)** result returns where it thinks each bond
+  now stands, and what that is allowed to do to what is already stored is decided in
+  `fork-bond-updates.ts` rather than trusted:
+  - A meter moves at most 20 in one reply. One sharp line will otherwise send patience from 80 to
+    5, and a tracker that teleports contradicts itself and then feeds the contradiction back into
+    the prompt. A real collapse still arrives over a few turns, which is how long it takes in the
+    writing anyway.
+  - A romance moves at most one rung. Nobody goes from talking to married in one reply.
+  - A bond it does not name is left alone, and a field it leaves out never resets anything: no
+    kind in the update means the kind stays, so a romance is never quietly demoted to "knows each
+    other". A kind it invents is ignored rather than normalised into something it did not mean.
+  - A name it does not recognise becomes a new bond rather than overwriting the nearest one, and
+    starts at the middle on both meters, because a first impression is not a measurement.
+  - Naming the same person twice in one reading applies once.
+  It runs on a normal reply and on a re-roll, and it needs the agent to hold **Edit trackers**.
+  Nothing happens without such an agent, so the tracker still works entirely by hand if you prefer
+  that. The panel re-reads the bonds whenever you open it, so what an agent moved is there.
+
+  The prompt to paste into that agent, which matches the JSON the editor shows as its example:
+
+  > Read the last few messages and report where each tracked relationship now stands. Reply with
+  > JSON only: `{"bonds":[{"who":"","kind":"","stage":"","first":0,"second":0,"note":""}]}`.
+  > `who` is the character's name exactly as it appears in the chat. `kind` is one of love,
+  > family, friend, rival, ex, other. `stage` applies only to love and is one of talking, dating,
+  > together, living, engaged, married. `first` and `second` are 0-100 for that kind's two meters:
+  > love is wanting and patience, family is closeness and friction, friend is closeness and trust,
+  > rival is respect and hostility, ex is unfinished business and bitterness, other is closeness
+  > and trust. `note` is one short line on where it stands. Only include a relationship the scene
+  > actually said something about, and leave out any field you are not sure changed.
+
 ## Upstream files touched
 
 Fork-only code lives in `packages/client/src/lib/fork/`, `packages/server/src/services/import/fork/`
@@ -171,6 +205,8 @@ Edits to upstream files are marked with a `Fork:` comment.
 | `packages/client/src/components/chat/ChatRoleplaySurface.tsx` | Passes Edit & resend to the right message |
 | `packages/client/src/components/chat/ChatMessage.tsx` | Resend button in the message editor |
 | `packages/client/src/localization/locales/en.json` | Two strings for the resend button |
+| `packages/client/src/components/agents/AgentEditor.tsx` | Offers the fork tracker result to custom agents |
+| `packages/client/src/lib/custom-agent-result-examples.ts` | The JSON example for that result |
 | `packages/client/src/components/chat/CyoaChoices.tsx` | Re-roll reruns the agent that made the choices |
 | `packages/client/src/components/chat/ChatInput.tsx` | Spark button |
 | `packages/client/src/hooks/use-generate.ts` | Choice results from any choice agent reach the choice bar |

@@ -233,6 +233,7 @@ import { createClosetStorage } from "../services/closet/fork-closet-items.js";
 import { closetItemsAsImageEntries, wornOutfitLine } from "../services/generation/fork-closet-prompt.js";
 import { createBondsStorage } from "../services/bonds/fork-bonds.js";
 import { bondsPromptBlock } from "../services/generation/fork-bonds-prompt.js";
+import { applyBondsAgentResult } from "../services/bonds/fork-bond-updates.js";
 import { createAgentsStorage } from "../services/storage/agents.storage.js";
 import { createGameStateStorage, parseStoredRulesetLive } from "../services/storage/game-state.storage.js";
 import {
@@ -12534,6 +12535,28 @@ export async function generateRoutes(app: FastifyInstance, options: GenerateRout
                 }
               } catch (err) {
                 logger.error(err, "[generate] Failed to apply persona-stats tracker update");
+              }
+            }
+
+            // Fork: a relationship agent's reading of the scene → the tracker (see FORK.md). What
+            // it is allowed to move, and how far in one reply, is decided in planBondUpdates.
+            if (
+              result.success &&
+              result.type === "fork_bonds_update" &&
+              result.data &&
+              typeof result.data === "object" &&
+              customAgentCanApplyResult(result, resolvedAgents, builtInAgentTypes, "edit_trackers")
+            ) {
+              try {
+                const moved = await applyBondsAgentResult(app.db, input.chatId, result.data, (name) => {
+                  const wanted = normalizeTextForMatch(name);
+                  return charInfo.find((character) => normalizeTextForMatch(character.name) === wanted)?.id ?? null;
+                });
+                if (moved.changed > 0 || moved.added > 0) {
+                  logger.debug("[fork_bonds] %d bonds changed, %d added", moved.changed, moved.added);
+                }
+              } catch (err) {
+                logger.error(err, "[generate] Failed to apply the fork relationship tracker update");
               }
             }
 

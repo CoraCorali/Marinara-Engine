@@ -529,6 +529,12 @@ const CUSTOM_AGENT_RESULT_TYPE_OPTIONS: Array<{
     description: "settings.agentImports.results.cyoa_choices.description",
     requiredCapability: "edit_messages",
   },
+  {
+    id: "fork_bonds_update",
+    label: "settings.agentImports.results.fork_bonds_update.label",
+    description: "settings.agentImports.results.fork_bonds_update.description",
+    requiredCapability: "edit_trackers",
+  },
 ];
 
 function normalizeCustomResultType(value: unknown): CustomAgentResultType {

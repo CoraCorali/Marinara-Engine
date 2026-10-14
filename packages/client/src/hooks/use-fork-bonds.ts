@@ -42,7 +42,9 @@ export function useBonds(chatId: string | null) {
     queryKey: bondKeys.all(chatId),
     queryFn: () => api.get<Bond[]>(`/fork-bonds/bonds?chatId=${encodeURIComponent(chatId!)}`),
     enabled: Boolean(chatId),
-    staleTime: 60_000,
+    // An agent can have moved these during the last reply, so reopening the panel reads them again
+    // rather than showing what they were a minute ago.
+    staleTime: 0,
   });
 }
 

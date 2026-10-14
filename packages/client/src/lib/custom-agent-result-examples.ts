@@ -22,6 +22,8 @@ export const CUSTOM_AGENT_RESULT_TYPE_IDS = [
   "haptic_command",
   "about_me_update",
   "cyoa_choices",
+  // Fork: the relationship tracker (see FORK.md)
+  "fork_bonds_update",
 ] as const satisfies readonly AgentResultType[];
 
 export type CustomAgentResultType = (typeof CUSTOM_AGENT_RESULT_TYPE_IDS)[number];
@@ -203,5 +205,17 @@ export const CUSTOM_AGENT_RESULT_EXAMPLES: Record<CustomAgentResultType, CustomA
   }),
   cyoa_choices: jsonExample({
     choices: [{ label: "Short display label", text: "Full first-person action or dialogue to send" }],
+  }),
+  fork_bonds_update: jsonExample({
+    bonds: [
+      {
+        who: "Exact character name",
+        kind: "love|family|friend|rival|ex|other",
+        stage: "talking|dating|together|living|engaged|married (romance only)",
+        first: 70,
+        second: 40,
+        note: "One line on where it stands after this scene",
+      },
+    ],
   }),
 };

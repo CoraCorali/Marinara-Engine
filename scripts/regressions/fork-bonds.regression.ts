@@ -106,6 +106,60 @@ assert.ok(
   bondsPromptBlock(await store.listForChat("chat-2"), () => "", "Kyli").includes("the man at the door: Rival."),
 );
 
+// ── What an agent's reading is allowed to do ──
+const { planBondUpdates, MAX_METER_STEP } = await import(
+  "../../packages/server/src/services/bonds/fork-bond-updates.js"
+);
+
+const current = await store.listForChat(CHAT);
+const byName: Record<string, string> = { Vee: "char-vee", Nessa: "char-nessa", Gia: "char-gia" };
+const resolve = (name: string) => byName[name] ?? null;
+
+// A relationship moves rather than teleports: one sharp line must not take patience from 34 to 0.
+const crash = planBondUpdates({ bonds: [{ who: "Vee", first: 10, second: 0 }] }, current, resolve);
+assert.equal(crash.changes.length, 1);
+assert.equal(crash.changes[0]!.first, 82 - MAX_METER_STEP, "a fall is capped at one step");
+assert.equal(crash.changes[0]!.second, 34 - MAX_METER_STEP);
+assert.equal(crash.creations.length, 0);
+
+// A romance moves one rung at a time. Nobody goes from living together to married in one reply.
+const rush = planBondUpdates({ bonds: [{ who: "Vee", stage: "married" }] }, current, resolve);
+assert.equal(rush.changes[0]!.stage, "engaged", "one rung, not four");
+
+// A bond it does not mention is left alone.
+assert.ok(!crash.changes.some((change) => change.id !== current.find((b) => b.characterId === "char-vee")!.id));
+
+// A missing field never resets anything: no kind means the kind stays.
+const quiet = planBondUpdates({ bonds: [{ who: "Nessa", note: "She knows about the fight." }] }, current, resolve);
+assert.equal(quiet.changes[0]!.kind, undefined, "an unnamed kind is not a reset to 'other'");
+assert.equal(quiet.changes[0]!.note, "She knows about the fight.");
+
+// A kind it makes up is ignored rather than normalised into something it did not mean.
+const nonsense = planBondUpdates({ bonds: [{ who: "Nessa", kind: "nemesis" }] }, current, resolve);
+assert.equal(nonsense.changes.length, 0, "nothing in the update was usable, so nothing changes");
+
+// Somebody new becomes a new bond rather than overwriting the nearest one.
+const stranger = planBondUpdates({ bonds: [{ who: "the man at the door", kind: "rival" }] }, current, resolve);
+assert.equal(stranger.changes.length, 0);
+assert.equal(stranger.creations.length, 1);
+assert.equal(stranger.creations[0]!.label, "the man at the door");
+assert.equal(stranger.creations[0]!.first, 50, "a first impression starts in the middle, not at a measurement");
+assert.ok(stranger.creations[0]!.characterId.startsWith("outsider-"));
+
+// A new bond that IS a card in the chat is tied to that card.
+const newCard = planBondUpdates({ bonds: [{ who: "Gia", kind: "ex" }] }, [], resolve);
+assert.equal(newCard.creations[0]!.characterId, "char-gia");
+
+// Naming the same person twice does not apply twice.
+const twice = planBondUpdates({ bonds: [{ who: "Vee", first: 90 }, { who: "Vee", first: 95 }] }, current, resolve);
+assert.equal(twice.changes.length, 1);
+assert.equal(twice.creations.length, 0, "the second mention is not mistaken for a new person");
+
+// Nothing, or rubbish, changes nothing.
+assert.deepEqual(planBondUpdates(null, current, resolve), { changes: [], creations: [] });
+assert.deepEqual(planBondUpdates({ bonds: "no" }, current, resolve), { changes: [], creations: [] });
+assert.deepEqual(planBondUpdates({ bonds: [{ who: "   " }] }, current, resolve), { changes: [], creations: [] });
+
 // ── The tracker is capped ──
 for (let index = 0; index < MAX_BONDS_PER_CHAT; index += 1) {
   await store.create({ chatId: "chat-full", characterId: `char-${index}`, kind: "other" });

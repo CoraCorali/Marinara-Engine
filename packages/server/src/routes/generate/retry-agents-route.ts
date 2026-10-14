@@ -44,6 +44,8 @@ import {
   type AgentGenerationParameters,
 } from "../../services/generation/agent-generation-parameters.js";
 import { and, eq } from "../../db/file-query.js";
+import { normalizeTextForMatch } from "@marinara-engine/shared";
+import { applyBondsAgentResult } from "../../services/bonds/fork-bond-updates.js";
 import { listCharacterSprites } from "../../services/game/sprite.service.js";
 import { DATA_DIR } from "../../utils/data-dir.js";
 import {
@@ -3323,6 +3325,28 @@ async function applyRetryResultEffects(args: {
       } catch (err) {
         assertRetryActive();
         logger.error(err, "[retry-agents] Failed to apply persona-stats tracker update");
+      }
+    }
+
+    // Fork: the same relationship-tracker update on a re-roll (see FORK.md).
+    if (
+      result.success &&
+      result.type === "fork_bonds_update" &&
+      result.data &&
+      typeof result.data === "object" &&
+      customAgentCanApplyRetryResult(result, resolvedAgents, "edit_trackers")
+    ) {
+      try {
+        await applyBondsAgentResult(app.db, chatId, result.data, (name) => {
+          const wanted = normalizeTextForMatch(name);
+          return (
+            agentContext.characters.find((character) => normalizeTextForMatch(character.name) === wanted)?.id ?? null
+          );
+        });
+        assertRetryActive();
+      } catch (err) {
+        assertRetryActive();
+        logger.error(err, "[retry-agents] Failed to apply the fork relationship tracker update");
       }
     }
 
