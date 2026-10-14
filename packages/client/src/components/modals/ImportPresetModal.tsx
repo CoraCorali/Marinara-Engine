@@ -9,6 +9,9 @@ import { useQueryClient } from "@tanstack/react-query";
 import { api } from "../../lib/api-client";
 import { getFolderImportEntries, getFolderManifestConfig } from "@marinara-engine/shared";
 import { useTranslation as useUiTranslation } from "react-i18next";
+import { usePresets } from "../../hooks/use-presets";
+import { showConfirmDialog } from "../../lib/app-dialogs";
+import { findPresetToUpdate } from "../../lib/fork/preset-update";
 
 interface Props {
   open: boolean;
@@ -22,6 +25,8 @@ export function ImportPresetModal({ open, onClose }: Props) {
   const [results, setResults] = useState<Array<{ filename: string; success: boolean; message: string }>>([]);
   const [dragOver, setDragOver] = useState(false);
   const qc = useQueryClient();
+  // Fork: offer to update a preset of the same name instead of adding another copy.
+  const { data: existingPresets } = usePresets();
 
   const handleFiles = async (files: File[]) => {
     if (files.length === 0) return;
@@ -49,8 +54,29 @@ export function ImportPresetModal({ open, onClose }: Props) {
 
         if (nativePresetEnvelopes.length > 0) {
           for (const envelope of nativePresetEnvelopes) {
-            const data = await api.post<{ success: boolean; error?: string }>("/import/marinara", {
+            // Fork: a preset you already have, under the same name, can be updated in place so
+            // your chats, generation parameters and toggle picks carry over.
+            const updateTarget = findPresetToUpdate(envelope, existingPresets);
+            const replacePresetId =
+              updateTarget &&
+              (await showConfirmDialog({
+                title: localizeUi("ui.modals.importpresetmodal.updateExistingPreset"),
+                message: localizeUi("ui.modals.importpresetmodal.updateExistingPresetBody", {
+                  value1: updateTarget.name,
+                }),
+                confirmLabel: localizeUi("ui.modals.importpresetmodal.updateIt"),
+                cancelLabel: localizeUi("ui.modals.importpresetmodal.addACopy"),
+              }))
+                ? updateTarget.id
+                : undefined;
+            const data = await api.post<{
+              success: boolean;
+              error?: string;
+              updated?: boolean;
+              regexInstalled?: number;
+            }>("/import/marinara", {
               ...envelope,
+              ...(replacePresetId ? { replacePresetId } : {}),
               timestampOverrides: {
                 createdAt: file.lastModified,
                 updatedAt: file.lastModified,
@@ -59,10 +85,17 @@ export function ImportPresetModal({ open, onClose }: Props) {
             // Per envelope: a manifest can hold several presets, and only the ones that
             // imported count toward the notice.
             if (data.success) decisionImports.note(file.name, envelope);
+            const regexNote = data.regexInstalled
+              ? localizeUi("ui.modals.importpresetmodal.withValue1RegexScripts", { value1: data.regexInstalled })
+              : "";
             nextResults.push({
               filename: file.name,
               success: data.success,
-              message: data.success ? "Imported preset" : (data.error ?? "Import failed"),
+              message: data.success
+                ? (data.updated
+                    ? localizeUi("ui.modals.importpresetmodal.updatedPreset")
+                    : localizeUi("ui.modals.importpresetmodal.importedPreset")) + regexNote
+                : (data.error ?? "Import failed"),
             });
           }
           continue;

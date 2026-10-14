@@ -38,6 +38,8 @@ import { createCharacterGalleryStorage } from "../storage/character-gallery.stor
 import { createPersonaGalleryStorage } from "../storage/persona-gallery.storage.js";
 import { createLorebooksStorage } from "../storage/lorebooks.storage.js";
 import { createPromptsStorage } from "../storage/prompts.storage.js";
+import { createRegexScriptsStorage } from "../storage/regex-scripts.storage.js";
+import { isPackScript, mergeDefaultChoices, readPresetRegexPack } from "./fork/preset-regex-pack.js";
 import { normalizeTimestampOverrides, type TimestampOverrides } from "./import-timestamps.js";
 import { resolveLorebookEntryRole } from "./lorebook-role.js";
 import { access, mkdir, writeFile } from "fs/promises";
@@ -370,8 +372,19 @@ function readFilterMode(value: unknown): LorebookFilterMode {
 export async function importMarinara(
   envelope: ExportEnvelope,
   db: DB,
-): Promise<{ success: boolean; type: ExportType; id?: string; name?: string; error?: string }> {
+): Promise<{
+  success: boolean;
+  type: ExportType;
+  id?: string;
+  name?: string;
+  error?: string;
+  /** Fork: true when an existing preset was updated in place rather than copied. */
+  updated?: boolean;
+  /** Fork: how many bundled regex scripts the preset installed. */
+  regexInstalled?: number;
+}> {
   const normalizedEnvelope = unwrapFolderManifestEnvelope(envelope) ?? envelope;
+  const { replacePresetId } = envelope as unknown as { replacePresetId?: unknown };
   if (
     !normalizedEnvelope ||
     typeof normalizedEnvelope !== "object" ||
@@ -389,7 +402,10 @@ export async function importMarinara(
     case "marinara_lorebook":
       return importLorebook(normalizedEnvelope.data, db);
     case "marinara_preset":
-      return importPreset(normalizedEnvelope.data, db);
+      return importPreset(normalizedEnvelope.data, db, {
+        // Fork: set by the importer UI when the user chose to update an existing preset.
+        ...(typeof replacePresetId === "string" && replacePresetId ? { replacePresetId } : {}),
+      });
     default:
       return {
         success: false,
@@ -888,35 +904,67 @@ async function importLorebookPayload(data: unknown, db: DB) {
 
 // ── Preset ───────────────────────────────────
 
-async function importPreset(data: unknown, db: DB) {
+async function importPreset(data: unknown, db: DB, options?: { replacePresetId?: string }) {
   const storage = createPromptsStorage(db);
   const d = data as {
     preset?: Record<string, unknown>;
     sections?: Record<string, unknown>[];
     groups?: Record<string, unknown>[];
     choiceBlocks?: Record<string, unknown>[];
+    regexScripts?: unknown;
   };
   if (!d?.preset) {
     return { success: false, type: "marinara_preset" as const, error: "Invalid preset data" };
   }
   const p = d.preset;
 
-  // Create the base preset
-  const newPreset = await storage.create(
-    {
-      name: String(p.name ?? "Imported Preset"),
-      description: String(p.description ?? ""),
-      conversationPrompt: String(p.conversationPrompt ?? p.conversation_prompt ?? ""),
-      gamePrompt: String(p.gamePrompt ?? p.game_prompt ?? ""),
-      variableGroups: safeParseJson(p.variableGroups, []),
-      variableValues: safeParseJson(p.variableValues, {}),
-      parameters: {},
-      wrapFormat: (p.wrapFormat as any) ?? "xml",
-      scopedRegexMode: resolveScopedRegexMode(p.scopedRegexMode),
-      author: String(p.author ?? ""),
-    },
-    readTimestampOverrides(p),
-  );
+  // Fork: update in place. Chats keep pointing at the same preset, and its generation
+  // parameters and toggle picks survive, so a new version of a preset you already use
+  // does not become a second copy you have to re-select everywhere.
+  const replaceTarget = options?.replacePresetId ? await storage.getById(options.replacePresetId) : null;
+  if (options?.replacePresetId && !replaceTarget) {
+    return { success: false, type: "marinara_preset" as const, error: "The preset to update no longer exists" };
+  }
+  const previousDefaultChoices = replaceTarget ? safeParseJson<unknown>(replaceTarget.defaultChoices, {}) : {};
+  if (replaceTarget) {
+    for (const block of await storage.listChoiceBlocksForPreset(replaceTarget.id)) {
+      await storage.removeChoiceBlock(block.id);
+    }
+    for (const section of await storage.listSections(replaceTarget.id)) {
+      await storage.removeSection(section.id);
+    }
+    for (const group of await storage.listGroups(replaceTarget.id)) {
+      await storage.removeGroup(group.id);
+    }
+  }
+
+  const newPreset = replaceTarget
+    ? await storage.update(replaceTarget.id, {
+        name: String(p.name ?? replaceTarget.name),
+        description: String(p.description ?? ""),
+        conversationPrompt: String(p.conversationPrompt ?? p.conversation_prompt ?? ""),
+        gamePrompt: String(p.gamePrompt ?? p.game_prompt ?? ""),
+        variableGroups: safeParseJson(p.variableGroups, []),
+        variableValues: safeParseJson(p.variableValues, {}),
+        wrapFormat: (p.wrapFormat as any) ?? "xml",
+        scopedRegexMode: resolveScopedRegexMode(p.scopedRegexMode),
+        author: String(p.author ?? ""),
+      })
+    : await storage.create(
+        {
+          name: String(p.name ?? "Imported Preset"),
+          description: String(p.description ?? ""),
+          conversationPrompt: String(p.conversationPrompt ?? p.conversation_prompt ?? ""),
+          gamePrompt: String(p.gamePrompt ?? p.game_prompt ?? ""),
+          variableGroups: safeParseJson(p.variableGroups, []),
+          variableValues: safeParseJson(p.variableValues, {}),
+          parameters: {},
+          wrapFormat: (p.wrapFormat as any) ?? "xml",
+          scopedRegexMode: resolveScopedRegexMode(p.scopedRegexMode),
+          author: String(p.author ?? ""),
+        },
+        readTimestampOverrides(p),
+      );
   if (!newPreset) {
     return { success: false, type: "marinara_preset" as const, error: "Failed to create preset" };
   }
@@ -973,8 +1021,10 @@ async function importPreset(data: unknown, db: DB) {
   }
 
   // Re-create choice blocks
+  const choiceVariableNames: string[] = [];
   if (Array.isArray(d.choiceBlocks)) {
     for (const v of d.choiceBlocks) {
+      choiceVariableNames.push(String(v.variableName ?? ""));
       await storage.createChoiceBlock({
         presetId: newPreset.id,
         variableName: String(v.variableName ?? ""),
@@ -998,14 +1048,32 @@ async function importPreset(data: unknown, db: DB) {
   await storage.update(newPreset.id, {
     sectionOrder: newSectionOrder,
     groupOrder: newGroupOrder,
-    defaultChoices: normalizeDefaultChoices(defaultChoices),
+    defaultChoices: normalizeDefaultChoices(
+      // Fork: an update keeps the toggles you had picked for variables this version still has.
+      replaceTarget ? mergeDefaultChoices(previousDefaultChoices, defaultChoices, choiceVariableNames) : defaultChoices,
+    ),
   });
+
+  // Fork: install the preset's own regex pack, replacing the one a previous import left.
+  let regexInstalled = 0;
+  const packScripts = readPresetRegexPack(d.regexScripts, newPreset.id);
+  if (replaceTarget || packScripts.length > 0) {
+    const regexStorage = createRegexScriptsStorage(db);
+    for (const script of await regexStorage.list()) {
+      if (isPackScript(script, newPreset.id)) await regexStorage.remove(script.id);
+    }
+    for (const script of packScripts) {
+      if (await regexStorage.create(script)) regexInstalled += 1;
+    }
+  }
 
   return {
     success: true,
     type: "marinara_preset" as const,
     id: newPreset.id,
     name: String(p.name ?? "Imported Preset"),
+    updated: Boolean(replaceTarget),
+    regexInstalled,
   };
 }
 

@@ -24,10 +24,19 @@ upstream file it touches, so conflicts after a sync are quick to find.
   keyword, cadence and Decision-model gates. It also works on a chat with no story yet, where Scene Spark offers
   opening scenes. Choices from any choice agent now reach the choice bar, not only the official CYOA agent's.
   On a chat with no messages the choices live until the page reloads, since there is no message to store them on.
+- **Update a preset in place.** Importing a preset whose name matches one you already have asks whether to update
+  it or add a copy. Updating keeps the preset's id, so every chat using it stays on it, and keeps its generation
+  parameters and the toggle picks you had made for variables the new version still has. Sections, groups and
+  choice blocks are replaced. Two presets sharing a name means no obvious target, so that always adds a copy.
+- **Preset regex packs.** A preset export now carries the regex scripts assigned to that preset alone, so one file
+  installs both. Updating a preset replaces its pack instead of leaving old copies behind. Scripts that are global,
+  or shared with another preset, are never touched. Imported scripts accept this fork's shape and SillyTavern's;
+  unsafe patterns are skipped the same way Marinara skips them elsewhere.
 
 ## Upstream files touched
 
-Fork-only code lives in `packages/client/src/lib/fork/` and `scripts/regressions/fork-*.regression.ts`.
+Fork-only code lives in `packages/client/src/lib/fork/`, `packages/server/src/services/import/fork/`
+and `scripts/regressions/fork-*.regression.ts`.
 Edits to upstream files are marked with a `Fork:` comment.
 
 | File | Why |
@@ -39,6 +48,9 @@ Edits to upstream files are marked with a `Fork:` comment.
 | `packages/client/src/components/chat/CyoaChoices.tsx` | Re-roll reruns the agent that made the choices |
 | `packages/client/src/components/chat/ChatInput.tsx` | Spark button |
 | `packages/client/src/hooks/use-generate.ts` | Choice results from any choice agent reach the choice bar |
+| `packages/client/src/components/modals/ImportPresetModal.tsx` | Update-or-copy prompt on preset import |
+| `packages/server/src/services/import/marinara.importer.ts` | Preset update in place, regex pack install |
+| `packages/server/src/routes/prompts.routes.ts` | Preset export carries its regex pack |
 | `packages/server/src/routes/generate.routes.ts` | Saves which agent made the choices |
 | `packages/server/src/routes/generate/retry-agents-route.ts` | Same, for re-rolled choices |
 | `packages/shared/src/schemas/lorebook.schema.ts` | Whole-word default |

@@ -20,6 +20,9 @@ import {
 } from "@marinara-engine/shared";
 import type { ExportEnvelope } from "@marinara-engine/shared";
 import { createPromptsStorage } from "../services/storage/prompts.storage.js";
+import type { DB } from "../db/connection.js";
+import { createRegexScriptsStorage } from "../services/storage/regex-scripts.storage.js";
+import { buildPresetRegexPack } from "../services/import/fork/preset-regex-pack.js";
 import { assemblePrompt, type AssemblerInput } from "../services/prompt/index.js";
 import { cardPromptText } from "../services/prompt/card-text.js";
 import { resolveLorebookScopeExclusions } from "../services/lorebook/game-lorebook-scope.js";
@@ -107,7 +110,7 @@ function safeAsciiDownloadName(value: string): string {
   return cleaned || "preset";
 }
 
-async function buildPresetExportEnvelope(storage: ReturnType<typeof createPromptsStorage>, id: string) {
+async function buildPresetExportEnvelope(storage: ReturnType<typeof createPromptsStorage>, id: string, db: DB) {
   const preset = await storage.getById(id);
   if (!preset) return null;
   const exportedPreset = { ...preset } as Record<string, unknown>;
@@ -118,11 +121,19 @@ async function buildPresetExportEnvelope(storage: ReturnType<typeof createPrompt
     storage.listGroups(id),
     storage.listChoiceBlocksForPreset(id),
   ]);
+  // Fork: carry the preset's own regex scripts so one file installs both.
+  const regexScripts = buildPresetRegexPack(await createRegexScriptsStorage(db).list(), id);
   const envelope: ExportEnvelope = {
     type: "marinara_preset",
     version: 1,
     exportedAt: new Date().toISOString(),
-    data: { preset: exportedPreset, sections, groups, choiceBlocks },
+    data: {
+      preset: exportedPreset,
+      sections,
+      groups,
+      choiceBlocks,
+      ...(regexScripts.length > 0 ? { regexScripts } : {}),
+    },
   };
   return { preset, envelope };
 }
@@ -257,7 +268,7 @@ export async function promptsRoutes(app: FastifyInstance) {
   // ── Export ──
 
   app.get<{ Params: { id: string } }>("/:id/export", async (req, reply) => {
-    const result = await buildPresetExportEnvelope(storage, req.params.id);
+    const result = await buildPresetExportEnvelope(storage, req.params.id, app.db);
     if (!result) return reply.status(404).send({ error: "Preset not found" });
     const originalFilename = `${result.preset.name || "preset"}.marinara.json`;
     const fallbackFilename = `${safeAsciiDownloadName(result.preset.name || "preset")}.marinara.json`;
@@ -279,7 +290,7 @@ export async function promptsRoutes(app: FastifyInstance) {
     const usedSegments = new Set<string>();
     let exportedCount = 0;
     for (const id of ids) {
-      const result = await buildPresetExportEnvelope(storage, id);
+      const result = await buildPresetExportEnvelope(storage, id, app.db);
       if (!result) continue;
       const entry = createFolderEntry({
         folderName: "Presets",
