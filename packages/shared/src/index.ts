@@ -236,3 +236,6 @@ export * from "./utils/message-marks.js";
 
 export * from "./utils/game-tag-parser.js";
 export * from "./utils/game-widget-update.js";
+
+// Fork: relationship tracker shapes (see FORK.md).
+export * from "./features/fork-bond-shapes.js";

@@ -2325,7 +2325,11 @@ const LocalChatArea = memo(function LocalChatArea({
   const forkBondsCast = useMemo(
     () =>
       chatCharIds
-        .map((id) => ({ id, name: characterMap.get(id)?.name ?? "" }))
+        .map((id) => ({
+          id,
+          name: characterMap.get(id)?.name ?? "",
+          avatarUrl: characterMap.get(id)?.avatarUrl ?? null,
+        }))
         .filter((member) => member.name.length > 0),
     [chatCharIds, characterMap],
   );

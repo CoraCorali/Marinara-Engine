@@ -42,8 +42,14 @@ export async function copyForkChatData(db: DB, fromChatId: string, toChatId: str
   }
   try {
     const bonds = createBondsStorage(db);
-    for (const { id: _id, chatId: _chatId, ...bond } of await bonds.listForChat(fromChatId)) {
-      await bonds.create({ ...bond, chatId: toChatId });
+    const moments = await bonds.listMomentsForChat(fromChatId);
+    for (const { id, chatId: _chatId, ...bond } of await bonds.listForChat(fromChatId)) {
+      const copy = await bonds.create({ ...bond, chatId: toChatId });
+      if (!copy) continue;
+      // The branch shares the story so far, so it starts with the same moments.
+      for (const moment of moments.filter((entry) => entry.bondId === id)) {
+        await bonds.addMoment({ ...moment, bondId: copy.id, chatId: toChatId });
+      }
     }
   } catch (error) {
     logger.warn(error, "[fork-bonds] Could not copy the relationships from chat %s to %s", fromChatId, toChatId);

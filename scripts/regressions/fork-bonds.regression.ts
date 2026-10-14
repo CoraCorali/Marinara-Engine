@@ -1,6 +1,6 @@
 /**
- * Fork: the relationship tracker. Bonds are not all the same shape, so each kind tracks its own
- * two things, and a romance keeps its place on a ladder rather than being a kind of its own.
+ * Fork: the relationship tracker. A love interest follows Pura's dating-sim route told in words, and
+ * every other kind of bond has its own ladder and fields. Moving a rung or a status keeps a moment.
  */
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -13,228 +13,271 @@ process.env.FILE_STORAGE_DIR = join(dir, "storage");
 process.env.NODE_ENV = "test";
 process.env.LOG_LEVEL = "silent";
 
+const shared = await import("../../packages/shared/src/features/fork-bond-shapes.js");
 const { getDB, closeDB, registerForkTables } = await import("../../packages/server/src/db/connection.js");
-const { bonds, createBondsStorage, BOND_METERS, normalizeStage, clampMeter, MAX_BONDS_PER_CHAT } =
+const { bonds, bondMoments, createBondsStorage, describeMoves, toBond, MAX_BONDS_PER_CHAT } =
   await import("../../packages/server/src/services/bonds/fork-bonds.js");
 const { bondsPromptBlock } = await import("../../packages/server/src/services/generation/fork-bonds-prompt.js");
+const { planBondUpdates, bondsAgentStateBlock } =
+  await import("../../packages/server/src/services/bonds/fork-bond-updates.js");
+
+// ── The shapes ──
+const { stepForkBondRung: step, forkBondRungDirection: direction } = shared;
+assert.equal(step("love", "Close", "Devoted"), "Confidant", "one rung per scene on the same ladder");
+assert.equal(step("love", "Confidant", "Close"), "Close", "and one rung down");
+assert.equal(step("love", "Devoted", "Nemesis"), "Wary", "falling out lands on the cold ladder's first rung");
+assert.equal(step("love", "Hostile", "Intimate"), "Stranger", "mending lands on the warm ladder's first rung");
+assert.equal(step("love", "Familiar", "Unrequited"), "Unrequited", "a tangled state is named directly");
+assert.equal(direction("love", "Close", "Confidant"), 1);
+assert.equal(direction("love", "Close", "Friendly"), -1);
+assert.equal(direction("love", "Wary", "Guarded"), -1, "climbing the cold ladder is moving away");
+assert.equal(direction("love", "Guarded", "Stranger"), 1, "leaving the cold ladder is warming");
+assert.equal(direction("rival", "Rival", "Nemesis"), -1, "a rivalry heading for Nemesis is moving away");
+assert.equal(direction("love", "Close", "Complicated"), 0);
+assert.equal(shared.normalizeForkBondRung("love", "  confidant "), "Confidant");
+assert.equal(shared.normalizeForkBondRung("family", "Devoted"), null, "a sister has no Devoted rung");
+assert.equal(shared.normalizeForkBondCondition("volatile"), "⚡ VOLATILE", "a condition matches by its word");
+assert.equal(shared.normalizeForkBondDrift("🍂 cooling"), "🍂 COOLING");
+assert.equal(shared.normalizeForkBondCondition("happy"), null);
+assert.ok(shared.FORK_BOND_SHAPES.love.fields.includes("date"));
+assert.ok(!shared.FORK_BOND_SHAPES.family.fields.includes("date"), "family is never asked for a date idea");
+assert.deepEqual(shared.forkBondNeighbours("love", "Close"), { below: "Friendly", above: "Confidant" });
+assert.deepEqual(shared.forkBondNeighbours("love", "Unrequited"), { below: null, above: null });
 
 const db = await getDB();
-registerForkTables([bonds]);
+registerForkTables([bonds, bondMoments]);
 const store = createBondsStorage(db);
 const CHAT = "chat-vee";
-
-// ── Each kind tracks its own two things ──
-assert.deepEqual(BOND_METERS.love, ["wanting", "patience"]);
-assert.deepEqual(BOND_METERS.family, ["closeness", "friction"]);
-assert.deepEqual(BOND_METERS.rival, ["respect", "hostility"]);
-assert.notDeepEqual(BOND_METERS.love, BOND_METERS.friend, "a friend is not scored like a love interest");
-
-// ── A rung belongs to a romance and nothing else ──
-assert.equal(normalizeStage("love", "engaged"), "engaged");
-assert.equal(normalizeStage("love", "nonsense"), "talking", "an unknown rung starts at the bottom");
-assert.equal(normalizeStage("love", undefined), "talking");
-assert.equal(normalizeStage("friend", "engaged"), null, "a friend has no rung");
-assert.equal(normalizeStage("family", "married"), null);
-
-// ── Meters stay inside their range ──
-assert.equal(clampMeter(140), 100);
-assert.equal(clampMeter(-20), 0);
-assert.equal(clampMeter("72"), 72);
-assert.equal(clampMeter("not a number", 31), 31, "nonsense keeps what was there");
 
 // ── A chat's bonds ──
 const vee = await store.create({
   chatId: CHAT,
   characterId: "char-vee",
   kind: "love",
-  stage: "living",
-  first: 82,
-  second: 34,
-  note: "He is sulking about last night and has not said sorry.",
+  status: "living",
+  rung: "close",
+  route: "🌱 Slow Burn",
+  condition: "shifting",
+  fields: { heart: "Hovers in the doorway instead of coming in.", trust: "Her keys.", date: "", madeUp: "dropped" },
 });
 assert.ok(vee);
-assert.equal(vee!.stage, "living");
+assert.equal(vee!.status, "living");
+assert.equal(vee!.rung, "Close", "a rung is stored the way its ladder spells it");
+assert.equal(vee!.condition, "💛 SHIFTING");
+assert.deepEqual(
+  vee!.fields,
+  { heart: "Hovers in the doorway instead of coming in.", trust: "Her keys." },
+  "only real, non-empty fields",
+);
 
-const nessa = await store.create({ chatId: CHAT, characterId: "char-nessa", kind: "friend", first: 90, second: 88 });
-const gia = await store.create({ chatId: CHAT, characterId: "char-gia", kind: "ex", first: 60, second: 70 });
+const nessa = await store.create({ chatId: CHAT, characterId: "char-nessa", kind: "friend", status: "married" });
+const gia = await store.create({ chatId: CHAT, characterId: "char-gia", kind: "ex" });
 assert.ok(nessa && gia);
-assert.equal(nessa!.stage, null, "a friend never gets a rung");
+assert.equal(nessa!.status, null, "a friend never gets a status");
+assert.equal(nessa!.rung, "Acquaintance", "a new bond starts on its ladder's first rung");
+assert.equal(gia!.rung, "Bitter");
 assert.equal((await store.listForChat(CHAT)).length, 3);
 
-// ── One bond per person ──
+// One bond per person.
 const again = await store.create({ chatId: CHAT, characterId: "char-vee", kind: "friend" });
 assert.equal(again!.id, vee!.id, "a second bond with the same person returns the first instead of disagreeing with it");
-assert.equal((await store.listForChat(CHAT)).length, 3);
 
-// ── Boyfriend and husband are rungs, not kinds ──
-await store.update(vee!.id, { stage: "married" });
-assert.equal((await store.getById(vee!.id))!.stage, "married");
+// Fields merge; an empty string clears one.
+await store.update(nessa!.id, { fields: { vibe: "Bickers like siblings.", joke: "the goose" } });
+await store.update(nessa!.id, { fields: { joke: "" } });
+assert.deepEqual((await store.getById(nessa!.id))!.fields, { vibe: "Bickers like siblings." });
 
-// Changing a romance into a friendship drops the rung; changing back starts it over.
+// Changing a romance into a friendship drops its status and rung; changing back starts over.
 await store.update(vee!.id, { kind: "friend" });
-assert.equal((await store.getById(vee!.id))!.stage, null);
+const asFriend = (await store.getById(vee!.id))!;
+assert.equal(asFriend.status, null);
+assert.equal(asFriend.route, "", "a friendship has no romance route");
+assert.equal(asFriend.fields.trust, "Her keys.", "a field both kinds have stays");
+assert.equal(asFriend.fields.heart, undefined, "a field a friend does not have goes");
 await store.update(vee!.id, { kind: "love" });
-assert.equal((await store.getById(vee!.id))!.stage, "talking", "the old rung is not quietly restored");
+const backToLove = (await store.getById(vee!.id))!;
+assert.equal(backToLove.status, "talking", "the old status is not quietly restored");
+assert.equal(backToLove.rung, "Stranger");
+
+// ── A bond from the first version keeps its note ──
+const legacy = toBond({
+  id: "old",
+  chatId: "c",
+  characterId: "x",
+  label: "",
+  kind: "love",
+  stage: "dating",
+  note: "Sulking about last night.",
+  order: 0,
+  createdAt: "",
+  updatedAt: "",
+});
+assert.equal(legacy.fields.heart, "Sulking about last night.", "the old note becomes the heart");
+assert.equal(legacy.rung, "Stranger");
+
+// ── Moments ──
+const before = (await store.getById(vee!.id))!;
+const after = (await store.update(vee!.id, { rung: "Noticed", status: "dating" }))!;
+const moves = describeMoves(before, after);
+assert.deepEqual(moves, [
+  { from: "Stranger", to: "Noticed" },
+  { from: "talking", to: "dating" },
+]);
+for (const move of moves) await store.addMoment({ bondId: vee!.id, chatId: CHAT, ...move, text: "The roof." });
+assert.equal((await store.listMomentsForChat(CHAT)).length, 2);
+assert.deepEqual(
+  describeMoves(after, (await store.update(vee!.id, { kind: "rival" }))!),
+  [],
+  "a change of kind is not a move",
+);
+await store.update(vee!.id, { kind: "love", status: "living", rung: "Close", route: "🌱 Slow Burn" });
 
 // ── What the model is told ──
-await store.update(vee!.id, { stage: "living", first: 82, second: 34 });
+await store.update(vee!.id, {
+  condition: "volatile",
+  drift: "cooling",
+  fields: { trust: "Not with the money.", want: "An apology first.", memory: "The roof: she stayed.", turn: "x" },
+});
 const names: Record<string, string> = { "char-vee": "Vee", "char-nessa": "Nessa", "char-gia": "Gia" };
 const block = bondsPromptBlock(await store.listForChat(CHAT), (id) => names[id] ?? "", "Kyli");
-
 assert.ok(block.startsWith("Where things stand between Kyli and"), "it says whose relationships these are");
-assert.ok(block.includes("Vee: Romantic, living together."), "the rung reads as words");
-assert.ok(block.includes("wanting high, patience low"), "meters read as words, not numbers");
-assert.ok(block.includes("He is sulking"), "her own note goes through");
-assert.ok(block.includes("Nessa: Friend. closeness very high, trust very high."), "a friend is scored as a friend");
-// 60 is middling and 70 is high, by the thresholds the block itself uses.
-assert.ok(block.includes("Gia: Ex. unfinished business middling, bitterness high."));
-assert.ok(!/\b82\b|\b34\b/.test(block), "no bare numbers: a model reads 'running thin' better than 34");
-
-// A chat that never opens the tracker costs nothing.
+assert.ok(
+  block.includes("- Vee (love interest, living together, route 🌱 Slow Burn): Close · ⚡ VOLATILE · 🍂 COOLING"),
+  "rung, condition and drift read as words",
+);
+assert.ok(block.includes("  Trust: Not with the money."));
+assert.ok(block.includes("  Wants: An apology first."));
+assert.ok(!block.includes("The roof"), "the keepsake memory is for the card, not the writer");
+assert.ok(block.includes("- Nessa (friend): Acquaintance"));
+assert.ok(block.includes("  Vibe: Bickers like siblings."));
+assert.ok(block.includes("- Gia (ex): Bitter"));
+assert.ok(!/\b\d{2}\b/.test(block), "no numbers");
 assert.equal(
   bondsPromptBlock([], () => "", "Kyli"),
   "",
-);
-
-// A bond with nobody named still reads sensibly.
-const nameless = await store.create({ chatId: "chat-2", characterId: "char-ghost", kind: "rival" });
-assert.ok(nameless);
-assert.ok(bondsPromptBlock(await store.listForChat("chat-2"), () => "", "Kyli").includes("Someone: Rival."));
-// A label stands in when the character is not one of the chat's cards.
-await store.update(nameless!.id, { label: "the man at the door" });
-assert.ok(
-  bondsPromptBlock(await store.listForChat("chat-2"), () => "", "Kyli").includes("the man at the door: Rival."),
+  "a chat that never opens the tracker costs nothing",
 );
 
 // ── What an agent's reading is allowed to do ──
-const { planBondUpdates, MAX_METER_STEP } =
-  await import("../../packages/server/src/services/bonds/fork-bond-updates.js");
-
 const current = await store.listForChat(CHAT);
+const veeId = current.find((bond) => bond.characterId === "char-vee")!.id;
 const byName: Record<string, string> = { Vee: "char-vee", Nessa: "char-nessa", Gia: "char-gia" };
 const resolve = (name: string) => byName[name] ?? null;
 
-// A relationship moves rather than teleports: one sharp line must not take patience from 34 to 0.
-const crash = planBondUpdates({ bonds: [{ who: "Vee", first: 10, second: 0 }] }, current, resolve);
-assert.equal(crash.changes.length, 1);
-assert.equal(crash.changes[0]!.first, 82 - MAX_METER_STEP, "a fall is capped at one step");
-assert.equal(crash.changes[0]!.second, 34 - MAX_METER_STEP);
-assert.equal(crash.creations.length, 0);
-
-// A romance moves one rung at a time. Nobody goes from living together to married in one reply.
-const rush = planBondUpdates({ bonds: [{ who: "Vee", stage: "married" }] }, current, resolve);
-assert.equal(rush.changes[0]!.stage, "engaged", "one rung, not four");
-
-// A bond it does not mention is left alone.
-assert.ok(!crash.changes.some((change) => change.id !== current.find((b) => b.characterId === "char-vee")!.id));
-
-// A missing field never resets anything: no kind means the kind stays.
-const quiet = planBondUpdates({ bonds: [{ who: "Nessa", note: "She knows about the fight." }] }, current, resolve);
-assert.equal(quiet.changes[0]!.kind, undefined, "an unnamed kind is not a reset to 'other'");
-assert.equal(quiet.changes[0]!.note, "She knows about the fight.");
-
-// A kind it makes up is ignored rather than normalised into something it did not mean.
-const nonsense = planBondUpdates({ bonds: [{ who: "Nessa", kind: "nemesis" }] }, current, resolve);
-assert.equal(nonsense.changes.length, 0, "nothing in the update was usable, so nothing changes");
-
-// Somebody new becomes a new bond rather than overwriting the nearest one.
-const stranger = planBondUpdates({ bonds: [{ who: "the man at the door", kind: "rival" }] }, current, resolve);
-assert.equal(stranger.changes.length, 0);
-assert.equal(stranger.creations.length, 1);
-assert.equal(stranger.creations[0]!.label, "the man at the door");
-assert.equal(stranger.creations[0]!.first, 50, "a first impression starts in the middle, not at a measurement");
-assert.ok(stranger.creations[0]!.characterId.startsWith("outsider-"));
-
-// A new bond that IS a card in the chat is tied to that card.
-const newCard = planBondUpdates({ bonds: [{ who: "Gia", kind: "ex" }] }, [], resolve);
-assert.equal(newCard.creations[0]!.characterId, "char-gia");
-
-// Naming the same person twice does not apply twice.
-const twice = planBondUpdates(
-  {
-    bonds: [
-      { who: "Vee", first: 90 },
-      { who: "Vee", first: 95 },
-    ],
-  },
+// One rung per scene, the drift follows the move, and the scene's turn becomes the moment.
+const leap = planBondUpdates(
+  { bonds: [{ who: "Vee", rung: "Devoted", drift: "holding", turn: "He finally said it." }] },
   current,
   resolve,
 );
-assert.equal(twice.changes.length, 1);
-assert.equal(twice.creations.length, 0, "the second mention is not mistaken for a new person");
+assert.equal(leap.changes[0]!.rung, "Confidant", "one rung, not three");
+assert.equal(leap.changes[0]!.drift, "💗 HEART EVENT", "a rise is a heart event whatever the agent said");
+assert.deepEqual(leap.moments, [{ id: veeId, from: "Close", to: "Confidant", text: "He finally said it." }]);
 
-// Nothing, or rubbish, changes nothing.
-assert.deepEqual(planBondUpdates(null, current, resolve), { changes: [], creations: [] });
-assert.deepEqual(planBondUpdates({ bonds: "no" }, current, resolve), { changes: [], creations: [] });
-assert.deepEqual(planBondUpdates({ bonds: [{ who: "   " }] }, current, resolve), { changes: [], creations: [] });
+const fall = planBondUpdates({ bonds: [{ who: "Vee", rung: "Hostile" }] }, current, resolve);
+assert.equal(fall.changes[0]!.rung, "Wary", "a falling out lands on the cold ladder's first rung");
+assert.equal(fall.changes[0]!.drift, "🥀 FALLING OUT");
+
+// A romance moves one status at a time; the first version's "stage" still reads.
+const rush = planBondUpdates({ bonds: [{ who: "Vee", stage: "married" }] }, current, resolve);
+assert.equal(rush.changes[0]!.status, "engaged", "one status, not two");
+
+// Fields: flat or nested, only the kind's own, never cleared by an empty one.
+const detail = planBondUpdates(
+  { bonds: [{ who: "Vee", tell: "Cracks his knuckles.", fields: { unsaid: "Don't go." }, vibe: "x", trust: "" }] },
+  current,
+  resolve,
+);
+assert.deepEqual(detail.changes[0]!.fields, { tell: "Cracks his knuckles.", unsaid: "Don't go." });
+assert.equal(detail.moments.length, 0, "no rung moved, so no moment");
+
+// A missing field never resets anything, and a made-up kind or rung is ignored.
+const quiet = planBondUpdates({ bonds: [{ who: "Nessa", vibe: "Closer since the fight." }] }, current, resolve);
+assert.equal(quiet.changes[0]!.kind, undefined);
+assert.equal(quiet.changes[0]!.rung, undefined);
+const nonsense = planBondUpdates({ bonds: [{ who: "Nessa", kind: "nemesis", rung: "Devoted" }] }, current, resolve);
+assert.equal(nonsense.changes.length, 0, "nothing in the update was usable, so nothing changes");
+
+// A change of kind takes the new ladder's rung as named, with no moment.
+const turned = planBondUpdates(
+  { bonds: [{ who: "Nessa", kind: "love", rung: "Close", status: "dating" }] },
+  current,
+  resolve,
+);
+assert.equal(turned.changes[0]!.kind, "love");
+assert.equal(turned.changes[0]!.rung, "Close");
+assert.equal(turned.changes[0]!.status, "dating");
+assert.equal(turned.moments.length, 0);
+
+// Somebody new becomes a new bond rather than overwriting the nearest one.
+const stranger = planBondUpdates(
+  { bonds: [{ who: "the man at the door", kind: "rival", rung: "Rival" }] },
+  current,
+  resolve,
+);
+assert.equal(stranger.changes.length, 0);
+assert.equal(stranger.creations.length, 1);
+assert.equal(stranger.creations[0]!.rung, "Rival", "a first impression is taken as given");
+assert.ok(stranger.creations[0]!.characterId.startsWith("outsider-"));
+assert.equal(
+  planBondUpdates({ bonds: [{ who: "Gia", kind: "ex" }] }, [], resolve).creations[0]!.characterId,
+  "char-gia",
+);
+
+// Naming the same person twice does not apply twice; nothing, or rubbish, changes nothing.
+assert.equal(
+  planBondUpdates(
+    {
+      bonds: [
+        { who: "Vee", rung: "Confidant" },
+        { who: "Vee", rung: "Intimate" },
+      ],
+    },
+    current,
+    resolve,
+  ).changes.length,
+  1,
+);
+const empty = { changes: [], creations: [], moments: [] };
+assert.deepEqual(planBondUpdates(null, current, resolve), empty);
+assert.deepEqual(planBondUpdates({ bonds: "no" }, current, resolve), empty);
+assert.deepEqual(planBondUpdates({ bonds: [{ who: "   " }] }, current, resolve), empty);
+
+// ── The updating agent is shown the format and what the tracker holds ──
+const stateBlock = bondsAgentStateBlock(current, (id) => names[id] ?? "");
+assert.ok(
+  stateBlock.startsWith("<relationship_tracker_format>"),
+  "the format comes with the state, so old agents answer in the new shape",
+);
+assert.ok(stateBlock.includes("Stranger → Noticed → Acquaintance"), "the ladders come from the shared shapes");
+assert.ok(stateBlock.includes('"who":"Vee"') && stateBlock.includes('"rung":"Close"'));
+assert.ok(stateBlock.trimEnd().endsWith("</current_relationships>"));
+assert.ok(bondsAgentStateBlock([], () => "").includes("holds nothing yet"));
 
 // ── The tracker is capped ──
 for (let index = 0; index < MAX_BONDS_PER_CHAT; index += 1) {
   await store.create({ chatId: "chat-full", characterId: `char-${index}`, kind: "other" });
 }
-assert.equal((await store.listForChat("chat-full")).length, MAX_BONDS_PER_CHAT);
-assert.equal(
-  await store.create({ chatId: "chat-full", characterId: "char-extra", kind: "other" }),
-  null,
-  "a full tracker refuses another bond instead of growing without limit",
-);
+assert.equal(await store.create({ chatId: "chat-full", characterId: "char-extra", kind: "other" }), null);
 
-// ── Deleting a chat leaves nothing behind ──
-await store.removeChat(CHAT);
-assert.equal((await store.listForChat(CHAT)).length, 0);
-assert.equal((await store.listForChat("chat-2")).length, 1, "other chats are untouched");
-
-// ── A branch copies the relationships, and deleting a chat clears them ──
+// ── A branch copies the relationships and their moments; deleting a chat clears both ──
 const { boardPins } = await import("../../packages/server/src/services/board/fork-board-pins.js");
 registerForkTables([boardPins]);
 const { copyForkChatData, removeForkChatData } = await import("../../packages/server/src/services/fork-chat-data.js");
-await store.create({
-  chatId: "branch-src",
-  characterId: "char-x",
-  label: "Theo",
-  kind: "love",
-  stage: "dating",
-  first: 70,
-  second: 40,
-  note: "Raw after the fight.",
-});
-await copyForkChatData(db, "branch-src", "branch-new");
+await copyForkChatData(db, CHAT, "branch-new");
 const copied = await store.listForChat("branch-new");
-assert.equal(copied.length, 1, "the branch has the bond");
-assert.equal(copied[0]!.stage, "dating");
-assert.equal(copied[0]!.first, 70);
-assert.equal(copied[0]!.note, "Raw after the fight.");
-assert.notEqual(copied[0]!.id, (await store.listForChat("branch-src"))[0]!.id, "a copy, not the same row");
+assert.equal(copied.length, 3, "the branch has the bonds");
+const copiedVee = copied.find((bond) => bond.characterId === "char-vee")!;
+assert.equal(copiedVee.rung, "Close");
+assert.equal(copiedVee.fields.trust, "Not with the money.");
+assert.notEqual(copiedVee.id, veeId, "a copy, not the same row");
+assert.equal((await store.listMoments(copiedVee.id)).length, 2, "the branch keeps the story so far");
 await removeForkChatData(db, "branch-new");
-assert.equal((await store.listForChat("branch-new")).length, 0, "deleting the branch clears its bonds");
-assert.equal((await store.listForChat("branch-src")).length, 1, "and leaves the source alone");
-
-// ── The updating agent is shown what the tracker holds ──
-const { bondsAgentStateBlock } = await import("../../packages/server/src/services/bonds/fork-bond-updates.js");
-const stateBlock = bondsAgentStateBlock(
-  [
-    {
-      id: "b1",
-      chatId: "c",
-      characterId: "char-theo",
-      label: "",
-      kind: "love",
-      stage: "dating",
-      first: 70,
-      second: 35,
-      note: "Raw after the fight.",
-      order: 0,
-    },
-  ],
-  (characterId) => (characterId === "char-theo" ? "Theo" : ""),
-);
-assert.ok(stateBlock.startsWith("<current_relationships>") && stateBlock.endsWith("</current_relationships>"));
-assert.ok(stateBlock.includes('"who":"Theo"'), "a card bond is named by its card");
-assert.ok(
-  stateBlock.includes('"first":70') && stateBlock.includes('"stage":"dating"'),
-  "the agent sees current values",
-);
-assert.ok(bondsAgentStateBlock([], () => "").includes("holds nothing yet"), "an empty tracker says so");
+assert.equal((await store.listForChat("branch-new")).length, 0);
+assert.equal((await store.listMomentsForChat("branch-new")).length, 0, "and its moments");
+assert.equal((await store.listMomentsForChat(CHAT)).length, 2, "the source keeps its own");
+await store.removeChat(CHAT);
+assert.equal((await store.listMomentsForChat(CHAT)).length, 0, "deleting a chat clears its moments");
 
 await closeDB();
 rmSync(dir, { recursive: true, force: true });

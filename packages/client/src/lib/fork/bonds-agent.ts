@@ -6,25 +6,29 @@ type AgentRowLike = { type: string; settings: unknown };
 export const BONDS_AGENT_RESULT_TYPE = "fork_bonds_update";
 
 /**
- * What the agent is told. It is shown what the tracker holds right now in a
- * <current_relationships> block, so it reports a change from there rather than guessing fresh
- * numbers, and the server still caps how far one reply may move anything.
+ * What the agent is told. The exact format (every kind's ladder and fields, the conditions and
+ * drifts) and what the tracker holds right now come with every run in <relationship_tracker_format>
+ * and <current_relationships>, built by the server from the shared shapes. So this prompt can stay
+ * short, and an agent made from an older prompt still answers in today's shape.
  */
-export const BONDS_AGENT_PROMPT = `Read the last few messages and report where each tracked relationship now stands.
+export const BONDS_AGENT_PROMPT = `You keep a dating-sim relationship tracker for this roleplay, told in words, never in numbers.
 
-Reply with JSON only: {"bonds":[{"who":"","kind":"","stage":"","first":0,"second":0,"note":""}]}
+Read the last few messages and report how each relationship with the user's character changed, using the format in <relationship_tracker_format> and starting from <current_relationships>.
 
-- "who" is the person's name exactly as the tracker or the chat writes it.
-- "kind" is one of love, family, friend, rival, ex, other.
-- "stage" applies only to love and is one of talking, dating, together, living, engaged, married.
-- "first" and "second" are 0-100 for that kind's two meters: love is wanting and patience, family is closeness and friction, friend is closeness and trust, rival is respect and hostility, ex is unfinished business and bitterness, other is closeness and trust.
-- "note" is one short line on where it stands now.
+Write every field as specific, lived detail from this story: name the places, objects, words and moments that happened on screen, and show feeling through what they do, avoid, remember or offer. Most scenes move nobody up or down a rung; when one does, name the moment in "turn". Only include a person the scene actually said something about, and only the fields that changed. Reply with JSON only.`;
 
-Start from the values in <current_relationships> and move them only as far as the scene justifies; most replies move a meter a little or not at all. Only include a relationship the scene actually said something about, and leave out any field you are not sure changed.`;
+/** The prompt the first version made agents with. An agent still carrying it is upgraded. */
+export const LEGACY_BONDS_AGENT_PROMPT_START =
+  "Read the last few messages and report where each tracked relationship now stands.";
 
 /** The agent the tracker would use, if one exists already. */
 export function findBondsAgent<T extends AgentRowLike>(configs: readonly T[] | null | undefined): T | null {
   return configs?.find((row) => readAgentSettings(row.settings).resultType === BONDS_AGENT_RESULT_TYPE) ?? null;
+}
+
+/** True for an agent the first version made, which still asks for two numbers and a note. */
+export function hasLegacyBondsPrompt(agent: { promptTemplate?: unknown } | null | undefined): boolean {
+  return typeof agent?.promptTemplate === "string" && agent.promptTemplate.startsWith(LEGACY_BONDS_AGENT_PROMPT_START);
 }
 
 /** A new agent row for it. The type gets a unique suffix, as every custom agent's does. */

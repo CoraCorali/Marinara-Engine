@@ -267,9 +267,52 @@ A review of everything built so far, after the theme detour.
 - **Persona stats are rings with a word under each** ("steady", "low"), whatever the stat display
   setting says, since that is what Option A showed.
 
+### The relationship tracker, Pura-style
+
+The tracker is rebuilt as a dating sim told in words, after Pura's Relationship Tracker, and the two
+meters per bond are gone.
+
+- **A love interest follows Pura's route.** A rung on the warm ladder (Stranger, Noticed,
+  Acquaintance, Familiar, Friendly, Close, Confidant, Intimate, Devoted), the cold one (Wary, Guarded,
+  Resentful, Hostile, Nemesis) or a tangled state (Complicated, Codependent, Estranged, Rivals,
+  Frenemies, Unrequited, Forbidden). Then a route (🌱 Slow Burn, 🩹 Second Chance...), a condition
+  (💛 SHIFTING, ⚡ VOLATILE...), a drift (🌅 WARMING, 🍂 COOLING...), and heart, trust, wants, guard,
+  likes, dislikes, tell, unsaid, memory, date idea, what moved them, and what would move them next.
+- **Status is separate from feelings.** Talking, dating, together, living together, engaged and
+  married stay as their own row of pills, so a husband can still be Guarded and cooling.
+- **Every other kind has its own ladder and fields** in the same card style. Family: Estranged to
+  Close, with role, old wound, what they expect of you and how they protect you. Friend:
+  Acquaintance to Ride-or-die, with the vibe, an inside joke, favours owed and a hangout idea.
+  Rival: Annoyance to Nemesis, or across to Grudging respect, with what they respect, the grudge,
+  what they want to beat you at and the weakness they have spotted. Ex: Bitter to Rekindling, with
+  why it ended, what still pulls and what still hurts. Nobody but a love interest is asked for a
+  date idea.
+- **The cards** take the theme's accent: a portrait ring, a header with the rung, condition and
+  drift, a route banner, route progress pills (the rung below, the current one, the locked one
+  above), four colour-coded mini cards, then the rest of the fields. Every field is editable and
+  saves a moment after you stop typing.
+- **Moments.** Each time a bond moves a rung or a status, by the agent or by hand, it is kept on
+  that person's card as "Close → Confidant" with what happened (the scene's turn, or a line you
+  write). Branches keep the moments so far; deleting a chat or a bond clears them.
+- **The agent moves things carefully.** One rung per scene on the same ladder. Onto another ladder
+  it lands on that ladder's first rung, so falling out with someone Devoted makes them Wary, not a
+  Nemesis overnight; a tangled state can be named directly. A status moves one step. When a rung
+  rises the drift becomes 💗 HEART EVENT and when it falls 🥀 FALLING OUT, whatever the agent said.
+  A field it leaves out or sends empty is never cleared, a field the kind does not have is
+  dropped, and a made-up kind, rung or condition is ignored.
+- **The agent always gets today's format.** The full spec (every ladder, field, condition and drift)
+  is built on the server from one shared list and sent with every run, so an agent made by the first
+  version answers in the new shape too. Its old prompt is also replaced the next time the People
+  panel opens.
+- **What the writer is told** is words only: each person's kind, status, route, rung, condition and
+  drift, then the fields that matter for writing them. The keepsake memory, the date idea and the
+  scene's turn stay on the card.
+- **Old bonds keep their note**, which becomes the heart of the card. Their two numbers are no longer
+  used.
+
 ## Upstream files touched
 
-Fork-only code lives in `packages/client/src/lib/fork/`, `Fork*` components, `packages/server/src/services/import/fork/`
+Fork-only code lives in `packages/client/src/lib/fork/`, `Fork*` components, `packages/shared/src/features/fork-bond-shapes.ts`, `packages/server/src/services/import/fork/`
 and `scripts/regressions/fork-*.regression.ts`.
 Edits to upstream files are marked with a `Fork:` comment.
 
@@ -288,7 +331,7 @@ Edits to upstream files are marked with a `Fork:` comment.
 | `packages/client/src/components/modals/ImportPresetModal.tsx` | Update-or-copy prompt on preset import |
 | `packages/server/src/services/import/marinara.importer.ts` | Preset update in place, regex pack install |
 | `packages/server/src/routes/prompts.routes.ts` | Preset export carries its regex pack |
-| `packages/server/src/app.ts` | Registers the board and tracker tables at startup |
+| `packages/server/src/app.ts` | Registers the board, tracker and moments tables at startup |
 | `packages/server/src/db/connection.ts` | `registerForkTables` helper |
 | `packages/server/src/routes/index.ts` | Registers the board and Director routes |
 | `packages/server/src/routes/generate.routes.ts` | Sends in-scene pins, their captions and the bonds note with the reply |
@@ -315,6 +358,8 @@ Edits to upstream files are marked with a `Fork:` comment.
 | `packages/client/src/features/tracker-panel/components/sections/CharacterTrackerPanel.tsx` | Option A cards, one per row |
 | `packages/client/src/features/tracker-panel/components/sections/PersonaInventoryPanel.tsx` | Persona stats always as rings |
 | `packages/client/src/features/tracker-panel/components/controls/StatGauge.tsx` | A word under each ring |
+| `packages/shared/src/index.ts` | Exports the relationship tracker's shapes |
+| `packages/client/src/components/chat/ChatArea.tsx` | Passes portraits to the People panel |
 
 ## Known upstream issue kept as is
 
