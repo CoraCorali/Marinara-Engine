@@ -41,6 +41,7 @@ import {
   lorebookEntries,
 } from "../../db/schema/index.js";
 import { removeForkBoardScope } from "../board/fork-board-cleanup.js";
+import { createBondsStorage } from "../bonds/fork-bonds.js";
 import { newId, now } from "../../utils/id-generator.js";
 import { parseSourceMessageRefs } from "./lorebook-provenance.js";
 import { existsSync, rmSync } from "fs";
@@ -2098,8 +2099,12 @@ export function createChatsStorage(db: DB) {
     async remove(id: string) {
       const galleryFilePaths = await db.transaction((tx) => removeChatDatabaseRecords(tx, id));
       await cleanupDeletedChatFiles(id, galleryFilePaths);
-      // Fork: the reference board is registered storage, so it is not part of the cascade above.
+      // Fork: the board and the relationships are registered storage, so neither is part of the
+      // cascade above. Losing either must not block the delete.
       await removeForkBoardScope(db, "chat", id);
+      await createBondsStorage(db)
+        .removeChat(id)
+        .catch((error) => logger.warn(error, "[fork-bonds] Could not clear the relationships for chat %s", id));
     },
 
     /** Atomically remove a marked Roleplay DM thread only while it is still empty. */

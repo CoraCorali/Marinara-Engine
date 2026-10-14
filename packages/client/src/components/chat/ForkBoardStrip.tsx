@@ -1,7 +1,7 @@
 // ──────────────────────────────────────────────
 // Fork: the in-scene strip above the message box
 // ──────────────────────────────────────────────
-import { Images, Shirt } from "lucide-react";
+import { Images, Shirt, HeartHandshake } from "lucide-react";
 import { useTranslation as useUiTranslation } from "react-i18next";
 import { useBoardPins, type BoardScope } from "../../hooks/use-fork-board";
 
@@ -10,13 +10,14 @@ interface Props {
   personaScope: BoardScope;
   onOpenBoard: () => void;
   onOpenCloset: () => void;
+  onOpenBonds: () => void;
 }
 
 /**
  * A small row of the pictures the AI is seeing right now, with a button to open the board.
  * Persona pins come first, since they hold across every scene.
  */
-export function ForkBoardStrip({ chatScope, personaScope, onOpenBoard, onOpenCloset }: Props) {
+export function ForkBoardStrip({ chatScope, personaScope, onOpenBoard, onOpenCloset, onOpenBonds }: Props) {
   const { t: localizeUi } = useUiTranslation();
   const { data: chatPins } = useBoardPins(chatScope);
   const { data: personaPins } = useBoardPins(personaScope);
@@ -55,6 +56,15 @@ export function ForkBoardStrip({ chatScope, personaScope, onOpenBoard, onOpenClo
       >
         <Shirt size="0.875rem" />
         {localizeUi("ui.chat.forkcloset.closet")}
+      </button>
+      <button
+        type="button"
+        onClick={onOpenBonds}
+        className="flex min-h-11 shrink-0 items-center gap-1.5 rounded-lg px-2 text-xs font-semibold text-foreground/60 hover:bg-foreground/10 hover:text-foreground/90"
+        title={localizeUi("ui.chat.forkbonds.title")}
+      >
+        <HeartHandshake size="0.875rem" />
+        {localizeUi("ui.chat.forkbonds.people")}
       </button>
     </div>
   );

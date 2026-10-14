@@ -11,6 +11,8 @@ import { useUIStore } from "../../stores/ui.store";
 import { cn } from "../../lib/utils";
 import type { Message } from "@marinara-engine/shared";
 import { useTranslation as useUiTranslation } from "react-i18next";
+// Fork: Scene Spark marks which kind of choice each one is.
+import { parseChoiceLabel } from "../../lib/fork/choice-kind";
 import { buildCyoaChoiceSubmissionPayload } from "./cyoa-choice-submission";
 
 type CyoaChoice = {
@@ -258,11 +260,12 @@ export function CyoaChoices({ messages }: Props) {
   return (
     <div className="flex flex-col items-center gap-2 px-4 py-3 animate-message-in">
       <div
-        className="flex flex-wrap items-center justify-center gap-2 text-[0.625rem] text-[var(--muted-foreground)]/60"
+        // Fork: the row used to be 10px type at 60% opacity, which on a phone read as decoration.
+        className="flex flex-wrap items-center justify-center gap-2 text-[0.75rem] text-[var(--muted-foreground)]"
         style={{ maxWidth: TRACKER_SAFE_MAX_WIDTH }}
       >
         <div className="flex items-center gap-1.5">
-          <Sparkles size="0.625rem" />
+          <Sparkles size="0.8125rem" />
           <span>{localizeUi("ui.chat.cyoachoices.whatWillYouDo")}</span>
         </div>
         <button
@@ -271,7 +274,7 @@ export function CyoaChoices({ messages }: Props) {
           onClick={() => setImpersonateCyoaChoices(!impersonateCyoaChoices)}
           disabled={controlsBusy}
           className={cn(
-            "inline-flex items-center rounded-md border px-2 py-1 text-[0.5625rem] font-semibold transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)] active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-40",
+            "inline-flex min-h-9 items-center rounded-lg border px-2.5 text-[0.6875rem] font-semibold transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)] active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-40",
             impersonateCyoaChoices
               ? "mari-chrome-accent-surface mari-accent-animated border-[var(--marinara-chat-chrome-button-border-active)]"
               : "border-[var(--border)] bg-[var(--muted)]/20 text-[var(--foreground)]/60 hover:bg-[var(--muted)]/40 hover:text-[var(--foreground)] dark:border-white/10 dark:bg-black/35 dark:text-white/50 dark:hover:bg-white/10 dark:hover:text-white/80",
@@ -290,14 +293,14 @@ export function CyoaChoices({ messages }: Props) {
           type="button"
           onClick={isEditing ? handleCancelEdit : handleStartEdit}
           disabled={controlsBusy}
-          className="inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--muted)]/20 px-2 py-1 text-[0.5625rem] text-[var(--foreground)]/60 transition-all hover:border-[var(--border)] hover:bg-[var(--muted)]/40 hover:text-[var(--foreground)] disabled:cursor-not-allowed disabled:opacity-40 dark:border-white/10 dark:bg-black/35 dark:text-white/50 dark:hover:bg-white/10 dark:hover:text-white/80"
+          className="inline-flex min-h-9 items-center gap-1.5 rounded-lg border border-[var(--border)] bg-[var(--muted)]/20 px-2.5 text-[0.6875rem] font-semibold text-[var(--foreground)]/75 transition-all hover:border-[var(--border)] hover:bg-[var(--muted)]/40 hover:text-[var(--foreground)] disabled:cursor-not-allowed disabled:opacity-40 dark:border-white/10 dark:bg-black/35 dark:text-white/50 dark:hover:bg-white/10 dark:hover:text-white/80"
           title={
             isEditing
               ? localizeUi("ui.chat.cyoachoices.cancelEditingChoices")
               : localizeUi("ui.chat.cyoachoices.editCyoaChoices")
           }
         >
-          <Pencil size="0.625rem" />
+          <Pencil size="0.8125rem" />
           <span>
             {isEditing ? localizeUi("chat.delete.dialog.cancel") : localizeUi("ui.noodle.noodlepostcard.edit")}
           </span>
@@ -308,10 +311,10 @@ export function CyoaChoices({ messages }: Props) {
             void handleReroll();
           }}
           disabled={controlsBusy || isEditing}
-          className="inline-flex items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--muted)]/20 px-2 py-1 text-[0.5625rem] text-[var(--foreground)]/60 transition-all hover:border-[var(--border)] hover:bg-[var(--muted)]/40 hover:text-[var(--foreground)] disabled:cursor-not-allowed disabled:opacity-40 dark:border-white/10 dark:bg-black/35 dark:text-white/50 dark:hover:bg-white/10 dark:hover:text-white/80"
+          className="inline-flex min-h-9 items-center gap-1.5 rounded-lg border border-[var(--border)] bg-[var(--muted)]/20 px-2.5 text-[0.6875rem] font-semibold text-[var(--foreground)]/75 transition-all hover:border-[var(--border)] hover:bg-[var(--muted)]/40 hover:text-[var(--foreground)] disabled:cursor-not-allowed disabled:opacity-40 dark:border-white/10 dark:bg-black/35 dark:text-white/50 dark:hover:bg-white/10 dark:hover:text-white/80"
           title={localizeUi("ui.chat.cyoachoices.reRollCyoaChoicesUsingTheLatestChatContext")}
         >
-          {isRerolling ? <Loader2 size="0.625rem" className="animate-spin" /> : <Dices size="0.625rem" />}
+          {isRerolling ? <Loader2 size="0.8125rem" className="animate-spin" /> : <Dices size="0.8125rem" />}
           <span>
             {isRerolling ? localizeUi("ui.chat.cyoachoices.rolling") : localizeUi("ui.chat.cyoachoices.reRoll")}
           </span>
@@ -375,23 +378,46 @@ export function CyoaChoices({ messages }: Props) {
           </div>
         </div>
       ) : (
-        <div className="flex flex-wrap justify-center gap-2" style={{ maxWidth: TRACKER_SAFE_MAX_WIDTH }}>
-          {choices.map((choice, i) => (
-            <button
-              key={i}
-              type="button"
-              onClick={() => handleChoice(choice.text)}
-              disabled={isStreaming || isRerolling}
-              className="group relative rounded-xl border border-[var(--border)] bg-[var(--card)]/80 px-4 py-2.5 text-left backdrop-blur-md transition-all hover:border-[var(--marinara-chat-chrome-button-border-hover)] hover:bg-[var(--marinara-chat-chrome-highlight-bg)] hover:shadow-lg active:scale-[0.98] disabled:opacity-50 dark:border-white/10 dark:bg-black/50"
-            >
-              <span className="mari-chrome-accent-text mari-accent-animated block text-[0.6875rem] font-semibold group-hover:text-[var(--marinara-chat-chrome-button-text-hover)]">
-                {choice.label}
-              </span>
-              <span className="mt-0.5 block text-[0.625rem] leading-relaxed text-[var(--foreground)]/60 group-hover:text-[var(--foreground)]/80 dark:text-white/50 dark:group-hover:text-white/70">
-                {choice.text}
-              </span>
-            </button>
-          ))}
+        // Fork: one choice per row rather than a wrapped grid. Four of these wrapping on a phone
+        // produced columns a few words wide, and the type was small enough to squint at.
+        <div className="flex w-full flex-col gap-2" style={{ maxWidth: TRACKER_SAFE_MAX_WIDTH }}>
+          {choices.map((choice, i) => {
+            const parsed = parseChoiceLabel(choice.label);
+            return (
+              <button
+                key={i}
+                type="button"
+                onClick={() => handleChoice(choice.text)}
+                disabled={isStreaming || isRerolling}
+                className="group relative w-full rounded-xl border border-[var(--border)] bg-[var(--card)]/80 px-3.5 py-3 text-left backdrop-blur-md transition-all hover:border-[var(--marinara-chat-chrome-button-border-hover)] hover:bg-[var(--marinara-chat-chrome-highlight-bg)] hover:shadow-lg active:scale-[0.99] disabled:opacity-50 dark:border-white/10 dark:bg-black/50"
+              >
+                {parsed.kind !== "plain" && (
+                  <span
+                    className={cn(
+                      "mb-1.5 inline-block rounded-full px-2 py-0.5 text-[0.625rem] font-bold uppercase tracking-wide",
+                      parsed.kind === "direction"
+                        ? "bg-[var(--pastel-sky)] text-[var(--rgb-blue)]"
+                        : "bg-[var(--pastel-rose)] text-[var(--rgb-violet)]",
+                    )}
+                  >
+                    {localizeUi(
+                      parsed.kind === "direction"
+                        ? "ui.chat.cyoachoices.kindDirection"
+                        : "ui.chat.cyoachoices.kindAction",
+                    )}
+                  </span>
+                )}
+                {/* Fork: no animated accent here. Four of these animate at once, every turn, which costs
+                    paint on a phone for an effect nobody asked a choice list to have. */}
+                <span className="block text-[0.875rem] font-bold leading-snug text-[var(--marinara-chat-chrome-panel-title)] group-hover:text-[var(--marinara-chat-chrome-button-text-hover)]">
+                  {parsed.label}
+                </span>
+                <span className="mt-1 block text-[0.8125rem] leading-relaxed text-[var(--foreground)]/75 group-hover:text-[var(--foreground)]/90 dark:text-white/60 dark:group-hover:text-white/80">
+                  {choice.text}
+                </span>
+              </button>
+            );
+          })}
         </div>
       )}
     </div>

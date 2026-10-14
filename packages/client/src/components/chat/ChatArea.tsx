@@ -38,6 +38,7 @@ import { hasActiveTextSelection } from "../../lib/text-selection";
 import { getResendableUserMessageId } from "../../lib/fork/edit-and-resend";
 import { ForkReferenceBoard } from "./ForkReferenceBoard";
 import { ForkClosetPanel } from "./ForkClosetPanel";
+import { ForkBondsPanel } from "./ForkBondsPanel";
 import { ForkDirectorPanel, type DirectorTurn } from "./ForkDirectorPanel";
 import type { BoardScope } from "../../hooks/use-fork-board";
 import { readChatMetadata } from "../../lib/chat-wizard-defaults";
@@ -2320,6 +2321,18 @@ const LocalChatArea = memo(function LocalChatArea({
   const [forkClosetOpen, setForkClosetOpen] = useState(false);
   const handleOpenForkCloset = useCallback(() => setForkClosetOpen(true), []);
 
+  // Fork: typed relationships, kept per chat.
+  const [forkBondsOpen, setForkBondsOpen] = useState(false);
+  // Fork: who the tracker can follow — the cards in this chat, by name.
+  const forkBondsCast = useMemo(
+    () =>
+      chatCharIds
+        .map((id) => ({ id, name: characterMap.get(id)?.name ?? "" }))
+        .filter((member) => member.name.length > 0),
+    [chatCharIds, characterMap],
+  );
+  const handleOpenForkBonds = useCallback(() => setForkBondsOpen(true), []);
+
   const handleRoleplayEdit = useCallback(
     async (messageId: string, content: string) => {
       await updateMessageAsync({ messageId, content });
@@ -3615,6 +3628,7 @@ const LocalChatArea = memo(function LocalChatArea({
           forkBoardChatScope={forkBoardChatScope}
           forkBoardPersonaScope={forkBoardPersonaScope}
           onOpenForkCloset={handleOpenForkCloset}
+          onOpenForkBonds={handleOpenForkBonds}
           onOpenForkBoard={handleOpenForkBoard}
           onOpenForkDirector={handleOpenDirector}
           onSetActiveSwipe={handleSetActiveSwipe}
@@ -3713,6 +3727,15 @@ const LocalChatArea = memo(function LocalChatArea({
         mobileFullscreen
       >
         <ForkClosetPanel personaId={chatPersonaId ?? null} personaName={chatPersona?.name || "She"} />
+      </Modal>
+      <Modal
+        open={forkBondsOpen}
+        onClose={() => setForkBondsOpen(false)}
+        title={localizeUi("ui.chat.forkbonds.title")}
+        width="max-w-lg"
+        mobileFullscreen
+      >
+        <ForkBondsPanel chatId={activeChatId ?? null} cast={forkBondsCast} personaName={chatPersona?.name || "she"} />
       </Modal>
       {illustratorPromptReviewModal}
       <ImagePromptReviewModal

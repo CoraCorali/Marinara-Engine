@@ -116,6 +116,31 @@ Markup is stripped and every part is length-capped before it is sent.
   Set now. Both apply to every weather, not only rain, and neither changes what you see.
   This does not touch whatever a theme's own blur and glow cost on top.
 
+- **The relationship tracker.** A bond between your persona and one character in one roleplay,
+  and the point of it is that bonds are not all the same shape. Each kind tracks its own two
+  things, so a sister is never scored on "wanting" and a friend is never scored like a love
+  interest: romantic tracks wanting and patience, family tracks closeness and friction, a rival
+  tracks respect and hostility, an ex tracks unfinished business and bitterness.
+  Boyfriend and husband are not kinds, they are rungs: a romance carries a ladder from talking
+  through dating, together, living together, engaged and married, and no other kind has one.
+  Changing a romance into a friendship drops the rung rather than hiding it, and changing back
+  starts at the bottom instead of quietly restoring what it used to be.
+  Where everything stands is sent with every reply as a short note placed next to the newest turn,
+  late in the prompt on purpose, since a relationship is what a model most often contradicts after
+  twenty messages. Meters go as words rather than numbers, because a model reads "patience almost
+  gone" better than it reads 34. A chat that never opens the tracker sends nothing.
+  Marinara's own Relationship Tracker is a downloadable agent that lives in Marinara-Agents, so it
+  is untouched; this is the fork's own, Engine-side.
+- **The Director's chair and Scene Spark got their interfaces fixed.** In the Director the note is
+  the thing you act on, so it no longer scrolls away inside the conversation: it is pinned above
+  the two buttons, and it is editable, because the model's wording is a starting point rather than
+  a verdict. The composer grows to a few lines instead of being a single-line box. An empty panel
+  leads with the four openers rather than a strip of chips under nothing. There is a way to start
+  over, and when **Rewrite reply** is unavailable it now says why instead of just sitting greyed
+  out. In Scene Spark the control row was 9px type in 22px-tall buttons; it is readable type in
+  real tap targets now, the choices themselves are a size up, and the labels no longer run a
+  continuous accent animation, which four choices were doing at once on every turn.
+
 ## Upstream files touched
 
 Fork-only code lives in `packages/client/src/lib/fork/`, `packages/server/src/services/import/fork/`
@@ -140,6 +165,9 @@ Edits to upstream files are marked with a `Fork:` comment.
 | `packages/server/src/routes/generate.routes.ts` | Sends in-scene pins and the worn outfit with the reply |
 | `packages/client/src/components/chat/ChatArea.tsx` | Closet modal and its opener |
 | `packages/client/src/components/chat/ForkBoardStrip.tsx` | Closet button beside Board |
+| `packages/client/src/components/chat/ForkBoardStrip.tsx` | Bonds button too |
+| `packages/client/src/components/chat/CyoaChoices.tsx` | Readable controls and choices |
+| `packages/server/src/services/storage/chats.storage.ts` | Clears a chat's bonds when it goes |
 | `packages/server/src/services/storage/characters.storage.ts` | Clears the closet when a persona goes |
 | `packages/client/src/lib/weather-renderer.ts` | Batched rain drawing |
 | `packages/client/src/workers/weather-effects.worker.ts` | Draws the field in one pass, no per-particle allocation |
