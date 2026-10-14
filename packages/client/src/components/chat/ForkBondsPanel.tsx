@@ -5,6 +5,7 @@ import { useEffect, useId, useRef, useState, type InputHTMLAttributes, type Text
 import { ChevronDown, Loader2, Plus, Trash2, Wand2, Check, X } from "lucide-react";
 import { toast } from "sonner";
 import { useTranslation as useUiTranslation } from "react-i18next";
+import { HelpTooltip } from "../ui/HelpTooltip";
 import {
   FORK_BOND_CONDITIONS,
   FORK_BOND_DRIFTS,
@@ -170,7 +171,7 @@ interface Props {
 }
 
 const SELECT_CLASS =
-  "min-h-11 min-w-0 rounded-xl border border-[var(--border)] bg-[var(--secondary)] px-2.5 text-xs font-semibold text-foreground outline-none";
+  "min-h-9 min-w-0 rounded-xl border border-[var(--border)] bg-[var(--secondary)] px-2.5 text-xs font-semibold text-foreground outline-none";
 
 function Portrait({ name, avatarUrl, size }: { name: string; avatarUrl?: string | null; size: "sm" | "lg" }) {
   return (
@@ -178,7 +179,7 @@ function Portrait({ name, avatarUrl, size }: { name: string; avatarUrl?: string 
       aria-hidden="true"
       className={cn(
         "fork-bond-ring relative block shrink-0 rounded-full shadow-[0_0_14px_color-mix(in_srgb,var(--primary)_35%,transparent)]",
-        size === "lg" ? "h-16 w-16 p-[3px]" : "h-11 w-11 p-[2px]",
+        size === "lg" ? "h-16 w-16 p-[3px]" : "h-9 w-9 p-[2px]",
       )}
     >
       <span
@@ -329,11 +330,11 @@ function BondCard({
         type="button"
         onClick={() => setOpen((value) => !value)}
         aria-expanded={open}
-        className="flex min-h-14 w-full items-center gap-3 bg-[linear-gradient(135deg,color-mix(in_srgb,var(--primary)_10%,var(--card)),color-mix(in_srgb,var(--primary)_32%,var(--card)))] px-3 py-2 text-left"
+        className="flex min-h-12 w-full items-center gap-2.5 bg-[linear-gradient(135deg,color-mix(in_srgb,var(--primary)_10%,var(--card)),color-mix(in_srgb,var(--primary)_32%,var(--card)))] px-3 py-2 text-left"
       >
         <Portrait name={name} avatarUrl={avatarUrl} size="sm" />
         <span className="flex min-w-0 flex-1 flex-col">
-          <span className="truncate text-sm font-bold text-foreground">
+          <span className="truncate text-[0.8125rem] font-bold text-foreground">
             <span aria-hidden="true">{KIND_EMOJI[bond.kind]} </span>
             {name || localizeUi("ui.chat.forkbonds.whoIsIt")}
           </span>
@@ -364,7 +365,7 @@ function BondCard({
                 onCommit={(route) => patch({ route })}
                 placeholder={localizeUi("ui.chat.forkbonds.routePlaceholder")}
                 aria-label={localizeUi("ui.chat.forkbonds.route")}
-                className="min-h-9 min-w-0 flex-1 bg-transparent text-sm font-bold text-foreground outline-none placeholder:font-normal placeholder:text-[var(--muted-foreground)]"
+                className="min-h-9 min-w-0 flex-1 bg-transparent text-[0.8125rem] font-bold text-foreground outline-none placeholder:font-normal placeholder:text-[var(--muted-foreground)]"
               />
             </div>
           )}
@@ -376,7 +377,7 @@ function BondCard({
               onCommit={(label) => patch({ label })}
               aria-label={localizeUi("ui.chat.forkbonds.whoThisIs")}
               placeholder={localizeUi("ui.chat.forkbonds.whoIsIt")}
-              className="min-h-11 min-w-0 flex-1 bg-transparent text-base font-extrabold text-foreground outline-none"
+              className="fork-keep-size min-h-9 min-w-0 flex-1 bg-transparent text-base font-extrabold text-foreground outline-none"
             />
           </div>
 
@@ -576,7 +577,7 @@ function BondCard({
               });
               if (ok) deleteBond.mutate(bond.id);
             }}
-            className="flex min-h-11 items-center justify-center gap-2 rounded-xl text-xs font-semibold text-[var(--muted-foreground)] hover:bg-foreground/10"
+            className="flex min-h-9 items-center justify-center gap-2 rounded-xl text-xs font-semibold text-[var(--muted-foreground)] hover:bg-foreground/10"
           >
             <Trash2 size="0.875rem" />
             {localizeUi("ui.chat.forkbonds.stopTrackingValue1", {
@@ -663,25 +664,28 @@ export function ForkBondsPanel({ chatId, cast }: Props) {
   return (
     // The whole panel scrolls as one in its dialog. Its own inner scroller used to leave a phone a
     // window a few cards tall between the pinned intro and the pinned add row.
-    <div className="flex flex-col gap-3">
+    <div className="fork-ui flex flex-col gap-3">
       <style>{TINT_STYLES}</style>
-      <p className="text-xs text-[var(--muted-foreground)]">{localizeUi("ui.chat.forkbonds.intro")}</p>
-      {autoUpdating ? (
-        <p className="flex items-center gap-1.5 text-xs font-semibold text-[var(--primary)]">
-          <Check size="0.75rem" />
-          {localizeUi("ui.chat.forkbonds.autoUpdating")}
-        </p>
-      ) : (
-        <button
-          type="button"
-          onClick={() => void handleAutoUpdate()}
-          disabled={!chatId || connecting}
-          className="flex min-h-11 items-center justify-center gap-2 rounded-xl border-2 border-dashed border-[var(--primary)] px-3 text-sm font-semibold text-[var(--primary)] disabled:opacity-50"
-        >
-          {connecting ? <Loader2 size="0.875rem" className="animate-spin" /> : <Wand2 size="0.875rem" />}
-          {localizeUi("ui.chat.forkbonds.autoUpdate")}
-        </button>
-      )}
+      {/* The explanation lives behind the ?, the way Marinara's own panels keep theirs. */}
+      <div className="flex items-center gap-2">
+        {autoUpdating ? (
+          <p className="flex flex-1 items-center gap-1.5 text-xs font-semibold text-[var(--primary)]">
+            <Check size="0.75rem" />
+            {localizeUi("ui.chat.forkbonds.autoUpdating")}
+          </p>
+        ) : (
+          <button
+            type="button"
+            onClick={() => void handleAutoUpdate()}
+            disabled={!chatId || connecting}
+            className="flex min-h-8 flex-1 items-center justify-center gap-1.5 rounded-full border border-dashed border-[var(--primary)] px-3 text-xs font-semibold text-[var(--primary)] disabled:opacity-50"
+          >
+            {connecting ? <Loader2 size="0.75rem" className="animate-spin" /> : <Wand2 size="0.75rem" />}
+            {localizeUi("ui.chat.forkbonds.autoUpdate")}
+          </button>
+        )}
+        <HelpTooltip text={localizeUi("ui.chat.forkbonds.intro")} side="bottom" wide size="0.875rem" />
+      </div>
 
       <div className="flex flex-col gap-3">
         {isLoading && (
@@ -691,7 +695,7 @@ export function ForkBondsPanel({ chatId, cast }: Props) {
         )}
 
         {!isLoading && (bonds ?? []).length === 0 && (
-          <p className="py-6 text-center text-sm text-[var(--muted-foreground)]">
+          <p className="py-6 text-center text-[0.8125rem] text-[var(--muted-foreground)]">
             {localizeUi("ui.chat.forkbonds.emptyHint")}
           </p>
         )}
@@ -720,7 +724,7 @@ export function ForkBondsPanel({ chatId, cast }: Props) {
           id="fork-bonds-add"
           value={adding}
           onChange={(event) => setAdding(event.target.value)}
-          className="min-h-11 flex-1 rounded-xl bg-[var(--secondary)] px-3 text-sm text-foreground outline-none"
+          className="min-h-9 flex-1 rounded-full border border-[var(--border)] bg-[var(--secondary)] px-3 text-xs font-semibold text-foreground outline-none"
         >
           <option value="">{localizeUi("ui.chat.forkbonds.trackSomeone")}</option>
           {untracked.map((member) => (
@@ -751,7 +755,7 @@ export function ForkBondsPanel({ chatId, cast }: Props) {
             setAdding("");
           }}
           disabled={!adding || addBond.isPending}
-          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-[var(--primary)] text-[var(--primary-foreground)] disabled:opacity-50"
+          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[var(--primary)] text-[var(--primary-foreground)] disabled:opacity-50"
           aria-label={localizeUi("ui.chat.forkbonds.trackSomeone")}
         >
           {addBond.isPending ? <Loader2 size="0.875rem" className="animate-spin" /> : <Plus size="0.875rem" />}

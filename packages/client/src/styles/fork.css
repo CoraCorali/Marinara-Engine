@@ -1,0 +1,17 @@
+/* ──────────────────────────────────────────────
+   Fork: styles the fork's panels need outside Tailwind (see FORK.md)
+   ────────────────────────────────────────────── */
+
+/*
+ * Marinara sets every field to 16px on touch screens so an iPhone does not zoom when one is focused.
+ * Inside the fork's panels that made dropdowns and boxes the biggest text on the screen. Android does
+ * not zoom, so the fork's own fields match the rest of the panel instead.
+ * ponytail: on an iPhone a field here still zooms the page on focus; the upgrade path is limiting
+ * this rule to non-iOS browsers if an iPhone user ever runs the fork.
+ */
+@media (pointer: coarse) {
+  .fork-ui
+    :is(input:not([type="range"]):not([type="checkbox"]):not([type="color"]):not(.fork-keep-size), select, textarea) {
+    font-size: 0.8125rem;
+  }
+}

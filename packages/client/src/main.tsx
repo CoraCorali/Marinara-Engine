@@ -13,6 +13,8 @@ import { APP_VERSION } from "@marinara-engine/shared";
 import { formatRuntimeBuild } from "./lib/runtime-build";
 import { recordClientReload, registerClientRuntimeDiagnostics } from "./lib/client-runtime-diagnostics";
 import "./styles/globals.css";
+// Fork: the fork's panel styles, after Marinara's so they can refine them.
+import "./styles/fork.css";
 
 // Installed capability clients can outlive the Engine build that produced
 // them. Older Conversation-game bundles contain classic JSX output that reads

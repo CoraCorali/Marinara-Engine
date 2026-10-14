@@ -39,7 +39,7 @@ export function ForkBoardStrip({ chatScope, personaScope, onOpenBoard, onOpenBon
       <button
         type="button"
         onClick={onOpenBoard}
-        className={cn(FORK_BAR_PILL_CLASS, FORK_BAR_PILL_IDLE_CLASS, shown.length > 0 && "pl-1.5")}
+        className={cn(FORK_BAR_PILL_CLASS, FORK_BAR_PILL_IDLE_CLASS, shown.length > 0 && "pl-1")}
         title={boardLabel}
         aria-label={boardLabel}
       >
@@ -50,7 +50,7 @@ export function ForkBoardStrip({ chatScope, personaScope, onOpenBoard, onOpenBon
                 key={pin.id}
                 src={pin.imagePath}
                 alt=""
-                className={cn("h-8 w-8 rounded-full object-cover ring-2 ring-[var(--card)]", index > 0 && "-ml-3")}
+                className={cn("h-6 w-6 rounded-full object-cover ring-2 ring-[var(--card)]", index > 0 && "-ml-2.5")}
               />
             ))}
           </span>
@@ -89,7 +89,7 @@ export function ForkBoardStrip({ chatScope, personaScope, onOpenBoard, onOpenBon
       <button
         type="button"
         onClick={() => openSlopList(true)}
-        className={cn(FORK_BAR_PILL_CLASS, FORK_BAR_PILL_IDLE_CLASS, "order-last w-11 justify-center px-0")}
+        className={cn(FORK_BAR_PILL_CLASS, FORK_BAR_PILL_IDLE_CLASS, "order-last w-[2.125rem] justify-center px-0")}
         title={localizeUi("ui.chat.forkfix.slopListTitle")}
         aria-label={localizeUi("ui.chat.forkfix.slopListTitle")}
       >

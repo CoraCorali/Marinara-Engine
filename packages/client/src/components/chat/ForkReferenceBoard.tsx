@@ -4,6 +4,7 @@
 import { useRef, useState, type ChangeEvent, type KeyboardEvent, type PointerEvent } from "react";
 import { GripVertical, Plus, Trash2, Loader2, Pin, PinOff } from "lucide-react";
 import { useTranslation as useUiTranslation } from "react-i18next";
+import { HelpTooltip } from "../ui/HelpTooltip";
 import { toast } from "sonner";
 import { showConfirmDialog } from "../../lib/app-dialogs";
 import { useForkDraftField } from "../../hooks/use-fork-draft-field";
@@ -49,7 +50,7 @@ function CaptionInput({
       onChange={(event) => change(event.target.value)}
       onBlur={flush}
       // Written on the polaroid itself, so it keeps the paper's ink whatever the theme.
-      className="min-h-10 w-full resize-none bg-transparent px-1 py-2 text-center font-serif text-sm italic leading-snug text-[#3a3330] outline-none [field-sizing:content] placeholder:text-[#8d8580]"
+      className="min-h-8 w-full resize-none bg-transparent px-1 py-2 text-center font-serif text-[0.8125rem] italic leading-snug text-[#3a3330] outline-none [field-sizing:content] placeholder:text-[#8d8580]"
     />
   );
 }
@@ -204,13 +205,13 @@ export function ForkReferenceBoard({ chatScope, personaScope }: Props) {
   const inSceneCount = (pins ?? []).filter((pin) => pin.inScene).length;
 
   return (
-    <div className="flex flex-col gap-3">
+    <div className="fork-ui flex flex-col gap-3">
       <div className="flex flex-wrap items-center gap-2">
         <div className="flex gap-1 rounded-full bg-[var(--secondary)] p-1">
           <button
             type="button"
             onClick={() => setTab("chat")}
-            className={`min-h-10 whitespace-nowrap rounded-full px-3 text-[0.8125rem] font-semibold ${tab === "chat" ? "bg-[var(--primary)] text-[var(--primary-foreground)]" : "text-foreground/70"}`}
+            className={`min-h-8 whitespace-nowrap rounded-full px-3 text-[0.8125rem] font-semibold ${tab === "chat" ? "bg-[var(--primary)] text-[var(--primary-foreground)]" : "text-foreground/70"}`}
           >
             {localizeUi("ui.chat.forkboard.thisChat")}
           </button>
@@ -219,17 +220,25 @@ export function ForkReferenceBoard({ chatScope, personaScope }: Props) {
             onClick={() => setTab("persona")}
             disabled={!personaScope}
             title={personaScope ? undefined : localizeUi("ui.chat.forkboard.pickAPersonaFirst")}
-            className={`min-h-10 whitespace-nowrap rounded-full px-3 text-[0.8125rem] font-semibold disabled:opacity-40 ${tab === "persona" ? "bg-[var(--primary)] text-[var(--primary-foreground)]" : "text-foreground/70"}`}
+            className={`min-h-8 whitespace-nowrap rounded-full px-3 text-[0.8125rem] font-semibold disabled:opacity-40 ${tab === "persona" ? "bg-[var(--primary)] text-[var(--primary-foreground)]" : "text-foreground/70"}`}
           >
             {localizeUi("ui.chat.forkboard.alwaysOn")}
           </button>
         </div>
+        <HelpTooltip
+          text={
+            tab === "chat" ? localizeUi("ui.chat.forkboard.thisChatHelp") : localizeUi("ui.chat.forkboard.alwaysOnHelp")
+          }
+          side="bottom"
+          wide
+          size="0.875rem"
+        />
         <div className="flex-1" />
         <button
           type="button"
           onClick={() => fileRef.current?.click()}
           disabled={!scope || addPin.isPending}
-          className="flex min-h-11 items-center gap-1.5 whitespace-nowrap rounded-full bg-[var(--primary)] px-3.5 text-[0.8125rem] font-semibold text-[var(--primary-foreground)] disabled:opacity-50"
+          className="flex min-h-9 items-center gap-1.5 whitespace-nowrap rounded-full bg-[var(--primary)] px-3.5 text-[0.8125rem] font-semibold text-[var(--primary-foreground)] disabled:opacity-50"
         >
           {addPin.isPending ? <Loader2 size="0.875rem" className="animate-spin" /> : <Plus size="0.875rem" />}
           {localizeUi("ui.chat.forkboard.pinAPicture")}
@@ -244,12 +253,8 @@ export function ForkReferenceBoard({ chatScope, personaScope }: Props) {
         />
       </div>
 
-      <p className="text-xs text-[var(--muted-foreground)]">
-        {tab === "chat" ? localizeUi("ui.chat.forkboard.thisChatHelp") : localizeUi("ui.chat.forkboard.alwaysOnHelp")}
-      </p>
-
       {!scope ? (
-        <p className="py-6 text-center text-sm text-[var(--muted-foreground)]">
+        <p className="py-6 text-center text-[0.8125rem] text-[var(--muted-foreground)]">
           {localizeUi("ui.chat.forkboard.pickAPersonaFirst")}
         </p>
       ) : isLoading ? (
@@ -257,7 +262,7 @@ export function ForkReferenceBoard({ chatScope, personaScope }: Props) {
           <Loader2 size="1.25rem" className="animate-spin text-[var(--muted-foreground)]" />
         </div>
       ) : (pins ?? []).length === 0 ? (
-        <p className="py-6 text-center text-sm text-[var(--muted-foreground)]">
+        <p className="py-6 text-center text-[0.8125rem] text-[var(--muted-foreground)]">
           {localizeUi("ui.chat.forkboard.noPinsYet")}
         </p>
       ) : (
@@ -273,7 +278,7 @@ export function ForkReferenceBoard({ chatScope, personaScope }: Props) {
               id="fork-board-sort"
               value={sort}
               onChange={(event) => setSort(event.target.value as SortMode)}
-              className="min-h-11 rounded-xl bg-[var(--secondary)] px-2.5 text-xs font-semibold text-foreground outline-none"
+              className="min-h-9 rounded-xl bg-[var(--secondary)] px-2.5 text-xs font-semibold text-foreground outline-none"
             >
               {(Object.keys(SORT_LABEL_KEYS) as SortMode[]).map((mode) => (
                 <option key={mode} value={mode}>
@@ -346,7 +351,7 @@ export function ForkReferenceBoard({ chatScope, personaScope }: Props) {
                       onKeyDown={(event) => onHandleKey(event, pin.id)}
                       aria-label={localizeUi("ui.chat.forkboard.dragToReorder")}
                       title={localizeUi("ui.chat.forkboard.dragToReorder")}
-                      className="flex h-11 w-9 shrink-0 cursor-grab touch-none items-center justify-center rounded text-[#8d8580] active:cursor-grabbing"
+                      className="flex h-9 w-9 shrink-0 cursor-grab touch-none items-center justify-center rounded text-[#8d8580] active:cursor-grabbing"
                     >
                       <GripVertical size="0.875rem" />
                     </button>
@@ -362,7 +367,7 @@ export function ForkReferenceBoard({ chatScope, personaScope }: Props) {
                       pin.inScene ? localizeUi("ui.chat.forkboard.inScene") : localizeUi("ui.chat.forkboard.addToScene")
                     }
                     className={cn(
-                      "flex h-11 w-9 shrink-0 items-center justify-center rounded",
+                      "flex h-9 w-9 shrink-0 items-center justify-center rounded",
                       pin.inScene ? "text-[var(--primary)]" : "text-[#8d8580]",
                     )}
                   >
@@ -372,7 +377,7 @@ export function ForkReferenceBoard({ chatScope, personaScope }: Props) {
                     type="button"
                     onClick={() => void handleDelete(pin.id)}
                     aria-label={localizeUi("ui.chat.forkboard.removePin")}
-                    className="flex h-11 w-9 shrink-0 items-center justify-center rounded text-[var(--destructive)]"
+                    className="flex h-9 w-9 shrink-0 items-center justify-center rounded text-[var(--destructive)]"
                   >
                     <Trash2 size="0.875rem" />
                   </button>

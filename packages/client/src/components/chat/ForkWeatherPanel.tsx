@@ -4,6 +4,7 @@
 import { useEffect, useId, useRef, type ReactNode } from "react";
 import { RotateCcw } from "lucide-react";
 import { useTranslation as useUiTranslation } from "react-i18next";
+import { HelpTooltip } from "../ui/HelpTooltip";
 import { cn } from "../../lib/utils";
 import { useForkDraftField } from "../../hooks/use-fork-draft-field";
 import { WeatherSoundEngine } from "../../lib/fork/weather-sound";
@@ -12,14 +13,17 @@ import { WEATHER_PICKS, WEATHER_TIMES, type WeatherPrefs, type WeatherSoundScene
 import { useChatWeatherPrefs, useForkWeatherStore } from "../../stores/fork-weather.store";
 
 const CHIP =
-  "flex min-h-10 items-center justify-center gap-1.5 rounded-full border px-3 text-xs font-semibold transition-colors disabled:opacity-40";
+  "flex min-h-8 items-center justify-center gap-1.5 rounded-full border px-3 text-xs font-semibold transition-colors disabled:opacity-40";
 const CHIP_ON = "border-[var(--primary)] bg-[color-mix(in_srgb,var(--primary)_20%,transparent)] text-foreground";
 const CHIP_OFF = "border-[var(--border)] text-foreground/80 hover:bg-foreground/10";
 
-function Section({ title, children }: { title: string; children: ReactNode }) {
+function Section({ title, help, children }: { title: string; help?: string; children: ReactNode }) {
   return (
-    <section className="flex flex-col gap-2">
-      <h3 className="text-[0.6875rem] font-bold uppercase tracking-wide text-[var(--primary)]">{title}</h3>
+    <section className="flex flex-col gap-1.5">
+      <h3 className="flex items-center gap-1.5 text-[0.6875rem] font-bold uppercase tracking-wide text-[var(--primary)]">
+        {title}
+        {help && <HelpTooltip text={help} wide />}
+      </h3>
       {children}
     </section>
   );
@@ -58,7 +62,7 @@ function Slider({
         onChange={(event) => change(Number(event.target.value))}
         onPointerUp={flush}
         onKeyUp={flush}
-        className="h-11 min-w-0 flex-1 accent-[var(--primary)]"
+        className="h-9 min-w-0 flex-1 accent-[var(--primary)]"
       />
       <span className="w-10 shrink-0 text-right text-xs tabular-nums text-[var(--muted-foreground)]">
         {Math.round(draft * 100)}%
@@ -69,7 +73,7 @@ function Slider({
 
 function Switch({ label, checked, onChange }: { label: string; checked: boolean; onChange: (on: boolean) => void }) {
   return (
-    <label className="flex min-h-11 items-center justify-between gap-3 rounded-xl bg-[var(--secondary)] px-3 text-sm font-semibold text-foreground">
+    <label className="flex min-h-9 items-center justify-between gap-3 rounded-xl bg-[var(--secondary)] px-3 text-[0.8125rem] font-semibold text-foreground">
       {label}
       <input
         type="checkbox"
@@ -97,10 +101,12 @@ export function ForkWeatherPanel({ chatId }: { chatId: string | null }) {
   const tintId = useId();
 
   if (!chatId)
-    return <p className="text-sm text-[var(--muted-foreground)]">{localizeUi("ui.chat.forkweather.noChat")}</p>;
+    return (
+      <p className="text-[0.8125rem] text-[var(--muted-foreground)]">{localizeUi("ui.chat.forkweather.noChat")}</p>
+    );
 
   return (
-    <div className="flex flex-col gap-5">
+    <div className="fork-ui flex flex-col gap-4">
       <Section title={localizeUi("ui.chat.forkweather.weather")}>
         <div className="flex rounded-full bg-[var(--secondary)] p-1 text-xs font-bold">
           {[true, false].map((follow) => (
@@ -110,7 +116,7 @@ export function ForkWeatherPanel({ chatId }: { chatId: string | null }) {
               onClick={() => set({ follow })}
               aria-pressed={prefs.follow === follow}
               className={cn(
-                "min-h-10 flex-1 rounded-full px-3 transition-colors",
+                "min-h-8 flex-1 rounded-full px-3 transition-colors",
                 prefs.follow === follow ? "bg-[var(--primary)] text-[var(--primary-foreground)]" : "text-foreground/70",
               )}
             >
@@ -196,7 +202,7 @@ export function ForkWeatherPanel({ chatId }: { chatId: string | null }) {
             type="color"
             value={prefs.tint || "#5b7cfa"}
             onChange={(event) => set({ tint: event.target.value })}
-            className="h-11 w-16 cursor-pointer rounded-lg border border-[var(--border)] bg-transparent"
+            className="h-9 w-16 cursor-pointer rounded-lg border border-[var(--border)] bg-transparent"
           />
           <button
             type="button"
@@ -244,7 +250,7 @@ export function ForkWeatherPanel({ chatId }: { chatId: string | null }) {
         )}
       </Section>
 
-      <Section title={localizeUi("ui.chat.forkweather.sounds")}>
+      <Section title={localizeUi("ui.chat.forkweather.sounds")} help={localizeUi("ui.chat.forkweather.soundHelp")}>
         <Switch label={localizeUi("ui.chat.forkweather.soundOn")} checked={soundOn} onChange={setSoundOn} />
         {soundOn && (
           <>
@@ -258,13 +264,12 @@ export function ForkWeatherPanel({ chatId }: { chatId: string | null }) {
             <Switch label={localizeUi("ui.chat.forkweather.fireplace")} checked={fireplace} onChange={setFireplace} />
           </>
         )}
-        <p className="text-xs text-[var(--muted-foreground)]">{localizeUi("ui.chat.forkweather.soundHelp")}</p>
       </Section>
 
       <button
         type="button"
         onClick={() => resetChatPrefs(chatId)}
-        className="flex min-h-11 items-center justify-center gap-2 rounded-xl border-2 border-[var(--border)] text-sm font-semibold text-foreground"
+        className="flex min-h-9 items-center justify-center gap-2 rounded-xl border-2 border-[var(--border)] text-[0.8125rem] font-semibold text-foreground"
       >
         <RotateCcw size="0.875rem" />
         {localizeUi("ui.chat.forkweather.reset")}

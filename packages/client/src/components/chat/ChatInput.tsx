@@ -1946,8 +1946,9 @@ export const ChatInput = memo(function ChatInput({
       {showRoleplayAgentActions && (
         <div className="relative">
           {/* Fork: the right edge fades, so a row with more pills off screen looks swipeable; the
-              extra end padding lets the last pill scroll clear of the fade. */}
-          <div className="fork-bar-row flex gap-2 overflow-x-auto py-1 pl-1 pr-6 [mask-image:linear-gradient(to_right,#000_calc(100%-1.5rem),transparent)] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+              extra end padding lets the last pill scroll clear of the fade. The hidden scrollbar is
+              marked important: a theme that styles every scrollbar would otherwise draw one here. */}
+          <div className="fork-bar-row flex gap-1.5 overflow-x-auto py-1 pl-1 pr-6 [mask-image:linear-gradient(to_right,#000_calc(100%-1.5rem),transparent)] [scrollbar-width:none]! [&::-webkit-scrollbar]:hidden!">
             {forkBarLeading}
             {narrativeDirectorActive && (
               <div className="shrink-0">

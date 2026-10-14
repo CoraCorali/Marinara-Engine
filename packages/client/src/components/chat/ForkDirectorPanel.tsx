@@ -101,7 +101,7 @@ export function ForkDirectorPanel({
   return (
     // On a phone the dialog is full screen and the panel fills it, so the note sits at the bottom
     // instead of leaving a dead band under it; on a wider screen it keeps to its old height.
-    <div className="flex min-h-[24rem] flex-1 flex-col sm:max-h-[72vh]">
+    <div className="fork-ui flex min-h-[24rem] flex-1 flex-col sm:max-h-[72vh]">
       <div className="flex items-start justify-between gap-2 pb-2">
         <p className="text-xs text-[var(--muted-foreground)]">{localizeUi("ui.chat.forkdirector.offTheRecord")}</p>
         {turns.length > 0 && (
@@ -117,7 +117,7 @@ export function ForkDirectorPanel({
               if (ok) onChange([], "");
             }}
             disabled={sending}
-            className="flex min-h-10 shrink-0 items-center gap-1 rounded-full px-2 text-[0.6875rem] font-semibold text-[var(--muted-foreground)] hover:text-foreground disabled:opacity-50"
+            className="flex min-h-8 shrink-0 items-center gap-1 rounded-full px-2 text-[0.6875rem] font-semibold text-[var(--muted-foreground)] hover:text-foreground disabled:opacity-50"
           >
             <RotateCcw size="0.6875rem" />
             {localizeUi("ui.chat.forkdirector.startOver")}
@@ -127,19 +127,19 @@ export function ForkDirectorPanel({
 
       <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto">
         {empty && (
-          <div className="flex flex-col items-center gap-3 py-6 text-center">
-            <p className="max-w-[18rem] text-sm text-[var(--muted-foreground)]">
+          <div className="flex flex-col items-center gap-2.5 py-3 text-center">
+            <p className="max-w-[18rem] text-[0.8125rem] text-[var(--muted-foreground)]">
               {localizeUi("ui.chat.forkdirector.emptyHint")}
             </p>
             {/* In an empty panel the openers are the whole interface, so they are the thing to
                 reach for rather than a strip of chips tucked under the conversation. */}
-            <div className="flex w-full flex-col gap-1.5">
+            <div className="flex w-full flex-wrap justify-center gap-1.5">
               {QUICK_PROMPT_KEYS.map((key) => (
                 <button
                   key={key}
                   type="button"
                   onClick={() => void send(localizeUi(key))}
-                  className="min-h-11 rounded-xl bg-[var(--secondary)] px-3 text-sm font-semibold text-foreground/80 hover:bg-[var(--secondary)]/70"
+                  className="min-h-8 rounded-full border border-[var(--border)] bg-[var(--secondary)] px-3 text-xs font-semibold text-foreground/85 hover:bg-[var(--secondary)]/70"
                 >
                   {localizeUi(key)}
                 </button>
@@ -152,14 +152,14 @@ export function ForkDirectorPanel({
           turn.role === "user" ? (
             <div
               key={`${turn.role}-${index}`}
-              className="ml-auto max-w-[85%] whitespace-pre-wrap rounded-3xl rounded-br-md bg-[linear-gradient(135deg,var(--primary),color-mix(in_srgb,var(--primary)_70%,black))] px-4 py-2.5 text-sm leading-relaxed text-[var(--primary-foreground)] shadow-[0_4px_14px_color-mix(in_srgb,var(--primary)_30%,transparent)]"
+              className="ml-auto max-w-[85%] whitespace-pre-wrap rounded-3xl rounded-br-md bg-[linear-gradient(135deg,var(--primary),color-mix(in_srgb,var(--primary)_70%,black))] px-4 py-2.5 text-[0.8125rem] leading-relaxed text-[var(--primary-foreground)] shadow-[0_4px_14px_color-mix(in_srgb,var(--primary)_30%,transparent)]"
             >
               {turn.content}
             </div>
           ) : (
             <div key={`${turn.role}-${index}`} className="mr-auto flex max-w-[92%] items-end gap-2">
               <DirectorAvatar />
-              <div className="whitespace-pre-wrap rounded-3xl rounded-bl-md border border-[var(--border)] bg-[var(--secondary)] px-4 py-2.5 text-sm leading-relaxed text-foreground shadow-[0_4px_14px_rgba(0,0,0,0.18)]">
+              <div className="whitespace-pre-wrap rounded-3xl rounded-bl-md border border-[var(--border)] bg-[var(--secondary)] px-4 py-2.5 text-[0.8125rem] leading-relaxed text-foreground shadow-[0_4px_14px_rgba(0,0,0,0.18)]">
                 {turn.content}
               </div>
             </div>
@@ -168,7 +168,7 @@ export function ForkDirectorPanel({
         {sending && (
           <div className="mr-auto flex items-end gap-2">
             <DirectorAvatar />
-            <div className="flex items-center gap-2 rounded-3xl rounded-bl-md border border-[var(--border)] bg-[var(--secondary)] px-4 py-2.5 text-sm text-[var(--muted-foreground)]">
+            <div className="flex items-center gap-2 rounded-3xl rounded-bl-md border border-[var(--border)] bg-[var(--secondary)] px-4 py-2.5 text-[0.8125rem] text-[var(--muted-foreground)]">
               <Loader2 size="0.875rem" className="animate-spin" />
               {localizeUi("ui.chat.forkdirector.thinking")}
             </div>
@@ -210,14 +210,14 @@ export function ForkDirectorPanel({
             }
           }}
           placeholder={localizeUi("ui.chat.forkdirector.talkItOut")}
-          className="max-h-30 min-h-11 flex-1 resize-none rounded-2xl bg-[var(--secondary)] px-4 py-3 text-sm text-foreground outline-none"
+          className="max-h-30 min-h-9 flex-1 resize-none rounded-2xl bg-[var(--secondary)] px-4 py-3 text-[0.8125rem] text-foreground outline-none"
         />
         <button
           type="button"
           onClick={() => void send(draft)}
           disabled={sending || draft.trim().length === 0}
           aria-label={localizeUi("ui.chat.forkdirector.send")}
-          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-[var(--primary)] text-[var(--primary-foreground)] disabled:opacity-50"
+          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[var(--primary)] text-[var(--primary-foreground)] disabled:opacity-50"
         >
           <SendHorizontal size="0.875rem" />
         </button>
@@ -244,14 +244,14 @@ export function ForkDirectorPanel({
             rows={2}
             onChange={(event) => onChange(turns, event.target.value)}
             placeholder={localizeUi("ui.chat.forkdirector.notePlaceholder")}
-            className="w-full resize-none bg-transparent font-mono text-sm leading-relaxed text-[#f5f2ea] outline-none [field-sizing:content] placeholder:text-[#f5f2ea]/45"
+            className="w-full resize-none bg-transparent font-mono text-[0.8125rem] leading-relaxed text-[#f5f2ea] outline-none [field-sizing:content] placeholder:text-[#f5f2ea]/45"
           />
           <div className="mt-2 flex gap-2">
             <button
               type="button"
               onClick={() => void onRewrite(note)}
               disabled={!note.trim() || !canRewrite || busy || sending}
-              className="min-h-11 flex-1 rounded-lg bg-[var(--primary)] text-sm font-bold text-[var(--primary-foreground)] disabled:opacity-50"
+              className="min-h-9 flex-1 rounded-lg bg-[var(--primary)] text-[0.8125rem] font-bold text-[var(--primary-foreground)] disabled:opacity-50"
             >
               {localizeUi("ui.chat.forkdirector.rewriteReply")}
             </button>
@@ -259,7 +259,7 @@ export function ForkDirectorPanel({
               type="button"
               onClick={() => onSaveForNext(note)}
               disabled={!note.trim() || busy || sending}
-              className="min-h-11 rounded-lg border-2 border-[#f5f2ea]/35 px-4 text-sm font-bold text-[#f5f2ea] disabled:opacity-50"
+              className="min-h-9 rounded-lg border-2 border-[#f5f2ea]/35 px-4 text-[0.8125rem] font-bold text-[#f5f2ea] disabled:opacity-50"
             >
               {localizeUi("ui.chat.forkdirector.saveForNext")}
             </button>

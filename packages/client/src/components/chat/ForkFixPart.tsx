@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Loader2, Plus, RotateCcw, WandSparkles, X } from "lucide-react";
 import { useTranslation as useUiTranslation } from "react-i18next";
+import { HelpTooltip } from "../ui/HelpTooltip";
 import { toast } from "sonner";
 import { api } from "../../lib/api-client";
 import { showConfirmDialog } from "../../lib/app-dialogs";
@@ -389,7 +390,7 @@ export function ForkFixPart({ chatId, messages, onEdit, busy }: Props) {
             onPointerDown={(event) => event.preventDefault()}
             onClick={() => openFix(picked.messageId, picked.text, picked.range)}
             style={{ top: buttonTop, left: buttonLeft }}
-            className="fixed z-[9998] flex min-h-10 -translate-x-1/2 items-center justify-center gap-1.5 whitespace-nowrap rounded-full bg-[var(--primary)] px-3.5 text-sm font-bold text-[var(--primary-foreground)] shadow-lg shadow-black/30"
+            className="fixed z-[9998] flex min-h-8 -translate-x-1/2 items-center justify-center gap-1.5 whitespace-nowrap rounded-full bg-[var(--primary)] px-3.5 text-[0.8125rem] font-bold text-[var(--primary-foreground)] shadow-lg shadow-black/30"
           >
             <WandSparkles size="0.875rem" />
             {localizeUi("ui.chat.forkfix.fixThisPart")}
@@ -405,17 +406,19 @@ export function ForkFixPart({ chatId, messages, onEdit, busy }: Props) {
             aria-label={localizeUi("ui.chat.forkfix.title")}
             // A theme's card colour can be see-through; laid over the page background it never is.
             style={{ background: "linear-gradient(var(--card), var(--card)), var(--background)" }}
-            className="fixed inset-x-0 bottom-0 z-[9990] mx-auto flex max-h-[62vh] w-full max-w-2xl flex-col rounded-t-3xl border border-b-0 border-[color-mix(in_srgb,var(--primary)_40%,var(--border))] shadow-[0_-12px_40px_rgba(0,0,0,0.45)]"
+            className="fork-ui fixed inset-x-0 bottom-0 z-[9990] mx-auto flex max-h-[62vh] w-full max-w-2xl flex-col rounded-t-3xl border border-b-0 border-[color-mix(in_srgb,var(--primary)_40%,var(--border))] shadow-[0_-12px_40px_rgba(0,0,0,0.45)]"
           >
             <div aria-hidden="true" className="mx-auto mt-2 h-1.5 w-10 shrink-0 rounded-full bg-foreground/20" />
             <div className="flex shrink-0 items-center gap-2 px-4 pb-1 pt-2">
               <WandSparkles size="1rem" className="text-[var(--primary)]" />
-              <h2 className="flex-1 text-sm font-bold text-foreground">{localizeUi("ui.chat.forkfix.title")}</h2>
+              <h2 className="flex-1 text-[0.8125rem] font-bold text-foreground">
+                {localizeUi("ui.chat.forkfix.title")}
+              </h2>
               <button
                 type="button"
                 onClick={closeSheet}
                 aria-label={localizeUi("ui.chat.forkfix.close")}
-                className="flex h-11 w-11 items-center justify-center rounded-full text-[var(--muted-foreground)] hover:bg-foreground/10"
+                className="flex h-9 w-9 items-center justify-center rounded-full text-[var(--muted-foreground)] hover:bg-foreground/10"
               >
                 <X size="1rem" />
               </button>
@@ -448,7 +451,7 @@ export function ForkFixPart({ chatId, messages, onEdit, busy }: Props) {
               )}
               <p
                 className={cn(
-                  "whitespace-pre-wrap rounded-2xl px-3.5 py-2.5 text-sm leading-relaxed text-foreground",
+                  "whitespace-pre-wrap rounded-2xl px-3.5 py-2.5 text-[0.8125rem] leading-relaxed text-foreground",
                   replacement !== null && !showBefore
                     ? "border-2 border-[var(--primary)] bg-[color-mix(in_srgb,var(--primary)_10%,transparent)] shadow-[0_0_16px_color-mix(in_srgb,var(--primary)_25%,transparent)]"
                     : "border border-[var(--border)] bg-[var(--secondary)]/60 text-foreground/85",
@@ -484,7 +487,7 @@ export function ForkFixPart({ chatId, messages, onEdit, busy }: Props) {
                 rows={2}
                 onChange={(event) => setInstruction(event.target.value)}
                 placeholder={localizeUi("ui.chat.forkfix.whatToChange")}
-                className="w-full resize-none rounded-2xl bg-[var(--secondary)] px-3.5 py-2.5 text-sm text-foreground outline-none"
+                className="w-full resize-none rounded-2xl bg-[var(--secondary)] px-3.5 py-2.5 text-[0.8125rem] text-foreground outline-none"
               />
 
               <div className="flex gap-2">
@@ -493,7 +496,7 @@ export function ForkFixPart({ chatId, messages, onEdit, busy }: Props) {
                     type="button"
                     onClick={() => void rewrite()}
                     disabled={rewriting || busy}
-                    className="flex min-h-12 flex-1 items-center justify-center gap-2 rounded-2xl bg-[var(--primary)] text-sm font-bold text-[var(--primary-foreground)] disabled:opacity-50"
+                    className="flex min-h-12 flex-1 items-center justify-center gap-2 rounded-2xl bg-[var(--primary)] text-[0.8125rem] font-bold text-[var(--primary-foreground)] disabled:opacity-50"
                   >
                     {rewriting ? (
                       <Loader2 size="0.875rem" className="animate-spin" />
@@ -508,7 +511,7 @@ export function ForkFixPart({ chatId, messages, onEdit, busy }: Props) {
                       type="button"
                       onClick={() => void accept()}
                       disabled={saving || rewriting || busy}
-                      className="flex min-h-12 flex-1 items-center justify-center gap-2 rounded-2xl bg-[var(--primary)] text-sm font-bold text-[var(--primary-foreground)] disabled:opacity-50"
+                      className="flex min-h-12 flex-1 items-center justify-center gap-2 rounded-2xl bg-[var(--primary)] text-[0.8125rem] font-bold text-[var(--primary-foreground)] disabled:opacity-50"
                     >
                       {saving && <Loader2 size="0.875rem" className="animate-spin" />}
                       {localizeUi("ui.chat.forkfix.useIt")}
@@ -517,7 +520,7 @@ export function ForkFixPart({ chatId, messages, onEdit, busy }: Props) {
                       type="button"
                       onClick={() => void rewrite()}
                       disabled={saving || rewriting || busy}
-                      className="flex min-h-12 items-center justify-center gap-2 rounded-2xl border-2 border-[var(--border)] px-4 text-sm font-bold text-foreground disabled:opacity-50"
+                      className="flex min-h-12 items-center justify-center gap-2 rounded-2xl border-2 border-[var(--border)] px-4 text-[0.8125rem] font-bold text-foreground disabled:opacity-50"
                     >
                       {rewriting ? <Loader2 size="0.875rem" className="animate-spin" /> : <RotateCcw size="0.875rem" />}
                       {localizeUi("ui.chat.forkfix.tryAgain")}
@@ -576,21 +579,23 @@ function SlopListEditor({ latestReply }: { latestReply: string }) {
   };
 
   return (
-    <div className="flex flex-col gap-3">
-      <p className="text-xs text-[var(--muted-foreground)]">{localizeUi("ui.chat.forkfix.slopListHelp")}</p>
+    <div className="fork-ui flex flex-col gap-3">
       <div
         className={cn(
-          "rounded-2xl px-3.5 py-2.5 text-sm font-semibold",
+          "flex items-center gap-2 rounded-2xl px-3 py-2 text-[0.8125rem] font-semibold",
           matches.length > 0
             ? "bg-[rgba(255,160,40,0.14)] text-foreground"
             : "bg-[color-mix(in_srgb,var(--primary)_12%,transparent)] text-foreground",
         )}
       >
-        {latestReply
-          ? localizeUi("ui.chat.forkfix.slopCount", { count: matches.length })
-          : localizeUi("ui.chat.forkfix.slopCountNoReply")}
+        <span className="flex-1">
+          {latestReply
+            ? localizeUi("ui.chat.forkfix.slopCount", { count: matches.length })
+            : localizeUi("ui.chat.forkfix.slopCountNoReply")}
+        </span>
+        <HelpTooltip text={localizeUi("ui.chat.forkfix.slopListHelp")} side="bottom" wide size="0.875rem" />
       </div>
-      <label className="flex min-h-11 items-center justify-between gap-3 rounded-xl bg-[var(--secondary)] px-3 text-sm font-semibold text-foreground">
+      <label className="flex min-h-9 items-center justify-between gap-3 rounded-xl bg-[var(--secondary)] px-3 text-[0.8125rem] font-semibold text-foreground">
         {localizeUi("ui.chat.forkfix.highlightInReplies")}
         <input
           type="checkbox"
@@ -600,7 +605,7 @@ function SlopListEditor({ latestReply }: { latestReply: string }) {
           className={FORK_SWITCH_CLASS}
         />
       </label>
-      <label className="flex min-h-11 items-center justify-between gap-3 rounded-xl bg-[var(--secondary)] px-3 text-sm font-semibold text-foreground">
+      <label className="flex min-h-9 items-center justify-between gap-3 rounded-xl bg-[var(--secondary)] px-3 text-[0.8125rem] font-semibold text-foreground">
         {localizeUi("ui.chat.forkfix.showAddToLorebook")}
         <input
           type="checkbox"
@@ -626,13 +631,13 @@ function SlopListEditor({ latestReply }: { latestReply: string }) {
           value={adding}
           onChange={(event) => setAdding(event.target.value)}
           placeholder={localizeUi("ui.chat.forkfix.addPhrasePlaceholder")}
-          className="min-h-11 min-w-0 flex-1 rounded-xl bg-[var(--secondary)] px-3 text-sm text-foreground outline-none"
+          className="min-h-9 min-w-0 flex-1 rounded-xl bg-[var(--secondary)] px-3 text-[0.8125rem] text-foreground outline-none"
         />
         <button
           type="submit"
           disabled={!adding.trim()}
           aria-label={localizeUi("ui.chat.forkfix.addPhrase")}
-          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-[var(--primary)] text-[var(--primary-foreground)] disabled:opacity-50"
+          className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-[var(--primary)] text-[var(--primary-foreground)] disabled:opacity-50"
         >
           <Plus size="1rem" />
         </button>
@@ -643,7 +648,7 @@ function SlopListEditor({ latestReply }: { latestReply: string }) {
           <li
             key={`${index}-${phrase}`}
             className={cn(
-              "flex min-h-10 items-center gap-0.5 rounded-full border pl-3 pr-0.5 text-xs font-semibold",
+              "flex min-h-8 items-center gap-0.5 rounded-full border pl-3 pr-0.5 text-xs font-semibold",
               inLatest(phrase)
                 ? "border-[rgba(255,150,30,0.7)] bg-[rgba(255,160,40,0.16)] text-foreground"
                 : "border-[var(--border)] bg-[var(--secondary)] text-foreground/85",
@@ -674,7 +679,7 @@ function SlopListEditor({ latestReply }: { latestReply: string }) {
           });
           if (ok) resetPhrases();
         }}
-        className="flex min-h-11 items-center justify-center gap-2 rounded-xl border-2 border-[var(--border)] text-sm font-semibold text-foreground"
+        className="flex min-h-9 items-center justify-center gap-2 rounded-xl border-2 border-[var(--border)] text-[0.8125rem] font-semibold text-foreground"
       >
         <RotateCcw size="0.875rem" />
         {localizeUi("ui.chat.forkfix.resetList")}
