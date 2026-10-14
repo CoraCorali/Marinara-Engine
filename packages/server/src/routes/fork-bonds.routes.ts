@@ -1,6 +1,7 @@
 // Fork feature: the relationship tracker API (see FORK.md).
 import type { FastifyInstance } from "fastify";
 import { MAX_BONDS_PER_CHAT, createBondsStorage, describeMoves, type BondInput } from "../services/bonds/fork-bonds.js";
+import { listRecentBondChanges, recentReplyIds } from "../services/bonds/fork-bond-recent.js";
 import { MAX_PAIRS_PER_CHAT, createBondPairsStorage, type BondPairInput } from "../services/bonds/fork-bond-pairs.js";
 
 /** The parts of a request body a pair may be written from. */
@@ -67,6 +68,14 @@ export async function forkBondsRoutes(app: FastifyInstance) {
     if (!bond) return reply.status(404).send({ error: "Bond not found" });
     await storage.remove(bond.id);
     return { success: true };
+  });
+
+  /** What moved lately, for the Relationships list's "last changed" chips. */
+  app.get("/recent", async (req, reply) => {
+    const query = (req.query ?? {}) as { chatId?: unknown };
+    const chatId = typeof query.chatId === "string" ? query.chatId.trim() : "";
+    if (!chatId) return reply.status(400).send({ error: "chatId is required" });
+    return listRecentBondChanges(app.db, chatId, await recentReplyIds(app.db, chatId));
   });
 
   // ── Pairs: how two characters stand with each other ──

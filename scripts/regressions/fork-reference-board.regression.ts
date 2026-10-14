@@ -298,6 +298,66 @@ assert.equal((await pins.listForScope("persona", "persona-1")).length, 0);
 // Clearing a scope that has no board is harmless.
 await removeForkBoardScope(db, "chat", "never-existed");
 
+// ── The closet: saved outfits, wornLook in any chat, never sharing a picture with one ──
+const { closetOutfits, createClosetStorage } = await import("../../packages/server/src/services/board/fork-closet.js");
+const { saveLorebookImage } = await import("../../packages/server/src/services/lorebook/lorebook-images.js");
+registerForkTables([closetOutfits]);
+const closet = createClosetStorage(db);
+const tinyPng = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+  "base64",
+);
+const realPin = async (caption: string, slot: string) =>
+  (await pins.create({
+    scopeType: "chat",
+    scopeId: "chat-closet",
+    imagePath: (await saveLorebookImage(tinyPng)).path,
+    caption,
+    category: "wearing",
+    who: "persona",
+    slot,
+  }))!;
+const work = await realPin("navy pinstripe shirt, black pencil skirt", "outfit");
+const flats = await realPin("black ballet flats", "shoes");
+const look = (await closet.create("Work fit", [work.id, flats.id]))!;
+assert.equal(look.pieces.length, 2, "a look keeps every piece");
+assert.ok(
+  look.pieces.every((piece) => piece.imagePath !== work.imagePath && piece.imagePath !== flats.imagePath),
+  "the closet keeps its own copies of the pictures",
+);
+assert.ok(
+  look.pieces.every((piece) => !piece.inScene),
+  "a closet piece is never in a scene",
+);
+assert.equal((await pins.listForPrompt("chat-closet", null)).length, 2, "the closet adds nothing to a prompt");
+
+// Worn in a new chat by a character: the pieces join that board in scene, outfit first.
+const veeHoodie = await pins.create({
+  scopeType: "chat",
+  scopeId: "chat-new",
+  imagePath: (await saveLorebookImage(tinyPng)).path,
+  caption: "grey hoodie",
+  category: "wearing",
+  who: "char-veeHoodie",
+  slot: "outfit",
+});
+const wornLook = await closet.wear(look.id, "chat-new", "char-veeHoodie");
+assert.equal(wornLook.length, 2);
+assert.deepEqual(
+  wornLook.map((pin) => pin.slot),
+  ["outfit", "shoes"],
+  "the whole outfit goes on first",
+);
+assert.ok(wornLook.every((pin) => pin.inScene && pin.who === "char-veeHoodie"));
+assert.equal((await pins.getById(veeHoodie!.id))!.inScene, false, "it replaces what Vee had on");
+
+// Deleting the outfit leaves the chat wearing it untouched.
+await closet.remove(look.id);
+assert.equal((await closet.list()).length, 0);
+assert.equal((await pins.listForScope("outfit", look.id)).length, 0);
+assert.equal((await pins.listForScope("chat", "chat-new")).filter((pin) => pin.inScene).length, 2);
+assert.equal((await closet.create("", []))!.name, "Outfit", "an unnamed outfit still gets a name");
+
 await closeDB();
 rmSync(dir, { recursive: true, force: true });
 console.log("fork reference board: ok");

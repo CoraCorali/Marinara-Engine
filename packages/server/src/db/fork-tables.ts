@@ -1,5 +1,6 @@
 // Fork: the fork's own file-backed tables (see FORK.md).
 import { boardPins } from "../services/board/fork-board-pins.js";
+import { closetOutfits } from "../services/board/fork-closet.js";
 import { bondMoments, bondTurns, bonds } from "../services/bonds/fork-bonds.js";
 import { bondPairs } from "../services/bonds/fork-bond-pairs.js";
 
@@ -9,4 +10,4 @@ import { bondPairs } from "../services/bonds/fork-bond-pairs.js";
  * than in app startup means anything that opens storage (a script, a test, a tool) can generate
  * without "Unsupported table: fork_bonds".
  */
-export const FORK_TABLES: readonly unknown[] = [boardPins, bonds, bondMoments, bondTurns, bondPairs];
+export const FORK_TABLES: readonly unknown[] = [boardPins, bonds, bondMoments, bondTurns, bondPairs, closetOutfits];

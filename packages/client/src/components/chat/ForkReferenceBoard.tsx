@@ -19,6 +19,7 @@ import {
 import { cn } from "../../lib/utils";
 import { Modal } from "../ui/Modal";
 import { ForkPinEditor, pinTag, type PinCastMember } from "./ForkPinEditor";
+import { ForkCloset } from "./ForkCloset";
 
 type SortMode = "mine" | "inScene" | "category" | "newest";
 const SORT_LABEL_KEYS: Record<SortMode, string> = {
@@ -57,9 +58,11 @@ interface Props {
  */
 export function ForkReferenceBoard({ chatScope, personaScope, personaName = "", cast = [] }: Props) {
   const { t: localizeUi } = useUiTranslation();
-  const [tab, setTab] = useState<"chat" | "persona">("chat");
-  const scope = tab === "chat" ? chatScope : personaScope;
+  const [tab, setTab] = useState<"chat" | "persona" | "closet">("chat");
+  const scope = tab === "persona" ? personaScope : chatScope;
   const { data: pins, isLoading } = useBoardPins(scope);
+  // The closet's "Save a look" reads what is on in this chat and on the always-on board.
+  const { data: personaPins } = useBoardPins(tab === "closet" ? personaScope : null);
   const addPin = useAddBoardPin(scope);
   const updatePin = useUpdateBoardPin(scope);
   const deletePin = useDeleteBoardPin(scope);
@@ -196,37 +199,57 @@ export function ForkReferenceBoard({ chatScope, personaScope, personaName = "", 
           >
             {localizeUi("ui.chat.forkboard.alwaysOn")}
           </button>
+          <button
+            type="button"
+            onClick={() => setTab("closet")}
+            className={`min-h-8 whitespace-nowrap rounded-full px-3 text-[0.8125rem] font-semibold ${tab === "closet" ? "bg-[var(--primary)] text-[var(--primary-foreground)]" : "text-foreground/70"}`}
+          >
+            {localizeUi("ui.chat.forkcloset.tab")}
+          </button>
         </div>
-        <HelpTooltip
-          buttonClassName="-m-2 p-2"
-          text={
-            tab === "chat" ? localizeUi("ui.chat.forkboard.thisChatHelp") : localizeUi("ui.chat.forkboard.alwaysOnHelp")
-          }
-          side="bottom"
-          wide
-          size="0.875rem"
-        />
-        <div className="flex-1" />
-        <button
-          type="button"
-          onClick={() => fileRef.current?.click()}
-          disabled={!scope || addPin.isPending}
-          className="flex min-h-9 items-center gap-1.5 whitespace-nowrap rounded-full bg-[var(--primary)] px-3.5 text-[0.8125rem] font-semibold text-[var(--primary-foreground)] disabled:opacity-50"
-        >
-          {addPin.isPending ? <Loader2 size="0.875rem" className="animate-spin" /> : <Plus size="0.875rem" />}
-          {localizeUi("ui.chat.forkboard.pinAPicture")}
-        </button>
-        <input
-          ref={fileRef}
-          type="file"
-          accept="image/png,image/jpeg,image/webp"
-          multiple
-          className="hidden"
-          onChange={handleFiles}
-        />
+        {tab !== "closet" && (
+          <>
+            <HelpTooltip
+              buttonClassName="-m-2 p-2"
+              text={
+                tab === "chat"
+                  ? localizeUi("ui.chat.forkboard.thisChatHelp")
+                  : localizeUi("ui.chat.forkboard.alwaysOnHelp")
+              }
+              side="bottom"
+              wide
+              size="0.875rem"
+            />
+            <div className="flex-1" />
+            <button
+              type="button"
+              onClick={() => fileRef.current?.click()}
+              disabled={!scope || addPin.isPending}
+              className="flex min-h-9 items-center gap-1.5 whitespace-nowrap rounded-full bg-[var(--primary)] px-3.5 text-[0.8125rem] font-semibold text-[var(--primary-foreground)] disabled:opacity-50"
+            >
+              {addPin.isPending ? <Loader2 size="0.875rem" className="animate-spin" /> : <Plus size="0.875rem" />}
+              {localizeUi("ui.chat.forkboard.pinAPicture")}
+            </button>
+            <input
+              ref={fileRef}
+              type="file"
+              accept="image/png,image/jpeg,image/webp"
+              multiple
+              className="hidden"
+              onChange={handleFiles}
+            />
+          </>
+        )}
       </div>
 
-      {!scope ? (
+      {tab === "closet" ? (
+        <ForkCloset
+          chatId={chatScope?.scopeId ?? null}
+          boardPins={[...(pins ?? []), ...(personaPins ?? [])]}
+          personaName={personaName}
+          cast={cast}
+        />
+      ) : !scope ? (
         <p className="py-6 text-center text-[0.8125rem] text-[var(--muted-foreground)]">
           {localizeUi("ui.chat.forkboard.pickAPersonaFirst")}
         </p>

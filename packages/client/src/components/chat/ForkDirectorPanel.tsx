@@ -8,6 +8,7 @@ import { toast } from "sonner";
 import { api } from "../../lib/api-client";
 import { showConfirmDialog } from "../../lib/app-dialogs";
 import { useUIStore } from "../../stores/ui.store";
+import { useBondPairs, useBonds, useRecentBondChanges } from "../../hooks/use-fork-bonds";
 
 export interface DirectorTurn {
   role: "user" | "assistant";
@@ -26,6 +27,8 @@ interface Props {
   onSaveForNext: (note: string) => void;
   canRewrite: boolean;
   busy: boolean;
+  /** The chat's characters, to name a milestone. */
+  cast?: readonly { id: string; name: string }[];
 }
 
 const QUICK_PROMPT_KEYS = [
@@ -44,6 +47,7 @@ export function ForkDirectorPanel({
   onSaveForNext,
   canRewrite,
   busy,
+  cast = [],
 }: Props) {
   const debugMode = useUIStore((s) => s.debugMode);
   const { t: localizeUi } = useUiTranslation();
@@ -94,6 +98,26 @@ export function ForkDirectorPanel({
     [chatId, debugMode, localizeUi, note, onChange, sending, turns],
   );
 
+  // A bond or pair that just stepped forward: offered as a chip, so the story can notice it.
+  const { data: recent } = useRecentBondChanges(chatId);
+  const { data: bonds } = useBonds(chatId);
+  const { data: pairs } = useBondPairs(chatId);
+  const [usedMilestones, setUsedMilestones] = useState<string[]>([]);
+  const nameOf = (characterId: string) => cast.find((member) => member.id === characterId)?.name ?? "";
+  const milestones = (recent ?? []).flatMap((change) => {
+    const key = `${change.id}:${change.to}`;
+    if (!change.milestone || change.repliesAgo > 1 || usedMilestones.includes(key)) return [];
+    let who = "";
+    if (change.pair) {
+      const pair = (pairs ?? []).find((candidate) => candidate.id === change.id);
+      who = pair && nameOf(pair.aId) && nameOf(pair.bId) ? `${nameOf(pair.aId)} & ${nameOf(pair.bId)}` : "";
+    } else {
+      const bond = (bonds ?? []).find((candidate) => candidate.id === change.id);
+      who = bond ? bond.label.trim() || nameOf(bond.characterId) : "";
+    }
+    return who ? [{ key, who, to: change.to }] : [];
+  });
+
   const empty = turns.length === 0 && !sending;
   // Each answer from the Director is another take on the note.
   const takeNumber = Math.max(1, turns.filter((turn) => turn.role === "assistant").length);
@@ -126,6 +150,23 @@ export function ForkDirectorPanel({
       </div>
 
       <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto">
+        {milestones.length > 0 && !sending && (
+          <div className="flex flex-wrap gap-1.5">
+            {milestones.map((milestone) => (
+              <button
+                key={milestone.key}
+                type="button"
+                onClick={() => {
+                  setUsedMilestones((used) => [...used, milestone.key]);
+                  void send(localizeUi("ui.chat.forkdirector.milestoneAsk", { who: milestone.who, to: milestone.to }));
+                }}
+                className="min-h-8 rounded-full border border-[color-mix(in_srgb,var(--primary)_45%,var(--border))] bg-[color-mix(in_srgb,var(--primary)_14%,var(--secondary))] px-3 text-left text-xs font-semibold text-foreground"
+              >
+                {localizeUi("ui.chat.forkdirector.milestoneChip", { who: milestone.who, to: milestone.to })}
+              </button>
+            ))}
+          </div>
+        )}
         {empty && (
           <div className="flex flex-col items-center gap-2.5 py-3 text-center">
             <p className="max-w-[18rem] text-[0.8125rem] text-[var(--muted-foreground)]">

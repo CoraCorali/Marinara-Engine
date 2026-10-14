@@ -2,13 +2,14 @@
 // Fork: editing one board pin — who it is for, what it is, and what it shows
 // ──────────────────────────────────────────────
 import { useId } from "react";
-import { Loader2, Sparkles, Trash2 } from "lucide-react";
+import { Loader2, Shirt, Sparkles, Trash2 } from "lucide-react";
 import { useTranslation as useUiTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { FORK_PIN_WHO_PERSONA, FORK_PIN_WHO_SCENE, FORK_WEAR_SLOTS, type ForkWearSlot } from "@marinara-engine/shared";
 import { useForkDraftField } from "../../hooks/use-fork-draft-field";
 import {
   BOARD_PIN_CATEGORIES,
+  useCreateOutfit,
   useDescribeBoardPin,
   useUpdateBoardPin,
   type BoardPin,
@@ -79,6 +80,7 @@ export function ForkPinEditor({
   personaName,
   cast,
   onDelete,
+  closet = false,
 }: {
   pin: BoardPin;
   scope: BoardScope;
@@ -86,18 +88,21 @@ export function ForkPinEditor({
   personaName: string;
   cast: readonly PinCastMember[];
   onDelete: () => void;
+  /** A piece of a closet outfit: who wears it and whether it is in scene are chosen when it is worn. */
+  closet?: boolean;
 }) {
   const { t: localizeUi } = useUiTranslation();
   const debugMode = useUIStore((s) => s.debugMode);
   const updatePin = useUpdateBoardPin(scope);
   const describePin = useDescribeBoardPin();
+  const createOutfit = useCreateOutfit();
   const captionId = useId();
   const save = (data: Omit<Parameters<typeof updatePin.mutate>[0], "id">) => updatePin.mutate({ id: pin.id, ...data });
   const [caption, changeCaption, flushCaption] = useForkDraftField(pin.caption, (value: string) =>
     save({ caption: value }),
   );
 
-  const wearing = pin.category === "wearing";
+  const wearing = closet || pin.category === "wearing";
   // A wearing pin is always about someone; a place or a vibe is about the scene.
   const whoOptions: { id: string; label: string }[] = [
     ...(personaName
@@ -165,39 +170,43 @@ export function ForkPinEditor({
         </div>
       </div>
 
-      <div className="flex flex-col gap-1.5">
-        <Label>{localizeUi("ui.chat.forkboard.whatIsIt")}</Label>
-        <div className="flex flex-wrap gap-1.5">
-          {BOARD_PIN_CATEGORIES.map((category) => (
-            <button
-              key={category}
-              type="button"
-              onClick={() => save({ category })}
-              aria-pressed={pin.category === category}
-              className={cn(CHIP, pin.category === category ? CHIP_ON : CHIP_OFF)}
-            >
-              {localizeUi(PIN_CATEGORY_LABEL_KEYS[category])}
-            </button>
-          ))}
+      {!closet && (
+        <div className="flex flex-col gap-1.5">
+          <Label>{localizeUi("ui.chat.forkboard.whatIsIt")}</Label>
+          <div className="flex flex-wrap gap-1.5">
+            {BOARD_PIN_CATEGORIES.map((category) => (
+              <button
+                key={category}
+                type="button"
+                onClick={() => save({ category })}
+                aria-pressed={pin.category === category}
+                className={cn(CHIP, pin.category === category ? CHIP_ON : CHIP_OFF)}
+              >
+                {localizeUi(PIN_CATEGORY_LABEL_KEYS[category])}
+              </button>
+            ))}
+          </div>
         </div>
-      </div>
+      )}
 
-      <div className="flex flex-col gap-1.5">
-        <Label>{localizeUi(wearing ? "ui.chat.forkboard.whoWears" : "ui.chat.forkboard.whoIsItAbout")}</Label>
-        <div className="flex flex-wrap gap-1.5">
-          {whoOptions.map((option) => (
-            <button
-              key={option.id}
-              type="button"
-              onClick={() => save({ who: option.id })}
-              aria-pressed={pin.who === option.id}
-              className={cn(CHIP, pin.who === option.id ? CHIP_ON : CHIP_OFF)}
-            >
-              {option.label}
-            </button>
-          ))}
+      {!closet && (
+        <div className="flex flex-col gap-1.5">
+          <Label>{localizeUi(wearing ? "ui.chat.forkboard.whoWears" : "ui.chat.forkboard.whoIsItAbout")}</Label>
+          <div className="flex flex-wrap gap-1.5">
+            {whoOptions.map((option) => (
+              <button
+                key={option.id}
+                type="button"
+                onClick={() => save({ who: option.id })}
+                aria-pressed={pin.who === option.id}
+                className={cn(CHIP, pin.who === option.id ? CHIP_ON : CHIP_OFF)}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
         </div>
-      </div>
+      )}
 
       {wearing && (
         <>
@@ -236,16 +245,39 @@ export function ForkPinEditor({
         </>
       )}
 
-      <label className="flex min-h-9 items-center justify-between gap-3 rounded-xl bg-[var(--secondary)] px-3 text-[0.8125rem] font-semibold text-foreground">
-        {localizeUi("ui.chat.forkboard.inSceneSwitch")}
-        <input
-          type="checkbox"
-          role="switch"
-          checked={pin.inScene}
-          onChange={(event) => save({ inScene: event.target.checked })}
-          className={FORK_SWITCH_CLASS}
-        />
-      </label>
+      {!closet && (
+        <label className="flex min-h-9 items-center justify-between gap-3 rounded-xl bg-[var(--secondary)] px-3 text-[0.8125rem] font-semibold text-foreground">
+          {localizeUi("ui.chat.forkboard.inSceneSwitch")}
+          <input
+            type="checkbox"
+            role="switch"
+            checked={pin.inScene}
+            onChange={(event) => save({ inScene: event.target.checked })}
+            className={FORK_SWITCH_CLASS}
+          />
+        </label>
+      )}
+
+      {/* One piece into the closet, so it can be worn in any chat. */}
+      {!closet && wearing && (
+        <button
+          type="button"
+          disabled={createOutfit.isPending}
+          onClick={() =>
+            createOutfit.mutate(
+              {
+                name: pin.caption.split(",")[0]?.trim() || localizeUi("ui.chat.forkcloset.untitled"),
+                pinIds: [pin.id],
+              },
+              { onSuccess: () => toast.success(localizeUi("ui.chat.forkcloset.savedToCloset")) },
+            )
+          }
+          className="flex min-h-9 items-center justify-center gap-1.5 rounded-xl bg-[color-mix(in_srgb,var(--primary)_18%,transparent)] text-xs font-semibold text-[var(--primary)] disabled:opacity-60"
+        >
+          {createOutfit.isPending ? <Loader2 size="0.75rem" className="animate-spin" /> : <Shirt size="0.75rem" />}
+          {localizeUi("ui.chat.forkcloset.saveToCloset")}
+        </button>
+      )}
 
       <button
         type="button"

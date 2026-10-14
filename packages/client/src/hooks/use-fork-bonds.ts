@@ -150,6 +150,25 @@ export interface BondPair {
 
 export type BondPairPatch = { kind?: ForkBondKind; rung?: string; aLine?: string; bLine?: string };
 
+/** What moved lately in People (newest first), for "last changed" chips and the Director. */
+export interface RecentBondChange {
+  id: string;
+  pair: boolean;
+  from: string;
+  to: string;
+  repliesAgo: number;
+  milestone: boolean;
+}
+
+export function useRecentBondChanges(chatId: string | null) {
+  return useQuery({
+    queryKey: ["fork-bonds", chatId ?? "none", "recent"] as const,
+    queryFn: () => api.get<RecentBondChange[]>(`/fork-bonds/recent?chatId=${encodeURIComponent(chatId!)}`),
+    enabled: Boolean(chatId),
+    staleTime: 0,
+  });
+}
+
 const pairKeys = (chatId: string | null) => ["fork-bonds", chatId ?? "none", "pairs"] as const;
 
 export function useBondPairs(chatId: string | null) {

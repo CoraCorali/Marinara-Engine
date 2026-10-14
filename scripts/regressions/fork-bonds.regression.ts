@@ -386,6 +386,31 @@ await applyBondsAgentResult(db, "chat-pairs", { pairs: [{ a: "Vee", b: "Gia", ru
 assert.equal((await pairStore.getById(veeGia.id))!.rung, "Dutiful");
 await applyBondsAgentResult(db, "chat-pairs", { pairs: [{ a: "Vee", b: "Gia", rung: "Close" }] }, pairResolve, "msg-p");
 assert.equal((await pairStore.getById(veeGia.id))!.rung, "Dutiful", "two swipes of one reply move a pair one rung");
+// What moved lately: the writer is reminded, and a step up is a milestone for the Director.
+const { listRecentBondChanges, recentChangesPromptBlock, milestoneNudgeLine } =
+  await import("../../packages/server/src/services/bonds/fork-bond-recent.js");
+const recentMoves = await listRecentBondChanges(db, "chat-pairs", ["msg-old", "msg-p", "msg-new"]);
+assert.deepEqual(
+  recentMoves.map(({ from, to, repliesAgo, milestone }) => ({ from, to, repliesAgo, milestone })),
+  [{ from: "Distant", to: "Dutiful", repliesAgo: 1, milestone: true }],
+);
+const pairNow = await pairStore.listForChat("chat-pairs");
+assert.equal(
+  recentChangesPromptBlock(recentMoves, [], pairNow, pairNames),
+  "What changed lately (keep these changes showing; newest first):\n- Gia & Vee: Distant → Dutiful (one reply ago)",
+);
+assert.ok(milestoneNudgeLine(recentMoves, [], pairNow, pairNames).startsWith("Milestones just reached"));
+assert.equal(
+  (await listRecentBondChanges(db, "chat-pairs", ["msg-p", ...Array.from({ length: 12 }, (_, i) => `m${i}`)])).length,
+  0,
+  "an old change drops out of the reminder",
+);
+assert.equal(
+  (await listRecentBondChanges(db, "chat-pairs", ["msg-other"])).length,
+  0,
+  "a reply that is gone counts for nothing",
+);
+
 // Undoing a change of kind puts the old rung back too, not the old kind's first rung.
 await applyBondsAgentResult(db, "chat-pairs", { pairs: [{ a: "Vee", b: "Gia", kind: "rival" }] }, pairResolve, "msg-k");
 assert.equal((await pairStore.getById(veeGia.id))!.kind, "rival");

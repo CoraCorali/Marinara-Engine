@@ -12,7 +12,7 @@ export type BoardPinCategory = (typeof BOARD_PIN_CATEGORIES)[number];
 
 export interface BoardPin {
   id: string;
-  scopeType: "chat" | "persona";
+  scopeType: "chat" | "persona" | "outfit";
   scopeId: string;
   imagePath: string;
   caption: string;
@@ -35,11 +35,20 @@ export interface PinDescription {
   shows: ForkPinShows;
 }
 
-export type BoardScope = { scopeType: "chat" | "persona"; scopeId: string } | null;
+/** A chat's board, a persona's always-on board, or one outfit in the closet. */
+export type BoardScope = { scopeType: "chat" | "persona" | "outfit"; scopeId: string } | null;
 
 export const boardKeys = {
   pins: (scope: BoardScope) => ["fork-board", scope?.scopeType ?? "none", scope?.scopeId ?? "none"] as const,
 };
+
+const closetKey = ["fork-closet"] as const;
+
+/** Re-read a scope's pins; an outfit's pieces also live in the closet's list. */
+function invalidateScope(qc: ReturnType<typeof useQueryClient>, scope: BoardScope) {
+  void qc.invalidateQueries({ queryKey: boardKeys.pins(scope) });
+  if (scope?.scopeType === "outfit") void qc.invalidateQueries({ queryKey: closetKey });
+}
 
 export function useBoardPins(scope: BoardScope) {
   return useQuery({
@@ -65,7 +74,7 @@ export function useAddBoardPin(scope: BoardScope) {
       form.append("file", input.file);
       return api.upload<BoardPin>("/fork-board/pins", form);
     },
-    onSuccess: () => qc.invalidateQueries({ queryKey: boardKeys.pins(scope) }),
+    onSuccess: () => invalidateScope(qc, scope),
   });
 }
 
@@ -92,7 +101,7 @@ export function useUpdateBoardPin(scope: BoardScope) {
         error instanceof Error && error.message ? error.message : translate("ui.chat.forkboard.couldNotSave"),
         { id: "fork-board-save" },
       ),
-    onSuccess: () => qc.invalidateQueries({ queryKey: boardKeys.pins(scope) }),
+    onSuccess: () => invalidateScope(qc, scope),
   });
 }
 
@@ -100,7 +109,7 @@ export function useDeleteBoardPin(scope: BoardScope) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: string) => api.delete<{ success: boolean }>(`/fork-board/pins/${id}`),
-    onSuccess: () => qc.invalidateQueries({ queryKey: boardKeys.pins(scope) }),
+    onSuccess: () => invalidateScope(qc, scope),
   });
 }
 
@@ -109,5 +118,70 @@ export function useDescribeBoardPin() {
   return useMutation({
     mutationFn: ({ id, chatId, debugMode }: { id: string; chatId: string | null; debugMode?: boolean }) =>
       api.post<PinDescription>(`/fork-board/pins/${id}/describe`, { chatId, debugMode }),
+  });
+}
+
+// ── The closet: saved outfits for any chat ──
+
+export interface ClosetOutfit {
+  id: string;
+  name: string;
+  order: number;
+  pieces: BoardPin[];
+}
+
+function closetSaveFailed(error: unknown) {
+  toast.error(error instanceof Error && error.message ? error.message : translate("ui.chat.forkcloset.couldNotSave"), {
+    id: "fork-closet-save",
+  });
+}
+
+export function useClosetOutfits(enabled = true) {
+  return useQuery({
+    queryKey: closetKey,
+    queryFn: () => api.get<ClosetOutfit[]>("/fork-closet/outfits"),
+    enabled,
+    staleTime: 30_000,
+  });
+}
+
+/** A new outfit, empty or holding copies of the given pins. */
+export function useCreateOutfit() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { name: string; pinIds?: string[] }) => api.post<ClosetOutfit>("/fork-closet/outfits", input),
+    onSuccess: () => qc.invalidateQueries({ queryKey: closetKey }),
+    onError: closetSaveFailed,
+  });
+}
+
+export function useRenameOutfit() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, name }: { id: string; name: string }) =>
+      api.patch<ClosetOutfit>(`/fork-closet/outfits/${id}`, { name }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: closetKey }),
+    onError: closetSaveFailed,
+  });
+}
+
+export function useDeleteOutfit() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (id: string) => api.delete<{ success: boolean }>(`/fork-closet/outfits/${id}`),
+    onSuccess: () => qc.invalidateQueries({ queryKey: closetKey }),
+    onError: closetSaveFailed,
+  });
+}
+
+/** Put an outfit on someone in a chat: its pieces join the chat's board, in scene. */
+export function useWearOutfit(chatId: string | null) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, who }: { id: string; who: string }) =>
+      api.post<BoardPin[]>(`/fork-closet/outfits/${id}/wear`, { chatId, who }),
+    onSuccess: () =>
+      qc.invalidateQueries({ queryKey: boardKeys.pins(chatId ? { scopeType: "chat", scopeId: chatId } : null) }),
+    onError: closetSaveFailed,
   });
 }

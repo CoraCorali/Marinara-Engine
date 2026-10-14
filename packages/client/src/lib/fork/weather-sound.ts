@@ -154,7 +154,19 @@ export class WeatherSoundEngine {
   }
 
   setVolume(volume: number) {
-    this.master.gain.setTargetAtTime(Math.min(1, Math.max(0, volume)) * 0.6, this.ctx.currentTime, 0.4);
+    // A slow time constant, so sounds swell in when they start rather than switching on.
+    this.master.gain.setTargetAtTime(Math.min(1, Math.max(0, volume)) * 0.6, this.ctx.currentTime, 0.8);
+  }
+
+  /** Fade everything out, then let go of the audio, so switching sounds off or leaving a chat is soft. */
+  fadeOutAndClose(seconds = 1.5) {
+    if (this.closed) return;
+    if (this.ctx.state !== "running") {
+      this.close();
+      return;
+    }
+    this.master.gain.setTargetAtTime(0, this.ctx.currentTime, seconds / 4);
+    setTimeout(() => this.close(), seconds * 1000);
   }
 
   /** Browsers start audio suspended until the page has been touched; this is called on a touch. */
@@ -169,6 +181,7 @@ export class WeatherSoundEngine {
   }
 
   close() {
+    if (this.closed) return;
     this.closed = true;
     if (this.thunderTimer) clearTimeout(this.thunderTimer);
     if (this.crackleTimer) clearTimeout(this.crackleTimer);

@@ -3715,6 +3715,8 @@ const LocalChatArea = memo(function LocalChatArea({
             onSaveForNext={handleDirectorSaveForNext}
             canRewrite={Boolean(directorRewriteTargetId)}
             busy={isStreaming}
+            // Fork: names for the milestone chips.
+            cast={forkBondsCast}
           />
         )}
       </Modal>

@@ -24,6 +24,12 @@ import {
 import { cardPromptText } from "../services/prompt/card-text.js";
 import { createBondsStorage } from "../services/bonds/fork-bonds.js";
 import { createBondPairsStorage, pairsPromptBlock } from "../services/bonds/fork-bond-pairs.js";
+import {
+  listRecentBondChanges,
+  milestoneNudgeLine,
+  recentChangesPromptBlock,
+  recentReplyIds,
+} from "../services/bonds/fork-bond-recent.js";
 import { createBoardPinsStorage } from "../services/board/fork-board-pins.js";
 import { bondsPromptBlock } from "../services/generation/fork-bonds-prompt.js";
 import { boardPinsNoteLine, pinNameResolver } from "../services/generation/fork-board-prompt.js";
@@ -198,15 +204,16 @@ export async function forkDirectorRoutes(app: FastifyInstance) {
 
     // What the writer model is told about the relationships and the pinned pictures, so the
     // Director judges a reply against the same picture of things.
+    const cardNameFor = (characterId: string) =>
+      String(cards[cardRows.findIndex((row) => row.id === characterId)]?.name ?? "");
+    const bondList = await createBondsStorage(app.db).listForChat(chatId);
+    const pairList = await createBondPairsStorage(app.db).listForChat(chatId);
+    const recentMoves = await listRecentBondChanges(app.db, chatId, await recentReplyIds(app.db, chatId));
     const standing = [
-      bondsPromptBlock(
-        await createBondsStorage(app.db).listForChat(chatId),
-        (characterId) => String(cards[cardRows.findIndex((row) => row.id === characterId)]?.name ?? ""),
-        persona?.name ?? "",
-      ),
-      pairsPromptBlock(await createBondPairsStorage(app.db).listForChat(chatId), (characterId) =>
-        String(cards[cardRows.findIndex((row) => row.id === characterId)]?.name ?? ""),
-      ),
+      bondsPromptBlock(bondList, cardNameFor, persona?.name ?? ""),
+      pairsPromptBlock(pairList, cardNameFor),
+      recentChangesPromptBlock(recentMoves, bondList, pairList, cardNameFor),
+      milestoneNudgeLine(recentMoves, bondList, pairList, cardNameFor),
       boardPinsNoteLine(
         await createBoardPinsStorage(app.db).listForPrompt(chatId, identity?.source === "persona" ? identity.id : null),
         pinNameResolver(persona?.name ?? "", (characterId) =>

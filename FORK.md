@@ -524,6 +524,24 @@ to a model was traced from its prompt to what is done with the answer.
   before exiting, the same on untouched upstream code, so it can hit the 30-second limit on a slow
   machine.
 
+### The closet, what changed lately, and milestones
+
+- **👗 Closet** (a third tab on the board): saved outfits that work in every chat. Save a look
+  someone has on, save one pin from its editor, or start a new outfit from pictures. Tap **Wear** to
+  put it on you or a character in this chat: its pieces join the chat's board in scene, the whole
+  outfit first, and the board's usual rule takes out what they replace. Closet pieces are board pins
+  in their own `outfit` scope with their own copies of the pictures, so deleting a chat never empties
+  the closet and deleting an outfit never touches a chat wearing it. A piece keeps Describe it.
+- **What changed lately**: each reply's tracker turn is read back, so the writer gets "What changed
+  lately" (newest first, the last twelve replies) and the Relationships rows show "↑ Intimate · last
+  reply" for a couple of replies after a move. People refreshes after every reply.
+- **Milestones**: a step up a warm ladder, or a romance's next status, is a milestone. The Director
+  is told about fresh ones and shows a chip ("💞 Theo reached Intimate. Ideas?") that asks it for a
+  small beat that lets the story notice it, never forced.
+- **Weather sounds**: the Sounds switch moved near the top of the weather panel, sounds swell in and
+  fade out instead of stopping, and the help says a clear sky is quiet and an iPhone's silent switch
+  mutes them. A browser test confirmed they play once the page is touched.
+
 ## Upstream files touched
 
 Fork-only code lives in `packages/client/src/lib/fork/`, `Fork*` components, `packages/shared/src/features/fork-bond-shapes.ts`, `packages/server/src/services/import/fork/`
@@ -602,6 +620,8 @@ Edits to upstream files are marked with a `Fork:` comment.
 | `packages/server/src/services/generation/lorebook-image-prompt.ts`                         | Optional heading for the board's pictures                                                         |
 | `packages/server/src/routes/generate.routes.ts`                                            | Mentioned pins, names, the persona's today line and the pairs note                                |
 | `packages/shared/src/schemas/gm-verb-table.schema.ts`                                      | Reserves the `fork` chat-metadata namespace                                                       |
+| `packages/server/src/routes/index.ts`                                                      | Registers the closet routes                                                                       |
+| `packages/client/src/components/chat/ChatArea.tsx`                                         | Names for the Director's milestone chips                                                          |
 
 ## Known upstream issue kept as is
 

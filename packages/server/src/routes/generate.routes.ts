@@ -242,6 +242,7 @@ import {
   loadBondsAgentState,
 } from "../services/bonds/fork-bond-updates.js";
 import { pairsPromptBlock } from "../services/bonds/fork-bond-pairs.js";
+import { listRecentBondChanges, recentChangesPromptBlock } from "../services/bonds/fork-bond-recent.js";
 import { createAgentsStorage } from "../services/storage/agents.storage.js";
 import { createGameStateStorage, parseStoredRulesetLive } from "../services/storage/game-state.storage.js";
 import {
@@ -7757,17 +7758,24 @@ export async function generateRoutes(app: FastifyInstance, options: GenerateRout
           // relationship is what a model most often contradicts after twenty messages. Pins go as
           // words as well as pictures, since some providers never receive the images.
           if (chatMode === "roleplay") {
+            const forkNameFor = (characterId: string) =>
+              charInfo.find((character) => character.id === characterId)?.name ?? "";
+            // A swipe is written against where things stood before the reply it replaces.
+            const forkBonds = await listBondsBeforeTurn(app.db, input.chatId, input.regenerateMessageId);
+            const forkPairs = await listPairsBeforeTurn(app.db, input.chatId, input.regenerateMessageId);
+            // What moved lately, counted over the replies the writer sees (the one being
+            // regenerated is already left out of chatMessages).
+            const forkRecent = await listRecentBondChanges(
+              app.db,
+              input.chatId,
+              chatMessages
+                .filter((message: { role: string }) => message.role === "assistant")
+                .map((message: { id: string }) => message.id),
+            );
             const forkNoteParts = [
-              bondsPromptBlock(
-                // A swipe is written against where things stood before the reply it replaces.
-                await listBondsBeforeTurn(app.db, input.chatId, input.regenerateMessageId),
-                (characterId) => charInfo.find((character) => character.id === characterId)?.name ?? "",
-                personaName,
-              ),
-              pairsPromptBlock(
-                await listPairsBeforeTurn(app.db, input.chatId, input.regenerateMessageId),
-                (characterId) => charInfo.find((character) => character.id === characterId)?.name ?? "",
-              ),
+              bondsPromptBlock(forkBonds, forkNameFor, personaName),
+              pairsPromptBlock(forkPairs, forkNameFor),
+              recentChangesPromptBlock(forkRecent, forkBonds, forkPairs, forkNameFor),
               boardPinsNoteLine(forkBoardPins, forkPinNameFor, forkMentionedPinIds),
               // The persona card's "Appearance today" note: hair up, last night's lashes, and so on.
               typeof chatMeta.forkPersonaToday === "string" && chatMeta.forkPersonaToday.trim()

@@ -1,6 +1,10 @@
 // Fork feature: reference board API (see FORK.md).
 import type { FastifyInstance } from "fastify";
-import { createBoardPinsStorage, MAX_BOARD_PINS_PER_SCOPE } from "../services/board/fork-board-pins.js";
+import {
+  createBoardPinsStorage,
+  MAX_BOARD_PINS_PER_SCOPE,
+  type BoardScopeType,
+} from "../services/board/fork-board-pins.js";
 import {
   discardLorebookImage,
   LOREBOOK_IMAGE_MAX_BYTES,
@@ -8,6 +12,7 @@ import {
 } from "../services/lorebook/lorebook-images.js";
 import { logger, logDebugOverride } from "../lib/logger.js";
 import { isDebugAgentsEnabled } from "../config/runtime-config.js";
+import { createClosetStorage } from "../services/board/fork-closet.js";
 import { createChatsStorage } from "../services/storage/chats.storage.js";
 import { resolveForkChatProvider } from "../services/generation/fork-chat-provider.js";
 import { readLorebookImageDataUrl } from "../services/lorebook/lorebook-images.js";
@@ -19,11 +24,12 @@ import { PIN_DESCRIBE_PROMPT, readPinDescription } from "../services/generation/
  */
 export async function forkBoardRoutes(app: FastifyInstance) {
   const storage = createBoardPinsStorage(app.db);
+  const closet = createClosetStorage(app.db);
 
-  const readScope = (query: unknown): { scopeType: "chat" | "persona"; scopeId: string } | null => {
+  const readScope = (query: unknown): { scopeType: BoardScopeType; scopeId: string } | null => {
     const q = (query ?? {}) as { scopeType?: unknown; scopeId?: unknown };
-    const scopeType: "chat" | "persona" | null =
-      q.scopeType === "persona" ? "persona" : q.scopeType === "chat" ? "chat" : null;
+    const scopeType: BoardScopeType | null =
+      q.scopeType === "persona" || q.scopeType === "chat" || q.scopeType === "outfit" ? q.scopeType : null;
     const scopeId = typeof q.scopeId === "string" ? q.scopeId.trim() : "";
     return scopeType && scopeId ? { scopeType, scopeId } : null;
   };
@@ -46,6 +52,9 @@ export async function forkBoardRoutes(app: FastifyInstance) {
     };
     const scope = readScope({ scopeType: readField("scopeType"), scopeId: readField("scopeId") });
     if (!scope) return reply.status(400).send({ error: "scopeType and scopeId are required" });
+    if (scope.scopeType === "outfit" && !(await closet.exists(scope.scopeId))) {
+      return reply.status(404).send({ error: "Outfit not found" });
+    }
 
     const buffer = await file.toBuffer();
     let image;
@@ -63,7 +72,8 @@ export async function forkBoardRoutes(app: FastifyInstance) {
       who: readField("who"),
       slot: readField("slot"),
       shows: readField("shows"),
-      inScene: readField("inScene") !== "false",
+      // A closet piece is never "in scene": that happens when an outfit is worn in a chat.
+      inScene: scope.scopeType !== "outfit" && readField("inScene") !== "false",
     });
     if (!pin) {
       // The board is full, so the picture we just saved has nothing pointing at it.

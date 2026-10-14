@@ -203,6 +203,23 @@ export function ForkWeatherPanel({ chatId }: { chatId: string | null }) {
         <Switch label={localizeUi("ui.chat.forkweather.keepIt")} checked={kept} onChange={setKept} />
       </Section>
 
+      {/* Sounds sit near the top, where a phone sees them without scrolling. */}
+      <Section title={localizeUi("ui.chat.forkweather.sounds")} help={localizeUi("ui.chat.forkweather.soundHelp")}>
+        <Switch label={localizeUi("ui.chat.forkweather.soundOn")} checked={soundOn} onChange={setSoundOn} />
+        {soundOn && (
+          <>
+            <Slider
+              label={localizeUi("ui.chat.forkweather.volume")}
+              value={volume}
+              min={0}
+              max={1}
+              onCommit={setVolume}
+            />
+            <Switch label={localizeUi("ui.chat.forkweather.fireplace")} checked={fireplace} onChange={setFireplace} />
+          </>
+        )}
+      </Section>
+
       <Section title={localizeUi("ui.chat.forkweather.tune")}>
         <Slider
           label={localizeUi("ui.chat.forkweather.amount")}
@@ -325,22 +342,6 @@ export function ForkWeatherPanel({ chatId }: { chatId: string | null }) {
         </Section>
       )}
 
-      <Section title={localizeUi("ui.chat.forkweather.sounds")} help={localizeUi("ui.chat.forkweather.soundHelp")}>
-        <Switch label={localizeUi("ui.chat.forkweather.soundOn")} checked={soundOn} onChange={setSoundOn} />
-        {soundOn && (
-          <>
-            <Slider
-              label={localizeUi("ui.chat.forkweather.volume")}
-              value={volume}
-              min={0}
-              max={1}
-              onCommit={setVolume}
-            />
-            <Switch label={localizeUi("ui.chat.forkweather.fireplace")} checked={fireplace} onChange={setFireplace} />
-          </>
-        )}
-      </Section>
-
       <button
         type="button"
         onClick={() => resetChatPrefs(chatId)}
@@ -375,7 +376,7 @@ export function ForkWeatherSound({ scene }: { scene: WeatherSoundScene }) {
     return () => {
       for (const name of wakeEvents) window.removeEventListener(name, wake);
       document.removeEventListener("visibilitychange", onVisibility);
-      engine.close();
+      engine.fadeOutAndClose();
       if (engineRef.current === engine) engineRef.current = null;
     };
   }, [soundOn]);

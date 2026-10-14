@@ -20,6 +20,9 @@ import { fileTable, text, integer } from "../../db/file-schema.js";
 import type { DB } from "../../db/connection.js";
 import { newId, now } from "../../utils/id-generator.js";
 
+/** A chat's board, a persona's always-on board, or one outfit in the closet. */
+export type BoardScopeType = "chat" | "persona" | "outfit";
+
 export const BOARD_PIN_CATEGORIES = ["wearing", "place", "person", "thing", "vibe"] as const;
 export type BoardPinCategory = (typeof BOARD_PIN_CATEGORIES)[number];
 
@@ -66,7 +69,7 @@ export type BoardPinRow = {
 
 export type BoardPin = {
   id: string;
-  scopeType: "chat" | "persona";
+  scopeType: BoardScopeType;
   scopeId: string;
   imagePath: string;
   caption: string;
@@ -117,7 +120,7 @@ export function toBoardPin(row: BoardPinRow): BoardPin {
 
 export function createBoardPinsStorage(db: DB) {
   return {
-    async listForScope(scopeType: "chat" | "persona", scopeId: string): Promise<BoardPin[]> {
+    async listForScope(scopeType: BoardScopeType, scopeId: string): Promise<BoardPin[]> {
       if (!scopeId) return [];
       const rows = (await db
         .select()
@@ -134,7 +137,7 @@ export function createBoardPinsStorage(db: DB) {
 
     async create(
       input: {
-        scopeType: "chat" | "persona";
+        scopeType: BoardScopeType;
         scopeId: string;
         imagePath: string;
       } & BoardPinFields,
@@ -215,7 +218,7 @@ export function createBoardPinsStorage(db: DB) {
     },
 
     /** Every pin for a scope, with its picture, so deleting a chat or persona leaves nothing behind. */
-    async removeScope(scopeType: "chat" | "persona", scopeId: string): Promise<string[]> {
+    async removeScope(scopeType: BoardScopeType, scopeId: string): Promise<string[]> {
       const pins = await this.listForScope(scopeType, scopeId);
       for (const pin of pins) await this.remove(pin.id);
       return pins.map((pin) => pin.imagePath);

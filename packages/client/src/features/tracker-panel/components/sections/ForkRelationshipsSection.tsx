@@ -9,7 +9,14 @@ import { ArrowLeftRight, HeartHandshake } from "lucide-react";
 import { useTranslation as useUiTranslation } from "react-i18next";
 import type { ForkLoveStatus, PresentCharacter } from "@marinara-engine/shared";
 import { STATUS_LABEL_KEYS } from "../../../../components/chat/ForkBondsPanel";
-import { useBondPairs, useBonds, type Bond, type BondPair } from "../../../../hooks/use-fork-bonds";
+import {
+  useBondPairs,
+  useBonds,
+  useRecentBondChanges,
+  type Bond,
+  type BondPair,
+  type RecentBondChange,
+} from "../../../../hooks/use-fork-bonds";
 import { useCharacter } from "../../../../hooks/use-characters";
 import { openForkPanel } from "../../../../lib/fork/open-panel";
 import { cn } from "../../../../lib/utils";
@@ -33,23 +40,51 @@ function useName(characterId: string, label: string, present: readonly PresentCh
 const ROW_CLASS =
   "flex min-h-8 w-full min-w-0 items-center gap-2 rounded-lg px-2 py-1 text-left text-xs hover:bg-foreground/5";
 
-function BondRow({ bond, present }: { bond: Bond; present: readonly PresentCharacter[] }) {
+/** "↑ Confidant · last reply": shown for a few replies after something moves. */
+function ChangedChip({ change }: { change: RecentBondChange | undefined }) {
+  const { t: localizeUi } = useUiTranslation();
+  if (!change || change.repliesAgo > 2) return null;
+  return (
+    <span className="block truncate text-[0.6875rem] font-semibold text-[var(--primary)]">
+      {localizeUi(
+        change.milestone ? "ui.trackerPanel.forkRelationships.changedUp" : "ui.trackerPanel.forkRelationships.changed",
+        {
+          to: change.to,
+          when: localizeUi("ui.trackerPanel.forkRelationships.repliesAgo", { count: change.repliesAgo }),
+        },
+      )}
+    </span>
+  );
+}
+
+function BondRow({
+  bond,
+  present,
+  change,
+}: {
+  bond: Bond;
+  present: readonly PresentCharacter[];
+  change?: RecentBondChange;
+}) {
   const { t: localizeUi } = useUiTranslation();
   const name = useName(bond.characterId, bond.label, present);
   const status = bond.status ? STATUS_LABEL_KEYS[bond.status as ForkLoveStatus] : undefined;
   const details = [bond.rung, status ? localizeUi(status) : bond.status].filter(Boolean).join(" · ");
   return (
     <button type="button" onClick={() => openForkPanel("people")} className={ROW_CLASS}>
-      <span className="min-w-0 flex-1 truncate">
-        <span className="font-bold text-foreground">{name || "?"}</span>
-        {details && (
-          <>
-            {" "}
-            <span className="text-[var(--muted-foreground)]">
-              {localizeUi("ui.chat.forkbonds.afterName", { value: details })}
-            </span>
-          </>
-        )}
+      <span className="min-w-0 flex-1">
+        <span className="block truncate">
+          <span className="font-bold text-foreground">{name || "?"}</span>
+          {details && (
+            <>
+              {" "}
+              <span className="text-[var(--muted-foreground)]">
+                {localizeUi("ui.chat.forkbonds.afterName", { value: details })}
+              </span>
+            </>
+          )}
+        </span>
+        <ChangedChip change={change} />
       </span>
       {bond.drift && (
         <span className="shrink-0 rounded-full bg-foreground/10 px-1.5 py-px text-[0.6875rem] font-semibold">
@@ -60,15 +95,28 @@ function BondRow({ bond, present }: { bond: Bond; present: readonly PresentChara
   );
 }
 
-function PairRow({ pair, present }: { pair: BondPair; present: readonly PresentCharacter[] }) {
+function PairRow({
+  pair,
+  present,
+  change,
+}: {
+  pair: BondPair;
+  present: readonly PresentCharacter[];
+  change?: RecentBondChange;
+}) {
   const a = useName(pair.aId, "", present);
   const b = useName(pair.bId, "", present);
   return (
     <button type="button" onClick={() => openForkPanel("people")} className={ROW_CLASS}>
-      <span className="min-w-0 truncate font-bold text-foreground">{a || "?"}</span>
-      <ArrowLeftRight size="0.625rem" className="shrink-0 text-[var(--muted-foreground)]" />
-      <span className="min-w-0 truncate font-bold text-foreground">{b || "?"}</span>
-      <span className="ml-auto shrink-0 text-[var(--muted-foreground)]">{pair.rung}</span>
+      <span className="min-w-0 flex-1">
+        <span className="flex min-w-0 items-center gap-2">
+          <span className="min-w-0 truncate font-bold text-foreground">{a || "?"}</span>
+          <ArrowLeftRight size="0.625rem" className="shrink-0 text-[var(--muted-foreground)]" />
+          <span className="min-w-0 truncate font-bold text-foreground">{b || "?"}</span>
+          <span className="ml-auto shrink-0 text-[var(--muted-foreground)]">{pair.rung}</span>
+        </span>
+        <ChangedChip change={change} />
+      </span>
     </button>
   );
 }
@@ -84,11 +132,13 @@ export function ForkRelationshipsList({
   const { t: localizeUi } = useUiTranslation();
   const { data: bonds } = useBonds(activeChatId);
   const { data: pairs } = useBondPairs(activeChatId);
+  const { data: recent } = useRecentBondChanges(activeChatId);
+  const changeFor = (id: string) => (recent ?? []).find((change) => change.id === id);
   if ((bonds ?? []).length === 0 && (pairs ?? []).length === 0) return null;
   return (
     <div className="flex flex-col gap-0.5">
       {(bonds ?? []).map((bond) => (
-        <BondRow key={bond.id} bond={bond} present={presentCharacters} />
+        <BondRow key={bond.id} bond={bond} present={presentCharacters} change={changeFor(bond.id)} />
       ))}
       {(pairs ?? []).length > 0 && (
         <>
@@ -96,7 +146,7 @@ export function ForkRelationshipsList({
             {localizeUi("ui.chat.forkbonds.betweenThem")}
           </p>
           {(pairs ?? []).map((pair) => (
-            <PairRow key={pair.id} pair={pair} present={presentCharacters} />
+            <PairRow key={pair.id} pair={pair} present={presentCharacters} change={changeFor(pair.id)} />
           ))}
         </>
       )}
