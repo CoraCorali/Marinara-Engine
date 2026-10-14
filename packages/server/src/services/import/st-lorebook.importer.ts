@@ -233,6 +233,40 @@ export function resolveSelectiveLogic(value: unknown): "and" | "and_all" | "or" 
   return logicMap[typeof value === "number" ? value : 0] ?? "and";
 }
 
+/**
+ * Fork: SillyTavern's V2 character_book entries keep depth, role, position, probability, groups,
+ * timed effects and recursion settings under `entry.extensions` (snake_case). They fill in what the
+ * entry does not say at the top level; the numeric position wins over V2's lossy string one.
+ */
+function withStCharacterBookExtensions<T extends STWorldInfoEntry>(entry: T): T {
+  const ext = (entry as { extensions?: unknown }).extensions;
+  if (!ext || typeof ext !== "object" || Array.isArray(ext)) return entry;
+  const e = ext as Record<string, unknown>;
+  const merged = { ...entry } as unknown as Record<string, unknown>;
+  const fill = (key: string, value: unknown) => {
+    if (value !== undefined && merged[key] === undefined) merged[key] = value;
+  };
+  if (typeof e.position === "number") merged.position = e.position;
+  fill("depth", e.depth);
+  fill("role", e.role);
+  fill("probability", e.probability);
+  fill("useProbability", e.useProbability ?? e.use_probability);
+  fill("selectiveLogic", e.selectiveLogic ?? e.selective_logic);
+  fill("group", e.group);
+  fill("groupWeight", e.group_weight ?? e.groupWeight);
+  fill("sticky", e.sticky);
+  fill("cooldown", e.cooldown);
+  fill("delay", e.delay);
+  fill("scanDepth", e.scan_depth ?? e.scanDepth);
+  fill("matchWholeWords", e.match_whole_words ?? e.matchWholeWords);
+  fill("caseSensitive", e.case_sensitive ?? e.caseSensitive);
+  fill("preventRecursion", e.prevent_recursion ?? e.preventRecursion);
+  fill("excludeRecursion", e.exclude_recursion ?? e.excludeRecursion);
+  fill("delayUntilRecursion", e.delay_until_recursion ?? e.delayUntilRecursion);
+  fill("vectorized", e.vectorized);
+  return merged as unknown as T;
+}
+
 export function resolvePosition(value: unknown): number {
   if (typeof value === "string") {
     if (value === "after_char") return 1;
@@ -444,7 +478,9 @@ export async function importSTLorebook(
     const lorebookName = lbName;
     let imported = 0;
 
-    for (const entry of entryList) {
+    for (const listedEntry of entryList) {
+      // Fork: a V2 character_book keeps SillyTavern's own settings under `extensions`.
+      const entry = withStCharacterBookExtensions(listedEntry);
       // Resolve fields that differ between ST World Info format and V2 Character Book format
       const rawKeys = entry.key ?? entry.keys;
       const rawResolvedKeys = asStringArray(rawKeys);
@@ -480,7 +516,7 @@ export async function importSTLorebook(
         lorebookId: lorebookId,
         name: resolvedName,
         content: sanitizedContent,
-        images: restoredImages.get(entry) ?? [],
+        images: restoredImages.get(listedEntry) ?? [],
         description: sanitizedDescription,
         keys: resolvedKeys,
         secondaryKeys: resolvedSecondaryKeys,

@@ -90,8 +90,10 @@ export function readPresetRegexPack(pack: unknown, presetId: string): CreateRege
     const rawName = typeof s.name === "string" ? s.name : typeof s.scriptName === "string" ? s.scriptName : "";
     const rawFind = typeof s.findRegex === "string" ? s.findRegex.trim() : "";
     if (!rawFind) continue;
-    // SillyTavern writes `/source/flags`; this fork's own export writes a bare source.
-    const delimited = /^\/(.*)\/([a-z]*)$/is.exec(rawFind);
+    // SillyTavern writes `/source/flags`; this fork's own export writes a bare source with its flags
+    // beside it, and a bare source can itself start and end with "/" (`/\*[\s\S]*?\*/`).
+    const sillyTavernShape = typeof s.scriptName === "string" || typeof s.flags !== "string";
+    const delimited = sillyTavernShape ? /^\/(.*)\/([a-z]*)$/is.exec(rawFind) : null;
     const source = delimited ? delimited[1]! : rawFind;
     const flags = delimited
       ? Array.from(new Set(delimited[2]!.replace(/[^gimsuy]/g, ""))).join("")

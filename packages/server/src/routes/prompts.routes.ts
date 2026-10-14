@@ -412,7 +412,11 @@ export async function promptsRoutes(app: FastifyInstance) {
     if (sectionIds.some((sectionId) => !ownedSectionIds.has(sectionId))) {
       return reply.status(400).send({ error: "Prompt section does not belong to this preset" });
     }
-    await storage.reorderSections(req.params.id, sectionIds);
+    // Fork: a list sent from a stale tab can miss a section added since; it keeps its place at the
+    // end instead of silently dropping out of the order (and so out of the prompt).
+    const ordered = [...new Set(sectionIds)];
+    const missing = [...ownedSectionIds].filter((sectionId) => !ordered.includes(sectionId));
+    await storage.reorderSections(req.params.id, [...ordered, ...missing]);
     return { success: true };
   });
 

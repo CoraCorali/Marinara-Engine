@@ -384,12 +384,16 @@ export async function importSTChat(jsonlContent: string, db: DB, opts?: ImportST
       // Resolve character ID for this message
       let messageCharacterId: string | null = null;
       if (role === "assistant") {
-        const exportedCharacterId =
+        const rawExportedCharacterId =
           typeof stMsg.character_id === "string"
             ? stMsg.character_id
             : typeof stMsg.extra?.marinara_character_id === "string"
               ? stMsg.extra.marinara_character_id
               : null;
+        // Fork: an exported id belongs to the install it came from; it is trusted only when it is one
+        // of this chat's characters, otherwise the speaker map and the chosen character decide.
+        const exportedCharacterId =
+          rawExportedCharacterId && characterIds.includes(rawExportedCharacterId) ? rawExportedCharacterId : null;
         if (opts?.speakerMap) {
           // Group chat: look up speaker
           const importedSpeakerId =

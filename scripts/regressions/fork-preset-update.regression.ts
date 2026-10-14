@@ -220,6 +220,14 @@ const refused = await importMarinara({ ...damaged, replacePresetId: presetId } a
 assert.equal(refused.success, false);
 assert.equal((await prompts.listSections(presetId))[0]!.name, "Fourth section", "the preset keeps its sections");
 
+// A bare pattern that starts and ends with "/" round-trips intact through this fork's own shape.
+const commentStripper = readPresetRegexPack(
+  [{ name: "Strip comments", findRegex: "/\\*[\\s\\S]*?\\*/", flags: "g", placement: ["ai_output"] }],
+  "p",
+)[0]!;
+assert.equal(commentStripper.findRegex, "/\\*[\\s\\S]*?\\*/");
+assert.equal(commentStripper.flags, "g");
+
 // ── Export carries the pack ──
 const exported = buildPresetRegexPack(await regex.list(), presetId);
 assert.deepEqual(exported.map((script) => script.name).sort(), ["My own script", "Pack script"]);

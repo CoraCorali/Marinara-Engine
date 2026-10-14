@@ -421,6 +421,23 @@ assert.ok(
   bondsAgentStateBlock([], pairNames, await pairStore.listForChat("chat-pairs")).includes('"a":"Gia","b":"Vee"'),
   "the agent is shown the pairs it can move",
 );
+// A deleted reply takes back its tracker run; a deleted character leaves People with it.
+const { forgetForkReplies, removeForkCharacterData } =
+  await import("../../packages/server/src/services/fork-chat-data.js");
+await applyBondsAgentResult(
+  db,
+  "chat-pairs",
+  { pairs: [{ a: "Vee", b: "Gia", rung: "Close" }] },
+  pairResolve,
+  "msg-del",
+);
+const movedRung = (await pairStore.getById(veeGia.id))!.rung;
+await forgetForkReplies(db, [{ id: "msg-del", chatId: "chat-pairs", createdAt: "2026-01-01T00:00:00Z" }]);
+assert.notEqual((await pairStore.getById(veeGia.id))!.rung, movedRung, "deleting the reply undoes its move");
+const strangers = (await pairStore.create({ chatId: "chat-pairs", firstId: "char-x", secondId: "char-y" }))!;
+await removeForkCharacterData(db, "char-x");
+assert.equal(await pairStore.getById(strangers.id), null, "a deleted character's pairs go");
+assert.ok(await pairStore.getById(veeGia.id), "pairs without them stay");
 await pairStore.removeChat("chat-pairs");
 assert.equal((await pairStore.listForChat("chat-pairs")).length, 0);
 

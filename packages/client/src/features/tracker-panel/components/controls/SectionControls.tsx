@@ -26,7 +26,9 @@ export function AddRowButton({
       aria-label={label}
       className={cn(
         "flex items-center justify-center rounded-sm bg-[var(--foreground)]/8 text-[0.625rem] font-medium text-[var(--foreground)]/70 ring-1 ring-[var(--border)]/70 transition-colors hover:bg-[var(--foreground)]/12 hover:text-[var(--foreground)] hover:ring-[var(--foreground)]/20 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--border)] active:scale-95",
-        children ? "min-h-6 gap-1 px-1.5 py-0.5" : "h-6 min-h-6 w-6 min-w-6 p-0",
+        children
+          ? "min-h-6 gap-1 px-1.5 py-0.5"
+          : "h-6 min-h-6 w-6 min-w-6 p-0 [@media(pointer:coarse)]:h-8 [@media(pointer:coarse)]:w-8",
         className,
       )}
     >
@@ -62,7 +64,7 @@ export function SectionIconButton({
       aria-label={title}
       aria-pressed={pressed}
       className={cn(
-        "flex h-6 min-h-6 w-6 min-w-6 shrink-0 items-center justify-center rounded-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--border)] active:scale-95 disabled:cursor-not-allowed disabled:opacity-40",
+        "flex h-6 min-h-6 w-6 min-w-6 [@media(pointer:coarse)]:h-8 [@media(pointer:coarse)]:w-8 shrink-0 items-center justify-center rounded-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--border)] active:scale-95 disabled:cursor-not-allowed disabled:opacity-40",
         tone === "feature"
           ? pressed
             ? "bg-[var(--foreground)]/10 text-[var(--foreground)] ring-1 ring-[var(--foreground)]/18 hover:bg-[var(--foreground)]/14"

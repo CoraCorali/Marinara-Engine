@@ -542,6 +542,51 @@ to a model was traced from its prompt to what is done with the answer.
   fade out instead of stopping, and the help says a clear sky is quiet and an iPhone's silent switch
   mutes them. A browser test confirmed they play once the page is touched.
 
+### Whole-engine bug sweep
+
+Six read-only reviews (reply pipeline, saved data and imports, chat screen, panels and editors,
+agents and trackers, security) were checked against the code; these were real and are fixed:
+
+- **Replies through a proxy**: an error a gateway sends mid-stream (an error chunk that still has
+  choices, or `finish_reason: "error"`) now fails the reply instead of saving a cut-off one as a
+  success. Stop only calls KoboldCpp's abort endpoint on a local backend, without waiting on it.
+- **Prefill**: macros in a preset's prefill (`{{char}}`) are resolved; Continue no longer sends the
+  prefill again or writes it into the middle of the message.
+- **Trackers**: an agent reply cut off at the token limit is retried instead of being repaired into
+  a shortened "complete" list (which deleted characters and fields); `recentEvents` is text-only and
+  capped at 20; Retry agents patches the map keys rather than rewriting all chat metadata; your
+  locks, hidden fields and edits to untouched fields survive an agent update arriving.
+- **Editors**: the regex editor saves before you leave it; preset option and section fields keep an
+  edit made just before collapsing or closing; fast option edits no longer undo each other; a stale
+  section reorder keeps sections it did not list instead of dropping them from the prompt.
+- **Chat screen**: tapping a `<summary>` no longer toggles the message bar or opens the editor on a
+  double tap; `<details open>` stays open; Enter during IME composition does not send; Send/Stop
+  and quest objective controls have labels and touch-sized hit areas; tracker section buttons are
+  bigger on touch; a message with damaged extra data still renders.
+- **Imports**: updating a preset in place refuses a damaged file before touching anything and only
+  removes the old rows once the new ones are written; a chat re-imported from another install no
+  longer points messages at characters that do not exist; a SillyTavern card's lorebook keeps its
+  depth, role, position, probability, groups, timed effects and recursion settings; a preset regex
+  pattern that starts and ends with "/" round-trips intact.
+- **Fork data**: closet pieces keep their scope (Describe it works on them); a closet save that fails
+  part-way is rolled back and Wear checks the chat exists; deleting a character clears its bonds and
+  pairs; deleting a reply takes back its relationship tracker run; a persona's board is cleared only
+  after the persona delete succeeds.
+- **New regressions**: `fork-stream-error`, `fork-st-book-extensions`, plus cases in
+  `fork-bonds`, `fork-preset-update` and `fork-reference-board`.
+
+Left as they are, with the reason:
+
+- A regenerated swipe's trackers start from the previous swipe's row: upstream does this on purpose
+  in two places (see the ruleset live-sheet comment); worth raising upstream rather than guessing.
+- Character-scoped regex scripts run over the whole assembled prompt on a fresh send in a
+  single-character chat; the fix changes how every prompt is targeted, so it belongs upstream.
+- The client keeps the last quest when a patch sends an empty quest list: that guard stops other
+  trackers wiping quests.
+- Profile export leaves out the fork's tables (a full data-folder backup includes them); a branch
+  copies relationships as they are now rather than as of the branch point; a preset's regex pack
+  replaces a same-named script of yours that targets only that preset.
+
 ## Upstream files touched
 
 Fork-only code lives in `packages/client/src/lib/fork/`, `Fork*` components, `packages/shared/src/features/fork-bond-shapes.ts`, `packages/server/src/services/import/fork/`
@@ -622,6 +667,21 @@ Edits to upstream files are marked with a `Fork:` comment.
 | `packages/shared/src/schemas/gm-verb-table.schema.ts`                                      | Reserves the `fork` chat-metadata namespace                                                       |
 | `packages/server/src/routes/index.ts`                                                      | Registers the closet routes                                                                       |
 | `packages/client/src/components/chat/ChatArea.tsx`                                         | Names for the Director's milestone chips                                                          |
+| `packages/server/src/services/llm/providers/openai.provider.ts`                            | Mid-stream gateway errors fail the reply                                                          |
+| `packages/server/src/services/agents/agent-executor.ts`                                    | A truncated agent reply is retried, not repaired                                                  |
+| `packages/server/src/routes/generate/retry-agents-route.ts`                                | Patches map keys instead of rewriting metadata                                                    |
+| `packages/server/src/routes/prompts.routes.ts`                                             | Section reorder keeps unlisted sections                                                           |
+| `packages/server/src/services/import/st-chat.importer.ts`                                  | Exported character ids are checked                                                                |
+| `packages/server/src/services/import/st-lorebook.importer.ts`                              | V2 character_book extensions                                                                      |
+| `packages/server/src/services/storage/characters.storage.ts`                               | Character delete clears bonds and pairs; persona board after the delete                           |
+| `packages/server/src/services/storage/chats.storage.ts`                                    | Reply delete takes back its relationship run                                                      |
+| `packages/client/src/components/chat/ChatMessage.tsx`                                      | Summary taps, damaged extra data                                                                  |
+| `packages/client/src/lib/chat-html.ts`                                                     | Allows `open` on `<details>`                                                                      |
+| `packages/client/src/components/chat/ChatInput.tsx`                                        | IME Enter, Send/Stop label                                                                        |
+| `packages/client/src/hooks/use-game-state-patcher.ts`                                      | Agent updates keep locks and untouched edits                                                      |
+| `packages/client/src/components/agents/RegexScriptEditor.tsx`                              | Saves before leaving                                                                              |
+| `packages/client/src/components/presets/PresetEditor.tsx`                                  | Option and section edits are not lost                                                             |
+| `packages/client/src/features/tracker-panel/components/controls/SectionControls.tsx`       | Bigger buttons on touch                                                                           |
 
 ## Known upstream issue kept as is
 
