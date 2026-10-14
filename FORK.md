@@ -218,6 +218,37 @@ A review of everything built so far, after the theme detour.
 - Particle movement lives in one shared function now, used by both the worker and the
   main-thread fallback, so the two can no longer drift apart.
 
+### Fix this part, and the slop highlighter
+
+- **Fix this part.** Select some of a reply and a **Fix this part** button appears under the
+  selection, stacked below Marinara's own **Add to lorebook**. It opens on the passage you picked,
+  with four quick asks (less cliché, more in character, shorter, show don't tell) and a box for
+  your own. **Rewrite this part** sends the whole reply to the chat's own model with only that
+  passage marked, and the model is told to change nothing else, match the point of view, tense,
+  voice and formatting either side of it, keep about the same length, and never speak or act for
+  your character unless the original did. The rewrite is shown next to the original; **Use it**
+  splices it in through the normal message edit, **Try again** asks for another. Nothing is saved
+  until you say so, and if the reply changed while you were deciding, it refuses rather than
+  splicing into the wrong place.
+- **The passage is found in the reply as stored, not as shown.** The screen shows rendered
+  markdown, so a picked passage has no asterisks and may have curly quotes where the stored text
+  has straight ones; both are reduced the same way and matched back. Bold or italics that open or
+  close at the edge of the passage come with it when that keeps them paired, so a fix never leaves
+  a stray asterisk. A passage the stored text does not contain at all (a display-only regex
+  rewrote it) is refused with a message rather than guessed.
+- **The slop highlighter.** Phrases from your slop list get a soft orange wash and a wavy
+  underline in every reply. They are drawn by the browser over the text, so the message itself is
+  never changed and copying it copies plain text. **Tap a marked phrase** and Fix this part opens
+  on its whole sentence. The list starts with fifty-odd of the usual offenders (a shiver down her
+  spine, barely above a whisper, the air was thick with, ministrations...) and is yours to edit
+  from the **Slop** button above the message box, one phrase per line, with a switch to turn the
+  marks off and a reset back to the starter list. Every rewrite is told to avoid the whole list.
+  The list is a browser preference, kept in its own small store rather than in Marinara's
+  settings. Marks need a browser with the CSS Custom Highlight API (current Chrome, Safari and
+  Firefox); without it there are simply no marks.
+- **Fix this part and the Director use the same model the story does**, resolved in one shared
+  helper, and Fix this part logs its prompt in debug mode.
+
 ## Upstream files touched
 
 Fork-only code lives in `packages/client/src/lib/fork/`, `packages/server/src/services/import/fork/`
@@ -244,6 +275,8 @@ Edits to upstream files are marked with a `Fork:` comment.
 | `packages/server/src/routes/index.ts` | Registers the board and Director routes |
 | `packages/server/src/routes/generate.routes.ts` | Sends in-scene pins, their captions and the bonds note with the reply |
 | `packages/client/src/components/chat/ForkBoardStrip.tsx` | Bonds button too |
+| `packages/client/src/components/chat/ChatRoleplaySurface.tsx` | Mounts Fix this part and the slop highlighter; passes the date to the weather |
+| `packages/server/src/routes/index.ts` | Registers the Fix this part route |
 | `packages/client/src/components/chat/CyoaChoices.tsx` | Readable controls and choices |
 | `packages/server/src/services/storage/chats.storage.ts` | Clears a chat's board and bonds when it, or its whole branch group, goes |
 | `packages/server/src/services/storage/characters.storage.ts` | Clears the persona's board when a persona goes |

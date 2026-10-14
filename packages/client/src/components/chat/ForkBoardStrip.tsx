@@ -1,9 +1,10 @@
 // ──────────────────────────────────────────────
 // Fork: the in-scene strip above the message box
 // ──────────────────────────────────────────────
-import { Images, HeartHandshake } from "lucide-react";
+import { Images, HeartHandshake, Highlighter } from "lucide-react";
 import { useTranslation as useUiTranslation } from "react-i18next";
 import { useBoardPins, type BoardScope } from "../../hooks/use-fork-board";
+import { useForkSlopStore } from "../../stores/fork-slop.store";
 
 interface Props {
   chatScope: BoardScope;
@@ -20,6 +21,7 @@ export function ForkBoardStrip({ chatScope, personaScope, onOpenBoard, onOpenBon
   const { t: localizeUi } = useUiTranslation();
   const { data: chatPins } = useBoardPins(chatScope);
   const { data: personaPins } = useBoardPins(personaScope);
+  const openSlopList = useForkSlopStore((s) => s.setListOpen);
   const pins = [...(personaPins ?? []), ...(chatPins ?? [])].filter((pin) => pin.inScene);
 
   return (
@@ -55,6 +57,15 @@ export function ForkBoardStrip({ chatScope, personaScope, onOpenBoard, onOpenBon
       >
         <HeartHandshake size="0.875rem" />
         {localizeUi("ui.chat.forkbonds.people")}
+      </button>
+      <button
+        type="button"
+        onClick={() => openSlopList(true)}
+        className="flex min-h-11 shrink-0 items-center gap-1.5 rounded-lg px-2 text-xs font-semibold text-foreground/60 hover:bg-foreground/10 hover:text-foreground/90"
+        title={localizeUi("ui.chat.forkfix.slopListTitle")}
+      >
+        <Highlighter size="0.875rem" />
+        {localizeUi("ui.chat.forkfix.slop")}
       </button>
     </div>
   );

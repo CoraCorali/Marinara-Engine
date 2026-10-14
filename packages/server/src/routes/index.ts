@@ -10,6 +10,7 @@ import { lorebooksRoutes } from "./lorebooks.routes.js";
 import { forkBoardRoutes } from "./fork-board.routes.js";
 import { forkDirectorRoutes } from "./fork-director.routes.js";
 import { forkBondsRoutes } from "./fork-bonds.routes.js";
+import { forkFixRoutes } from "./fork-fix.routes.js";
 import { promptsRoutes } from "./prompts.routes.js";
 import { connectionsRoutes } from "./connections.routes.js";
 import { agentsRoutes } from "./agents.routes.js";
@@ -105,6 +106,7 @@ export async function registerRoutes(app: FastifyInstance) {
   await app.register(forkBoardRoutes, { prefix: "/api/fork-board" });
   await app.register(forkDirectorRoutes, { prefix: "/api/fork-director" });
   await app.register(forkBondsRoutes, { prefix: "/api/fork-bonds" });
+  await app.register(forkFixRoutes, { prefix: "/api/fork-fix" });
   await app.register(promptsRoutes, { prefix: "/api/prompts" });
   await app.register(connectionsRoutes, { prefix: "/api/connections" });
   await app.register(decisionRoutes, { prefix: "/api/decision" });

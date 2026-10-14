@@ -5,11 +5,9 @@
 // can then apply as a guided regeneration.
 import type { FastifyInstance } from "fastify";
 import type { LorebookEntry } from "@marinara-engine/shared";
-import { createLLMProvider } from "../services/llm/provider-registry.js";
-import { resolveBaseUrl } from "../services/generation/connection-base-url.js";
+import { resolveForkChatProvider } from "../services/generation/fork-chat-provider.js";
 import { createChatsStorage } from "../services/storage/chats.storage.js";
 import { createCharactersStorage } from "../services/storage/characters.storage.js";
-import { createConnectionsStorage } from "../services/storage/connections.storage.js";
 import { createLorebooksStorage } from "../services/storage/lorebooks.storage.js";
 import { resolveChatUserIdentity } from "../services/chat-user-identity.js";
 import { scanForActivatedEntries } from "../services/lorebook/keyword-scanner.js";
@@ -75,7 +73,6 @@ function parseStringList(value: unknown): string[] {
 export async function forkDirectorRoutes(app: FastifyInstance) {
   const chats = createChatsStorage(app.db);
   const characters = createCharactersStorage(app.db);
-  const connections = createConnectionsStorage(app.db);
   const lorebooks = createLorebooksStorage(app.db);
 
   /** One off-record turn. The client keeps the conversation and sends it back each time. */
@@ -111,17 +108,8 @@ export async function forkDirectorRoutes(app: FastifyInstance) {
     const chat = await chats.getById(chatId);
     if (!chat) return reply.status(404).send({ error: "Chat not found" });
 
-    const connectionId =
-      (typeof body.connectionId === "string" && body.connectionId) ||
-      (chat.connectionId && chat.connectionId !== "random" ? chat.connectionId : "") ||
-      (await connections.getDefault())?.id ||
-      "";
-    if (!connectionId) return reply.status(400).send({ error: "No API connection configured for this chat" });
-    const conn = await connections.getWithKey(connectionId);
-    if (!conn) return reply.status(400).send({ error: "API connection not found" });
-
-    const baseUrl = resolveBaseUrl(conn);
-    if (!baseUrl) return reply.status(400).send({ error: "No base URL configured for this connection" });
+    const resolved = await resolveForkChatProvider(app.db, chat, body.connectionId);
+    if (!resolved.ok) return reply.status(400).send({ error: resolved.error });
 
     // ── The scene: who is in it, who the writer plays, the lore it runs on, and what happened ──
     const chatMeta = parseRecord(chat.metadata);
@@ -212,19 +200,6 @@ export async function forkDirectorRoutes(app: FastifyInstance) {
       standing,
     });
 
-    const provider = createLLMProvider(
-      conn.provider,
-      baseUrl,
-      conn.apiKey,
-      conn.maxContext,
-      conn.openrouterProvider,
-      conn.maxTokensOverride,
-      conn.claudeFastMode === "true",
-      conn.treatAsLocalEndpoint === "true",
-      conn.defaultParameters,
-      conn.id,
-    );
-
     const promptMessages = [
       { role: "system" as const, content: context ? `${SYSTEM_PROMPT}\n\n${context}` : SYSTEM_PROMPT },
       ...turns,
@@ -235,7 +210,7 @@ export async function forkDirectorRoutes(app: FastifyInstance) {
       chatId,
       promptMessages.map((message) => `[${message.role}]\n${message.content}`).join("\n\n"),
     );
-    const result = await provider.chatComplete(promptMessages, { model: conn.model, temperature: 0.6 });
+    const result = await resolved.provider.chatComplete(promptMessages, { model: resolved.model, temperature: 0.6 });
 
     const raw = (result.content ?? "").trim();
     // A model that ignores the JSON shape still has something useful to say, so keep its words.

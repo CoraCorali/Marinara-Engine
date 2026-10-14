@@ -71,6 +71,7 @@ import { ChatMessage } from "./ChatMessage";
 import { ChatInput } from "./ChatInput";
 import { CyoaChoices } from "./CyoaChoices";
 import { ForkBoardStrip } from "./ForkBoardStrip";
+import { ForkFixPart } from "./ForkFixPart";
 import type { BoardScope } from "../../hooks/use-fork-board";
 import { CHAT_CONTROL_WINDOW_IDS, ChatConnectedChatWindow, ChatControlWindow } from "./ChatControlWindow";
 import { TrackerPanelBubble } from "./TrackerPanelBubble";
@@ -1714,6 +1715,8 @@ export function ChatRoleplaySurface({
         }
       >
         <CrossfadeBackground url={chatBackground} blurPx={chatBackgroundBlur} />
+        {/* Fork: Fix this part and the slop highlighter. */}
+        <ForkFixPart chatId={activeChatId} messages={messages} onEdit={onEdit} busy={isStreaming} />
         <div className="rpg-overlay absolute inset-0" />
         <div className="rpg-vignette pointer-events-none absolute inset-0" />
         {weatherEffects && <WeatherEffectsConnected paused={weatherEffectsPaused} />}
