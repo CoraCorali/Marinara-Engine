@@ -24,10 +24,13 @@ upstream file it touches, so conflicts after a sync are quick to find.
   keyword, cadence and Decision-model gates. It also works on a chat with no story yet, where Scene Spark offers
   opening scenes. Choices from any choice agent now reach the choice bar, not only the official CYOA agent's.
   On a chat with no messages the choices live until the page reloads, since there is no message to store them on.
-- **Update a preset in place.** Importing a preset whose name matches one you already have asks whether to update
-  it or add a copy. Updating keeps the preset's id, so every chat using it stays on it, and keeps its generation
-  parameters and the toggle picks you had made for variables the new version still has. Sections, groups and
-  choice blocks are replaced. Two presets sharing a name means no obvious target, so that always adds a copy.
+- **Update a preset in place.** Importing a preset you already have asks whether to update it or add a copy.
+  Updating keeps the preset's id, so every chat using it stays on it, and keeps its generation parameters and the
+  toggle picks you had made for variables the new version still has. Sections, groups and choice blocks are
+  replaced. A file exported from here remembers which preset it came from, so re-importing it updates that one
+  however it has been renamed since. Failing that the name decides, ignoring the version number in it, so
+  "FF 5.4.8 Jules Custom" is updated by "FF 5.4.9 Jules Custom" rather than sitting beside it. Two presets that
+  both match means no obvious target, so that always adds a copy.
 - **Preset regex packs.** A preset export now carries the regex scripts assigned to that preset alone, so one file
   installs both. Updating a preset replaces its pack instead of leaving old copies behind. Scripts that are global,
   or shared with another preset, are never touched. Imported scripts accept this fork's shape and SillyTavern's;

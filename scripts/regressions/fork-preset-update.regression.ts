@@ -27,11 +27,14 @@ const presets = [
   { id: "a", name: "FF 5.4 Jules Custom" },
   { id: "b", name: "Something else" },
 ];
-const envelope = (name: string) => ({ type: "marinara_preset", version: 1, data: { preset: { name } } });
+const envelope = (name: string, id?: string) => ({
+  type: "marinara_preset",
+  version: 1,
+  data: { preset: { name, ...(id ? { id } : {}) } },
+});
 assert.equal(findPresetToUpdate(envelope("FF 5.4 Jules Custom"), presets)?.id, "a");
 // Case and stray spaces should not stop a match.
 assert.equal(findPresetToUpdate(envelope("  ff 5.4 jules custom "), presets)?.id, "a");
-assert.equal(findPresetToUpdate(envelope("FF 5.5 Jules Custom"), presets), null);
 assert.equal(findPresetToUpdate(envelope(""), presets), null);
 assert.equal(findPresetToUpdate(envelope("FF"), []), null);
 // Two presets with the same name: no single obvious target, so add a copy.
@@ -42,6 +45,52 @@ assert.equal(
   ]),
   null,
 );
+
+// ── A bumped version is the same preset ──
+// The real case: a preset carrying its version in its name, handed back a point release later.
+const versioned = [
+  { id: "a", name: "Freaky Frankenstein 5.4.8 \u2014 Jules Custom (AntiQuip + Pura/DEM/IHYLL/AA)" },
+  { id: "b", name: "Something else" },
+];
+assert.equal(
+  findPresetToUpdate(
+    envelope("Freaky Frankenstein 5.4.9 \u2014 Jules Custom (AntiQuip + Pura/DEM/IHYLL/AA)"),
+    versioned,
+  )?.id,
+  "a",
+  "a point release updates the preset it replaces",
+);
+// An em dash swapped for a hyphen, or spacing changed, is still the same preset.
+assert.equal(
+  findPresetToUpdate(envelope("Freaky Frankenstein 5.5 - Jules Custom (AntiQuip + Pura/DEM/IHYLL/AA)"), versioned)?.id,
+  "a",
+);
+// A genuinely different preset still does not match.
+assert.equal(findPresetToUpdate(envelope("Freaky Frankenstein 5.4.9 \u2014 Default"), versioned), null);
+// A bare number is not a version, so these stay apart.
+assert.equal(
+  findPresetToUpdate(envelope("Preset 3"), [
+    { id: "a", name: "Preset 2" },
+    { id: "b", name: "Preset 4" },
+  ]),
+  null,
+  "a trailing number is part of the name, not a version",
+);
+// Two versions of the same preset already installed: no single obvious target.
+assert.equal(
+  findPresetToUpdate(envelope("FF 5.4.9 Jules"), [
+    { id: "a", name: "FF 5.4.7 Jules" },
+    { id: "b", name: "FF 5.4.8 Jules" },
+  ]),
+  null,
+);
+
+// ── An export knows which preset it came from ──
+// The id in the file wins over the name, so a preset renamed since it was exported still updates.
+assert.equal(findPresetToUpdate(envelope("Renamed entirely", "a"), presets)?.id, "a");
+// An id from someone else's copy falls back to matching on the name.
+assert.equal(findPresetToUpdate(envelope("FF 5.4 Jules Custom", "not-mine"), presets)?.id, "a");
+assert.equal(findPresetToUpdate(envelope("Nothing like it", "not-mine"), presets), null);
 
 // ── Reading a bundled pack ──
 const pack = readPresetRegexPack(
