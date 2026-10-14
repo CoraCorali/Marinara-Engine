@@ -96,11 +96,14 @@ function applyScripts(
     scopedMode?: ScopedRegexMode | null;
     characterId?: string | null;
     promptPresetId?: string | null;
+    /** Fork: scripts to leave out, such as those that wait for a reply to finish streaming. */
+    skipScriptIds?: ReadonlySet<string>;
   },
 ): string {
   let result = text;
   for (const script of scripts) {
     if (!script.enabledBool) continue;
+    if (options?.skipScriptIds?.has(script.id)) continue;
     if (!script.placements.includes(placement)) continue;
     // Prompt context is opt-in. Display context runs visual scripts only.
     if (options?.promptOnly) {
@@ -187,6 +190,8 @@ export function useApplyRegex() {
         resolveMacros?: (value: string) => string;
         scopedMode?: ScopedRegexMode | null;
         characterId?: string | null;
+        /** Fork: scripts to leave out while this text is still streaming. */
+        skipScriptIds?: ReadonlySet<string>;
       },
     ) =>
       formatTextQuotes(

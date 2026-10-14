@@ -355,6 +355,38 @@ choices are remembered per chat in the browser; the sound switches are one prefe
   switching, there is a volume slider, and sound pauses while the tab is hidden. Browsers keep audio
   silent until the page is touched, so it starts with your first tap.
 
+### LinkAPI fixes, and regexes that wait for a reply to finish
+
+Tested against LinkAPI itself with small requests. What it does with Gemini 3.5 Flash through its
+OpenAI-compatible endpoint: streaming works and thinking stays hidden, but the thinking counts
+against Max Tokens, and neither `reasoning_effort: low`, `thinkingBudget` nor the model-name
+suffixes turn it down (only "minimal" switches it off). A 300-token budget came back as about 287
+tokens of thinking and a reply cut off mid-sentence.
+
+- **A reply cut short by thinking says so.** When a reply stops at the output limit and hidden
+  thinking used most of it, a warning names the numbers ("287 of its 296 output tokens thinking")
+  and says to raise Max Tokens or turn reasoning down. Marinara already explained a reply that came
+  back empty; this is the one that came back short.
+- **A leaked plan goes to the thinking box.** FF5 asks the model to think through "Task 0" to
+  "Task 10" before writing, and Gemini sometimes writes that plan into the reply. When a reply opens
+  with Task 0 (or Task 1), the plan up to the first blank line after its last task heading is
+  lifted into the thinking box and the reply starts at the prose. It is narrow on purpose: a plan
+  in the middle of a reply, prose that mentions a task, or a reply that would be left empty is left
+  alone.
+- **Blocked replies are named as blocked** (content filter, safety, prohibited content and the
+  like), with what to try next, instead of "returned an empty response".
+- **Try again.** A reply that failed shows **Try again** on its error. A message of yours the
+  server already saved is not sent twice; one it never saved is sent again.
+- **A backup model** was already in Marinara: Connections, then Defaults and fallbacks, then a
+  **Fallback** for Main. When the main connection fails before writing anything (LinkAPI busy, a
+  model with no channel), the fallback connection takes the turn. A second LinkAPI connection with
+  another model works as the fallback.
+- **Regexes can wait until the reply is finished.** A regex script has a **Wait until the reply is
+  finished** checkbox in its editor. While a reply streams in, those scripts are skipped, so a check
+  for something that only comes at the end (like a "this reply was cut off" warning) no longer
+  flashes on every half-written reply. Saved per script in the browser, so the regex table itself is
+  unchanged.
+
 ## Upstream files touched
 
 Fork-only code lives in `packages/client/src/lib/fork/`, `Fork*` components, `packages/shared/src/features/fork-bond-shapes.ts`, `packages/server/src/services/import/fork/`
@@ -409,6 +441,12 @@ Edits to upstream files are marked with a `Fork:` comment.
 | `packages/client/src/workers/weather-effects.worker.ts` | Weather panel speed, size and sun position |
 | `packages/client/src/lib/weather-renderer.ts` | Shooting stars, size scaling, sun position override |
 | `packages/client/src/components/chat/ChatRoleplaySurface.tsx` | Feeds the weather panel's picks to the weather |
+| `packages/server/src/routes/generate.routes.ts` | Lifts a leaked Task plan into thinking; notices a reply cut short by thinking |
+| `packages/server/src/services/generation/empty-response-reason.ts` | Names a blocked reply as blocked |
+| `packages/client/src/hooks/use-generate.ts` | Try again on a failed reply; the cut-short warning |
+| `packages/client/src/hooks/use-apply-regex.ts` | Skips scripts that wait for a reply to finish |
+| `packages/client/src/components/chat/ChatMessage.tsx` | Passes those scripts while a reply streams |
+| `packages/client/src/components/agents/RegexScriptEditor.tsx` | The wait-until-finished checkbox |
 | `packages/client/src/components/chat/ChatArea.tsx` | Passes portraits to the People panel |
 
 ## Known upstream issue kept as is

@@ -46,6 +46,10 @@ export function describeEmptyModelResponse(context: EmptyResponseContext): strin
     finish === "length" ||
     (context.hadThinking && typeof completion === "number" && typeof max === "number" && completion >= max);
 
+  // Fork: name a blocked reply as blocked, whichever word the provider uses for it.
+  if (/^(content_filter|safety|prohibited_content|blocklist|spii|recitation|image_safety|blocked)$/.test(finish)) {
+    return `The provider blocked this reply (finish reason "${finish}") and returned no text. Try again, reword your last message, or switch to another model for this turn.`;
+  }
   if (finish === "sensitive") {
     return 'The provider stopped the reply for content policy (finish reason "sensitive") and returned no text.';
   }

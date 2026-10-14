@@ -559,6 +559,7 @@ import {
 } from "./generate/lorebook-keeper-utils.js";
 import { registerDryRunRoute } from "./generate/dry-run-route.js";
 import { describeEmptyModelResponse, sentOutputBudget } from "../services/generation/empty-response-reason.js";
+import { detectThinkingCutoff, extractLeadingTaskPlan } from "../services/generation/fork-reply-guards.js";
 import { registerRawRoute } from "./generate/raw-route.js";
 import { registerRetryAgentsRoute, type ActiveAgentRun } from "./generate/retry-agents-route.js";
 import { fingerprintChatSummary } from "../services/prompt/chat-summary-fingerprint.js";
@@ -8756,6 +8757,23 @@ export async function generateRoutes(app: FastifyInstance, options: GenerateRout
             fullResponse = inlineThinking.content;
             contentReplaced = true;
           }
+
+          // Fork: a preset's "Task 0 … Task 10" plan written into the reply goes to the thinking box.
+          const forkTaskPlan = extractLeadingTaskPlan(fullResponse);
+          if (forkTaskPlan) {
+            fullThinking = fullThinking ? fullThinking + "\n\n" + forkTaskPlan.plan : forkTaskPlan.plan;
+            fullResponse = forkTaskPlan.content;
+            contentReplaced = true;
+          }
+          // Fork: say so when hidden thinking used up the output budget and cut the reply short.
+          const forkCutoff = detectThinkingCutoff(
+            finishReason,
+            fullResponse,
+            usage,
+            sentOutputBudget(effectiveMaxTokensForSend, conn.maxTokensOverride),
+          );
+          if (forkCutoff)
+            sendSseEvent(reply, { type: "fork_reply_notice", data: { kind: "thinking_cutoff", ...forkCutoff } });
 
           // ── LOG_LEVEL=debug or Settings -> Advanced -> Debug mode: log full response + usage to server console ──
           if (isDebug || requestDebug) {

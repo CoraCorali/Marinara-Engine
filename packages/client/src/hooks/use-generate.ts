@@ -1186,6 +1186,8 @@ function applyGameStatePatchToStore(
 export function useGenerate() {
   const qc = useQueryClient();
   const retryAgentsRef = useRef<RetryAgentsFn | null>(null);
+  // Fork: lets a failed generation's "Try again" button run generate again.
+  const forkGenerateRef = useRef<((params: never) => Promise<unknown>) | null>(null);
   // Use individual selectors to avoid re-rendering on every store change
   const setStreaming = useChatStore((s) => s.setStreaming);
   const setMariPhase = useChatStore((s) => s.setMariPhase);
@@ -3148,8 +3150,50 @@ export function useGenerate() {
               flushTypewriterBuffer();
               setProcessingRun(agentProcessingRunId, false, params.chatId);
               clearMariPhaseForThisChat();
-              showError((event.data as string) || "Generation failed");
+              // Fork: a plain reply that failed can be tried again from the error itself. A new message
+              // the server already saved is not sent twice; one it never saved is sent again.
+              const forkCanRetry = !params.impersonate && !params.autonomous && !params.turnGameBots;
+              showError(
+                (event.data as string) || "Generation failed",
+                forkCanRetry
+                  ? {
+                      action: {
+                        label: translate("ui.chat.forkretry.tryAgain"),
+                        onClick: () => {
+                          void (async () => {
+                            const saved = await confirmDurableSubmittedUserTurn();
+                            const next =
+                              submittedUserTurn && !saved
+                                ? params
+                                : { ...params, userMessage: undefined, attachments: undefined, replyTo: undefined };
+                            await forkGenerateRef.current?.(next as never);
+                          })();
+                        },
+                      },
+                    }
+                  : undefined,
+              );
               window.dispatchEvent(new CustomEvent("marinara:generation-error", { detail: { chatId: params.chatId } }));
+              break;
+            }
+
+            case "fork_reply_notice": {
+              // Fork: hidden thinking used up the output budget and the reply stopped short.
+              const notice = event.data as {
+                kind?: string;
+                reasoningTokens?: number;
+                completionTokens?: number;
+                maxTokens?: number | null;
+              } | null;
+              if (isActiveChat() && notice?.kind === "thinking_cutoff") {
+                toast.warning(
+                  translate("ui.chat.forknotice.thinkingCutoff", {
+                    reasoning: notice.reasoningTokens ?? 0,
+                    completion: notice.completionTokens ?? 0,
+                  }),
+                  { duration: 15000 },
+                );
+              }
               break;
             }
 
@@ -4076,6 +4120,7 @@ export function useGenerate() {
   );
 
   retryAgentsRef.current = retryAgents;
+  forkGenerateRef.current = generate as unknown as (params: never) => Promise<unknown>;
 
   return { generate, retryAgents };
 }

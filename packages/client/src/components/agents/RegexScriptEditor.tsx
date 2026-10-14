@@ -45,6 +45,7 @@ import {
   type RegexPlacement,
 } from "@marinara-engine/shared";
 import { useTranslation as useUiTranslation } from "react-i18next";
+import { ForkRegexWaitToggle } from "./ForkRegexWaitToggle";
 
 // ═══════════════════════════════════════════════
 //  Placement metadata
@@ -1064,6 +1065,8 @@ export function RegexScriptEditor() {
                   <AlertCircle size="0.6875rem" /> {depthRangeError}
                 </div>
               )}
+              {/* Fork: hold this script back until a reply has finished streaming. */}
+              {dbRow && <ForkRegexWaitToggle scriptId={dbRow.id} />}
             </div>
           </FieldGroup>
 

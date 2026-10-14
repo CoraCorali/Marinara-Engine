@@ -128,6 +128,7 @@ import { MessageThinkingModal } from "./MessageThinkingModal";
 import { MESSAGE_ACTION_ICON_SIZE, MessageActionButton } from "./MessageActionButton";
 import { MessageMarkIndicators, MessageMarksAction, type MessageNoteSharing } from "./MessageMarks";
 import { RoleplayStoryboardMessageMedia } from "./RoleplayStoryboardMessageMedia";
+import { useForkRegexStore } from "../../stores/fork-regex.store";
 
 const MESSAGE_DOUBLE_TAP_MS = 320;
 const MESSAGE_DOUBLE_TAP_DISTANCE_PX = 26;
@@ -2619,6 +2620,9 @@ export const ChatMessage = memo(function ChatMessage({
 
   // Apply regex scripts to AI output (assistant/narrator roles)
   const { applyToAIOutput } = useApplyRegex();
+  // Fork: regex scripts that wait until a reply has finished streaming.
+  const forkRegexWaitList = useForkRegexStore((s) => s.waitForFinish);
+  const forkRegexWaitIds = useMemo(() => new Set(forkRegexWaitList), [forkRegexWaitList]);
   // Per-chat scoped-regex mode — gates character-scoped scripts at display time.
   // Select the raw metadata (stable while tokens stream) and parse it in a memo so
   // we don't JSON-parse the whole chat metadata on every store tick during streaming.
@@ -2737,11 +2741,15 @@ export const ChatMessage = memo(function ChatMessage({
               resolveMacros: resolveDisplayMacros,
               scopedMode: scopedRegexMode,
               characterId: message.characterId,
+              // Fork: scripts set to wait until the reply is finished skip it while it streams.
+              skipScriptIds: isStreaming ? forkRegexWaitIds : undefined,
             });
       return resolveDisplayMacros(text);
     },
     [
       applyToAIOutput,
+      isStreaming,
+      forkRegexWaitIds,
       scopedRegexMode,
       presetVariables,
       message.characterId,
