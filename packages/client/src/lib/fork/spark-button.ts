@@ -2,7 +2,8 @@
 
 type AgentRowLike = { type: string; settings: unknown };
 
-function readSettings(settings: unknown): Record<string, unknown> {
+/** An agent row's settings, whether stored as an object or as a JSON string. */
+export function readAgentSettings(settings: unknown): Record<string, unknown> {
   if (settings && typeof settings === "object") return settings as Record<string, unknown>;
   if (typeof settings === "string" && settings.trim()) {
     try {
@@ -27,7 +28,7 @@ export function findSparkAgentType(
   for (const id of activeAgentIds) {
     if (id === "cyoa") continue;
     const row = configs.find((config) => config.type === id);
-    if (row && readSettings(row.settings).resultType === "cyoa_choices") return id;
+    if (row && readAgentSettings(row.settings).resultType === "cyoa_choices") return id;
   }
   return null;
 }

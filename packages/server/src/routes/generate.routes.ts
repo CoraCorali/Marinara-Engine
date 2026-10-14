@@ -231,7 +231,7 @@ import { createBoardPinsStorage } from "../services/board/fork-board-pins.js";
 import { boardPinsAsImageEntries, boardPinsNoteLine } from "../services/generation/fork-board-prompt.js";
 import { createBondsStorage } from "../services/bonds/fork-bonds.js";
 import { bondsPromptBlock } from "../services/generation/fork-bonds-prompt.js";
-import { applyBondsAgentResult } from "../services/bonds/fork-bond-updates.js";
+import { applyBondsAgentResult, loadBondsAgentState } from "../services/bonds/fork-bond-updates.js";
 import { createAgentsStorage } from "../services/storage/agents.storage.js";
 import { createGameStateStorage, parseStoredRulesetLive } from "../services/storage/game-state.storage.js";
 import {
@@ -5190,7 +5190,17 @@ export async function generateRoutes(app: FastifyInstance, options: GenerateRout
                     : {}),
                 }
               : null,
-          memory: {},
+          // Fork: what the relationship tracker holds, for the agent that updates it.
+          memory:
+            chatMode === "roleplay"
+              ? {
+                  _forkBonds: await loadBondsAgentState(
+                    app.db,
+                    input.chatId,
+                    (characterId) => charInfo.find((character) => character.id === characterId)?.name ?? "",
+                  ),
+                }
+              : {},
           lorebookEntryCounts: promptMacroContext.lorebookEntryCounts,
           writableLorebookIds: null,
           chatSummary: shouldAttachSummariesToAgents(chatMode, chatMeta) ? activeChatSummary : null,

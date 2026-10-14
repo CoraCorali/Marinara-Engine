@@ -209,6 +209,33 @@ await removeForkChatData(db, "branch-new");
 assert.equal((await store.listForChat("branch-new")).length, 0, "deleting the branch clears its bonds");
 assert.equal((await store.listForChat("branch-src")).length, 1, "and leaves the source alone");
 
+// ── The updating agent is shown what the tracker holds ──
+const { bondsAgentStateBlock } = await import("../../packages/server/src/services/bonds/fork-bond-updates.js");
+const stateBlock = bondsAgentStateBlock(
+  [
+    {
+      id: "b1",
+      chatId: "c",
+      characterId: "char-theo",
+      label: "",
+      kind: "love",
+      stage: "dating",
+      first: 70,
+      second: 35,
+      note: "Raw after the fight.",
+      order: 0,
+    },
+  ],
+  (characterId) => (characterId === "char-theo" ? "Theo" : ""),
+);
+assert.ok(stateBlock.startsWith("<current_relationships>") && stateBlock.endsWith("</current_relationships>"));
+assert.ok(stateBlock.includes('"who":"Theo"'), "a card bond is named by its card");
+assert.ok(
+  stateBlock.includes('"first":70') && stateBlock.includes('"stage":"dating"'),
+  "the agent sees current values",
+);
+assert.ok(bondsAgentStateBlock([], () => "").includes("holds nothing yet"), "an empty tracker says so");
+
 await closeDB();
 rmSync(dir, { recursive: true, force: true });
 console.log("fork bonds: ok");

@@ -45,7 +45,7 @@ import {
 } from "../../services/generation/agent-generation-parameters.js";
 import { and, eq } from "../../db/file-query.js";
 import { normalizeTextForMatch } from "@marinara-engine/shared";
-import { applyBondsAgentResult } from "../../services/bonds/fork-bond-updates.js";
+import { applyBondsAgentResult, loadBondsAgentState } from "../../services/bonds/fork-bond-updates.js";
 import { listCharacterSprites } from "../../services/game/sprite.service.js";
 import { DATA_DIR } from "../../utils/data-dir.js";
 import {
@@ -1219,7 +1219,17 @@ async function buildRetryAgentContext(args: {
         }
       : {}),
     streaming,
-    memory: {},
+    // Fork: what the relationship tracker holds, for the agent that updates it.
+    memory:
+      chatMode === "roleplay"
+        ? {
+            _forkBonds: await loadBondsAgentState(
+              db,
+              chatId,
+              (characterId) => charInfo.find((character) => character.id === characterId)?.name ?? "",
+            ),
+          }
+        : {},
     lorebookEntryCounts: promptMacroContext.lorebookEntryCounts,
   };
 

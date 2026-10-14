@@ -211,3 +211,36 @@ export async function applyBondsAgentResult(
   for (const creation of plan.creations) await store.create({ chatId, ...creation });
   return { changed: plan.changes.length, added: plan.creations.length };
 }
+
+/**
+ * What the tracker holds right now, for the agent that updates it. Without this the agent guesses
+ * every number from scratch each turn and only the step cap keeps it from teleporting; with it, the
+ * agent reports a change from where things stand and names people the way the tracker does.
+ */
+export function bondsAgentStateBlock(allBonds: readonly Bond[], nameFor: (characterId: string) => string): string {
+  const current = allBonds.map((bond) => ({
+    who: bond.label.trim() || nameFor(bond.characterId) || bond.characterId,
+    kind: bond.kind,
+    ...(bond.stage ? { stage: bond.stage } : {}),
+    first: bond.first,
+    second: bond.second,
+    ...(bond.note.trim() ? { note: bond.note.trim() } : {}),
+  }));
+  return [
+    "<current_relationships>",
+    current.length > 0
+      ? 'What the relationship tracker holds right now. Use these exact names in "who", and report where each bond stands now relative to these values. Leave a bond out if the scene said nothing about it.'
+      : "The relationship tracker holds nothing yet. Add a bond only for someone the scene gives a real relationship with the user's character.",
+    ...(current.length > 0 ? [JSON.stringify(current)] : []),
+    "</current_relationships>",
+  ].join("\n");
+}
+
+/** Loads a chat's bonds into that block. */
+export async function loadBondsAgentState(
+  db: DB,
+  chatId: string,
+  nameFor: (characterId: string) => string,
+): Promise<string> {
+  return bondsAgentStateBlock(await createBondsStorage(db).listForChat(chatId), nameFor);
+}

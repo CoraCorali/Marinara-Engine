@@ -158,18 +158,6 @@ Markup is stripped and every part is length-capped before it is sent.
   Nothing happens without such an agent, so the tracker still works entirely by hand if you prefer
   that. The panel re-reads the bonds whenever you open it, so what an agent moved is there.
 
-  The prompt to paste into that agent, which matches the JSON the editor shows as its example:
-
-  > Read the last few messages and report where each tracked relationship now stands. Reply with
-  > JSON only: `{"bonds":[{"who":"","kind":"","stage":"","first":0,"second":0,"note":""}]}`.
-  > `who` is the character's name exactly as it appears in the chat. `kind` is one of love,
-  > family, friend, rival, ex, other. `stage` applies only to love and is one of talking, dating,
-  > together, living, engaged, married. `first` and `second` are 0-100 for that kind's two meters:
-  > love is wanting and patience, family is closeness and friction, friend is closeness and trust,
-  > rival is respect and hostility, ex is unfinished business and bitterness, other is closeness
-  > and trust. `note` is one short line on where it stands. Only include a relationship the scene
-  > actually said something about, and leave out any field you are not sure changed.
-
 ### Back on track
 
 A review of everything built so far, after the theme detour.
@@ -199,6 +187,14 @@ A review of everything built so far, after the theme detour.
 - **The romance ladder is tappable.** Each rung was an 8px-tall button; the bar is still thin but
   the button around it is a full tap target.
 - **"Unfinished business"** reads as that in the prompt, not "unfinished high".
+- **The tracker agent can see the tracker.** It was never shown where the bonds stood, so it
+  guessed every number fresh each turn and only the 20-point cap slowed the drift. It now gets a
+  `<current_relationships>` block with each bond's name, kind, rung, meters and note, and is told
+  to report a change from there using the same names. Only that agent sees it.
+- **One tap to switch it on.** The tracker panel has a **Keep this updated automatically**
+  button. It makes the Relationship Tracker (Fork) agent if there is none yet, with its prompt,
+  its result type, the **Edit trackers** permission and the cards and persona as context, and
+  switches it on for this chat. Once it is on, the panel says so instead. Nothing to paste.
 
 ## Upstream files touched
 
@@ -213,6 +209,7 @@ Edits to upstream files are marked with a `Fork:` comment.
 | `packages/client/src/components/chat/ChatMessage.tsx` | Resend button in the message editor |
 | `packages/client/src/localization/locales/en.json` | Two strings for the resend button |
 | `packages/client/src/components/agents/AgentEditor.tsx` | Offers the fork tracker result to custom agents |
+| `packages/server/src/services/agents/agent-executor.ts` | Shows the tracker agent what the tracker holds |
 | `packages/client/src/lib/custom-agent-result-examples.ts` | The JSON example for that result |
 | `packages/client/src/components/chat/CyoaChoices.tsx` | Re-roll reruns the agent that made the choices |
 | `packages/client/src/components/chat/ChatInput.tsx` | Spark button |

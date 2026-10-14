@@ -2,10 +2,14 @@
 // Fork: the relationship tracker — one card per bond, shaped by what kind it is
 // ──────────────────────────────────────────────
 import { useState, type InputHTMLAttributes, type TextareaHTMLAttributes } from "react";
-import { Plus, Trash2, Loader2 } from "lucide-react";
+import { Plus, Trash2, Loader2, Wand2, Check } from "lucide-react";
+import { toast } from "sonner";
 import { useTranslation as useUiTranslation } from "react-i18next";
 import { showConfirmDialog } from "../../lib/app-dialogs";
 import { useForkDraftField } from "../../hooks/use-fork-draft-field";
+import { useAgentConfigs, useCreateAgent } from "../../hooks/use-agents";
+import { useChat, useUpdateChatMetadata } from "../../hooks/use-chats";
+import { bondsAgentPayload, findBondsAgent } from "../../lib/fork/bonds-agent";
 import {
   BOND_KINDS,
   BOND_METERS,
@@ -141,7 +145,50 @@ export function ForkBondsPanel({ chatId, cast }: Props) {
   const addBond = useAddBond(chatId);
   const updateBond = useUpdateBond(chatId);
   const deleteBond = useDeleteBond(chatId);
+  const { data: chat } = useChat(chatId);
+  const { data: agentConfigs } = useAgentConfigs(Boolean(chatId));
+  const createAgent = useCreateAgent();
+  const updateMeta = useUpdateChatMetadata({ serialize: true });
   const [adding, setAdding] = useState("");
+  const [connecting, setConnecting] = useState(false);
+
+  // Whether an agent already keeps this chat's tracker up to date.
+  const bondsAgent = findBondsAgent(agentConfigs);
+  const chatMeta = (() => {
+    const raw = chat?.metadata;
+    if (raw && typeof raw === "object") return raw as Record<string, unknown>;
+    try {
+      return typeof raw === "string" ? (JSON.parse(raw) as Record<string, unknown>) : {};
+    } catch {
+      return {};
+    }
+  })();
+  const activeAgentIds = Array.isArray(chatMeta.activeAgentIds)
+    ? chatMeta.activeAgentIds.filter((id): id is string => typeof id === "string")
+    : [];
+  const autoUpdating =
+    Boolean(bondsAgent) && chatMeta.enableAgents === true && activeAgentIds.includes(bondsAgent!.type);
+
+  // One tap: make the agent if there is none yet, then switch it on for this chat.
+  const handleAutoUpdate = async () => {
+    if (!chatId || connecting) return;
+    setConnecting(true);
+    try {
+      const agent =
+        bondsAgent ?? (await createAgent.mutateAsync(bondsAgentPayload(localizeUi("ui.chat.forkbonds.agentName"))));
+      if (!agent?.type) throw new Error("no agent");
+      await updateMeta.mutateAsync({
+        id: chatId,
+        enableAgents: true,
+        activeAgentIds: Array.from(new Set([...activeAgentIds, agent.type])),
+      });
+      toast.success(localizeUi("ui.chat.forkbonds.autoUpdateOn"));
+    } catch {
+      toast.error(localizeUi("ui.chat.forkbonds.autoUpdateFailed"));
+    } finally {
+      setConnecting(false);
+    }
+  };
 
   const tracked = new Set((bonds ?? []).map((bond) => bond.characterId));
   const untracked = cast.filter((member) => !tracked.has(member.id));
@@ -152,6 +199,22 @@ export function ForkBondsPanel({ chatId, cast }: Props) {
   return (
     <div className="flex max-h-[70vh] min-h-[20rem] flex-col gap-3">
       <p className="text-xs text-[var(--muted-foreground)]">{localizeUi("ui.chat.forkbonds.intro")}</p>
+      {autoUpdating ? (
+        <p className="flex items-center gap-1.5 text-xs font-semibold text-[var(--primary)]">
+          <Check size="0.75rem" />
+          {localizeUi("ui.chat.forkbonds.autoUpdating")}
+        </p>
+      ) : (
+        <button
+          type="button"
+          onClick={() => void handleAutoUpdate()}
+          disabled={!chatId || connecting}
+          className="flex min-h-11 items-center justify-center gap-2 rounded-xl border-2 border-dashed border-[var(--primary)] px-3 text-sm font-semibold text-[var(--primary)] disabled:opacity-50"
+        >
+          {connecting ? <Loader2 size="0.875rem" className="animate-spin" /> : <Wand2 size="0.875rem" />}
+          {localizeUi("ui.chat.forkbonds.autoUpdate")}
+        </button>
+      )}
 
       <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto">
         {isLoading && (

@@ -1759,6 +1759,9 @@ function buildBatchSystemPrompt(
     parts.push(``);
     parts.push(`<agent_task id="${escapeXmlAttribute(config.type)}" name="${escapeXmlAttribute(config.name)}">`);
     parts.push(template);
+    // Fork: the tracker agent sees what the tracker holds.
+    const forkBondsBlock = buildForkBondsStateBlock(config, context);
+    if (forkBondsBlock) parts.push(forkBondsBlock);
     parts.push(`</agent_task>`);
   }
   parts.push(`</agents>`);
@@ -2121,6 +2124,12 @@ function buildCustomAgentTriggeredLorebookBlock(config: AgentExecConfig, context
   return parts.join("\n");
 }
 
+/** Fork: the relationship tracker's current state, shown only to the agent that updates it. */
+function buildForkBondsStateBlock(config: AgentExecConfig, context: AgentContext): string {
+  if (resolveAgentResultType(config) !== "fork_bonds_update") return "";
+  return typeof context.memory._forkBonds === "string" ? context.memory._forkBonds : "";
+}
+
 function buildCustomAgentCapabilityBlock(config: AgentExecConfig, context: AgentContext): string {
   const capabilities = normalizeCustomAgentCapabilities(config.settings);
   const enabled = Object.entries(capabilities)
@@ -2283,6 +2292,12 @@ function buildStandardAgentMessages(config: AgentExecConfig, template: string, c
   if (customCapabilityBlock) {
     systemParts.push(``);
     systemParts.push(customCapabilityBlock);
+  }
+  // Fork: the tracker agent sees what the tracker holds.
+  const forkBondsBlock = buildForkBondsStateBlock(config, context);
+  if (forkBondsBlock) {
+    systemParts.push(``);
+    systemParts.push(forkBondsBlock);
   }
   const vectorContextBlock = buildCustomAgentVectorContextBlock(config, context);
   if (vectorContextBlock) {
