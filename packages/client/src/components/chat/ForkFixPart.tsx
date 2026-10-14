@@ -115,6 +115,7 @@ export function ForkFixPart({ chatId, messages, onEdit, busy }: Props) {
   const { t: localizeUi } = useUiTranslation();
   const debugMode = useUIStore((s) => s.debugMode);
   const highlight = useForkSlopStore((s) => s.highlight);
+  const lorebookButtonOn = useForkSlopStore((s) => s.lorebookButton);
   const phrases = useForkSlopStore((s) => s.phrases);
   const listOpen = useForkSlopStore((s) => s.listOpen);
   const setListOpen = useForkSlopStore((s) => s.setListOpen);
@@ -294,7 +295,8 @@ export function ForkFixPart({ chatId, messages, onEdit, busy }: Props) {
 
   // Marinara's own "Add to lorebook" button sits just under a selection of up to 200 characters,
   // centred the same way; this one stacks under it, or takes its place when it is not shown.
-  const lorebookButtonShown = picked ? picked.text.replace(/\s+/g, " ").trim().length <= 200 : false;
+  const lorebookButtonShown =
+    lorebookButtonOn && picked ? picked.text.replace(/\s+/g, " ").trim().length <= 200 : false;
   const buttonTop = picked ? Math.min(picked.rect.bottom + (lorebookButtonShown ? 52 : 8), window.innerHeight - 52) : 0;
   const buttonLeft = picked
     ? Math.min(Math.max(picked.rect.left + picked.rect.width / 2, 80), window.innerWidth - 80)
@@ -430,6 +432,8 @@ export function ForkFixPart({ chatId, messages, onEdit, busy }: Props) {
 function SlopListEditor() {
   const { t: localizeUi } = useUiTranslation();
   const highlight = useForkSlopStore((s) => s.highlight);
+  const lorebookButton = useForkSlopStore((s) => s.lorebookButton);
+  const setLorebookButton = useForkSlopStore((s) => s.setLorebookButton);
   const setHighlight = useForkSlopStore((s) => s.setHighlight);
   const phrases = useForkSlopStore((s) => s.phrases);
   const setPhrases = useForkSlopStore((s) => s.setPhrases);
@@ -452,6 +456,15 @@ function SlopListEditor() {
           type="checkbox"
           checked={highlight}
           onChange={(event) => setHighlight(event.target.checked)}
+          className="h-5 w-5 accent-[var(--primary)]"
+        />
+      </label>
+      <label className="flex min-h-11 items-center justify-between gap-3 rounded-xl bg-[var(--secondary)] px-3 text-sm font-semibold text-foreground">
+        {localizeUi("ui.chat.forkfix.showAddToLorebook")}
+        <input
+          type="checkbox"
+          checked={lorebookButton}
+          onChange={(event) => setLorebookButton(event.target.checked)}
           className="h-5 w-5 accent-[var(--primary)]"
         />
       </label>

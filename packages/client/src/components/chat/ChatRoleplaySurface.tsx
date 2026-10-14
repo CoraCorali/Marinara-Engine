@@ -825,6 +825,9 @@ type RoleplaySurfaceProps = {
   isGrouped: (index: number) => boolean;
 };
 
+// Fork: a stable stand-in for a missing People opener.
+const NOOP = () => undefined;
+
 export function ChatRoleplaySurface({
   activeChatId,
   chat,
@@ -1476,6 +1479,19 @@ export function ChatRoleplaySurface({
 
   // Keep an unsaved editor alive if its history is temporarily collapsed.
   const showHistory = !visualNovel || vnHistoryOpen;
+  // Fork: memoised so the memoised ChatInput does not re-render on every streamed chunk.
+  const forkBarLeading = useMemo(
+    () =>
+      onOpenForkBoard ? (
+        <ForkBoardStrip
+          chatScope={forkBoardChatScope}
+          personaScope={forkBoardPersonaScope}
+          onOpenBoard={onOpenForkBoard}
+          onOpenBonds={onOpenForkBonds ?? NOOP}
+        />
+      ) : undefined,
+    [forkBoardChatScope, forkBoardPersonaScope, onOpenForkBoard, onOpenForkBonds],
+  );
   const showTranscript = showHistory || vnHistoryHasDraft;
   const visibleMessages = showTranscript ? transcriptWindow.messages : [];
   const activeChatCharacterIds = useMemo(() => {
@@ -2016,14 +2032,6 @@ export function ChatRoleplaySurface({
                 />
 
                 {showHistory && !isStreaming && <CyoaChoices messages={messages} />}
-                {showHistory && onOpenForkBoard && (
-                  <ForkBoardStrip
-                    chatScope={forkBoardChatScope}
-                    personaScope={forkBoardPersonaScope}
-                    onOpenBoard={onOpenForkBoard}
-                    onOpenBonds={onOpenForkBonds ?? (() => undefined)}
-                  />
-                )}
 
                 {showHistory && hasLiveStream && !inlineStreamingMessageId && (
                   <StreamingIndicator
@@ -2179,14 +2187,6 @@ export function ChatRoleplaySurface({
                       </div>
                     )}
                     {!vnHistoryOpen && !isStreaming && <CyoaChoices messages={messages} />}
-                    {!vnHistoryOpen && onOpenForkBoard && (
-                      <ForkBoardStrip
-                        chatScope={forkBoardChatScope}
-                        personaScope={forkBoardPersonaScope}
-                        onOpenBoard={onOpenForkBoard}
-                        onOpenBonds={onOpenForkBonds ?? (() => undefined)}
-                      />
-                    )}
                   </div>
                 )}
                 {chatMeta.sceneStatus === "active" && (
@@ -2206,6 +2206,7 @@ export function ChatRoleplaySurface({
                   combatAgentEnabled={combatAgentEnabled}
                   onStartEncounter={onStartEncounter}
                   onOpenForkDirector={onOpenForkDirector}
+                  forkBarLeading={forkBarLeading}
                   characterNames={characterNames}
                   groupResponseOrder={
                     chatCharIds.length > 1 && groupChatMode === "individual"

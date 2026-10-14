@@ -3,6 +3,7 @@ import { StatIconPicker } from "../../../../components/ui/StatIconPicker";
 import { cn } from "../../../../lib/utils";
 import { visibleText } from "../../lib/tracker-display";
 import { getStatPercent } from "../../lib/tracker-stat-layout";
+import { statWordKey } from "../../../../lib/fork/stat-words";
 import { InlineEdit, InlineNumber } from "./InlineControls";
 import { useEffect, useRef, useState } from "react";
 import { useTranslation as useUiTranslation } from "react-i18next";
@@ -244,6 +245,10 @@ export function StatGauge({
           </div>
         </div>
       </div>
+      {/* Fork: Option A puts a word under each ring, since "shaky" reads faster than 35%. */}
+      <span className="mt-0.5 text-[0.6875rem] italic leading-tight text-[color:var(--tracker-profile-muted-text)]">
+        {localizeUi(statWordKey(percent))}
+      </span>
     </div>
   );
 }

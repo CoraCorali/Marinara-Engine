@@ -1,7 +1,7 @@
 // ──────────────────────────────────────────────
 // Chat: Input — mode-aware styling
 // ──────────────────────────────────────────────
-import { useState, useRef, useCallback, useEffect, useMemo, memo, type FormEvent } from "react";
+import { useState, useRef, useCallback, useEffect, useMemo, memo, type FormEvent, type ReactNode } from "react";
 import {
   Send,
   Paperclip,
@@ -29,6 +29,7 @@ import { useUIStore } from "../../stores/ui.store";
 import { useSidecarStore } from "../../stores/sidecar.store";
 import { useGenerate } from "../../hooks/use-generate";
 import { useAgentConfigs } from "../../hooks/use-agents";
+import { FORK_BAR_PILL_CLASS, FORK_BAR_PILL_IDLE_CLASS } from "../../lib/fork/bar-pill";
 import { findSparkAgentType } from "../../lib/fork/spark-button";
 import { useCommitSpatialOwnerTurn } from "../../hooks/use-spatial-context";
 import { useApplyRegex } from "../../hooks/use-apply-regex";
@@ -89,8 +90,8 @@ const EMPTY_RESPONSE_QUEUE: string[] = [];
 
 type NarrativeDirectorMode = "natural" | "random";
 
-const ROLEPLAY_AGENT_ACTION_BUTTON_CLASS =
-  "flex items-center gap-1.5 rounded-lg px-3 py-1 text-xs transition-all disabled:cursor-not-allowed disabled:opacity-50";
+// Fork: the actions above the message box are pills in one scrolling row.
+const ROLEPLAY_AGENT_ACTION_BUTTON_CLASS = FORK_BAR_PILL_CLASS;
 
 const TEXT_ATTACHMENT_EXTENSIONS = new Set([
   "csv",
@@ -210,6 +211,8 @@ interface ChatInputProps {
   onStartEncounter?: () => void;
   /** Fork: opens the Director's chair. */
   onOpenForkDirector?: () => void;
+  /** Fork: the board, people and slop buttons that lead the action row. */
+  forkBarLeading?: ReactNode;
   interactionsLocked?: boolean;
 }
 
@@ -224,6 +227,7 @@ export const ChatInput = memo(function ChatInput({
   combatAgentEnabled,
   onStartEncounter,
   onOpenForkDirector,
+  forkBarLeading,
   interactionsLocked = false,
 }: ChatInputProps) {
   const { t: localizeUi } = useUiTranslation();
@@ -242,6 +246,8 @@ export const ChatInput = memo(function ChatInput({
   const [pushStoryMode, setPushStoryMode] = useState<NarrativeDirectorMode | null>(null);
   const [pushStoryMenuOpen, setPushStoryMenuOpen] = useState(false);
   const pushStoryMenuRef = useRef<HTMLDivElement>(null);
+  // Fork: the menu sits outside the scrolling row, so the button is checked on its own.
+  const pushStoryButtonRef = useRef<HTMLButtonElement>(null);
   const [isDragging, setIsDragging] = useState(false);
   const [charPickerOpen, setCharPickerOpen] = useState(false);
   const charPickerBtnRef = useRef<HTMLButtonElement>(null);
@@ -386,7 +392,11 @@ export const ChatInput = memo(function ChatInput({
   // Fork: the Director's chair is available in any Roleplay chat.
   const forkDirectorActive = mode === "roleplay" && typeof onOpenForkDirector === "function";
   const showRoleplayAgentActions =
-    narrativeDirectorActive || combatActionActive || sparkAgentType !== null || forkDirectorActive;
+    narrativeDirectorActive ||
+    combatActionActive ||
+    sparkAgentType !== null ||
+    forkDirectorActive ||
+    (mode === "roleplay" && forkBarLeading != null);
   const consumeNarrativeDirectorMode = useCallback((): NarrativeDirectorMode | undefined => {
     if (!pushStoryMode || !narrativeDirectorActive) return undefined;
     setPushStoryMode(null);
@@ -897,7 +907,8 @@ export const ChatInput = memo(function ChatInput({
     if (!pushStoryMenuOpen) return;
     const handlePointerDown = (event: PointerEvent) => {
       const target = event.target as Node | null;
-      if (target && pushStoryMenuRef.current?.contains(target)) return;
+      if (target && (pushStoryMenuRef.current?.contains(target) || pushStoryButtonRef.current?.contains(target)))
+        return;
       setPushStoryMenuOpen(false);
     };
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -1933,120 +1944,112 @@ export const ChatInput = memo(function ChatInput({
       ) : null}
 
       {showRoleplayAgentActions && (
-        <div className="flex flex-wrap justify-center gap-2 py-1">
-          {narrativeDirectorActive && (
-            <div ref={pushStoryMenuRef} className="relative">
+        <div className="relative">
+          <div className="fork-bar-row flex gap-2 overflow-x-auto px-1 py-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+            {forkBarLeading}
+            {narrativeDirectorActive && (
+              <div className="shrink-0">
+                <button
+                  ref={pushStoryButtonRef}
+                  type="button"
+                  onClick={handlePushStoryClick}
+                  disabled={isInputBusy}
+                  aria-pressed={pushStoryMode !== null}
+                  aria-expanded={pushStoryMenuOpen}
+                  aria-haspopup="menu"
+                  className={cn(
+                    ROLEPLAY_AGENT_ACTION_BUTTON_CLASS,
+                    pushStoryMode
+                      ? "bg-foreground/10 text-foreground ring-1 ring-foreground/25"
+                      : FORK_BAR_PILL_IDLE_CLASS,
+                  )}
+                  title={
+                    pushStoryMode
+                      ? localizeUi("ui.chat.chatinput.disarmTheNarrativeDirectorPush")
+                      : localizeUi("ui.chat.chatinput.chooseHowTheNarrativeDirectorPushesTheStoryIn")
+                  }
+                >
+                  <WandSparkles size="0.875rem" />
+                  <span>
+                    {pushStoryMode
+                      ? localizeUi("ui.chat.chatinput.pushStoryValue1", {
+                          value1:
+                            pushStoryMode === "random"
+                              ? localizeUi("ui.chat.chatinput.randomly")
+                              : localizeUi("ui.chat.chatinput.naturally"),
+                        })
+                      : localizeUi("ui.agents.contextinjectionpanel.pushStory")}
+                  </span>
+                </button>
+              </div>
+            )}
+            {forkDirectorActive && (
               <button
                 type="button"
-                onClick={handlePushStoryClick}
+                onClick={() => onOpenForkDirector?.()}
                 disabled={isInputBusy}
-                aria-pressed={pushStoryMode !== null}
-                aria-expanded={pushStoryMenuOpen}
-                aria-haspopup="menu"
-                className={cn(
-                  ROLEPLAY_AGENT_ACTION_BUTTON_CLASS,
-                  pushStoryMode
-                    ? "bg-foreground/10 text-foreground ring-1 ring-foreground/25"
-                    : "text-foreground/50 hover:bg-foreground/10 hover:text-foreground/80",
-                )}
-                title={
-                  pushStoryMode
-                    ? localizeUi("ui.chat.chatinput.disarmTheNarrativeDirectorPush")
-                    : localizeUi("ui.chat.chatinput.chooseHowTheNarrativeDirectorPushesTheStoryIn")
-                }
+                className={cn(ROLEPLAY_AGENT_ACTION_BUTTON_CLASS, FORK_BAR_PILL_IDLE_CLASS)}
+                title={localizeUi("ui.chat.forkdirector.buttonTitle")}
               >
-                <WandSparkles size="0.875rem" />
-                <span>
-                  {pushStoryMode
-                    ? localizeUi("ui.chat.chatinput.pushStoryValue1", {
-                        value1:
-                          pushStoryMode === "random"
-                            ? localizeUi("ui.chat.chatinput.randomly")
-                            : localizeUi("ui.chat.chatinput.naturally"),
-                      })
-                    : localizeUi("ui.agents.contextinjectionpanel.pushStory")}
+                <Clapperboard size="0.875rem" />
+                <span>{localizeUi("ui.chat.forkdirector.button")}</span>
+              </button>
+            )}
+            {sparkAgentType !== null && (
+              <button
+                type="button"
+                onClick={() => void handleSparkClick()}
+                disabled={isInputBusy || sparkRunning}
+                className={cn(ROLEPLAY_AGENT_ACTION_BUTTON_CLASS, FORK_BAR_PILL_IDLE_CLASS)}
+                title={localizeUi("ui.chat.chatinput.sparkTitle")}
+              >
+                {sparkRunning ? <Loader2 size="0.875rem" className="animate-spin" /> : <Lightbulb size="0.875rem" />}
+                <span>{localizeUi("ui.chat.chatinput.spark")}</span>
+              </button>
+            )}
+            {combatActionActive && (
+              <button
+                type="button"
+                onClick={() => onStartEncounter?.()}
+                disabled={isInputBusy}
+                className={cn(ROLEPLAY_AGENT_ACTION_BUTTON_CLASS, FORK_BAR_PILL_IDLE_CLASS)}
+                title={localizeUi("ui.chat.chatinput.startCombatEncounter")}
+              >
+                <Swords size="0.875rem" />
+                <span>{localizeUi("ui.chat.chatinput.encounter")}</span>
+              </button>
+            )}
+          </div>
+          {pushStoryMenuOpen && (
+            <div
+              role="menu"
+              ref={pushStoryMenuRef}
+              data-chat-input-popup="story"
+              className="mari-chat-style-surface mari-chat-input-popup absolute bottom-full left-1/2 z-50 mb-2 w-64 -translate-x-1/2 rounded-xl border border-[var(--marinara-chat-chrome-panel-border)] bg-[var(--card)] p-1 shadow-2xl"
+            >
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => handleArmPushStory("natural")}
+                className="flex w-full flex-col items-start gap-0.5 rounded-lg px-3 py-2 text-left transition-colors hover:bg-foreground/10"
+              >
+                <span className="text-sm font-medium text-foreground">{localizeUi("ui.chat.chatinput.naturally")}</span>
+                <span className="text-xs text-foreground/60">
+                  {localizeUi("ui.chat.chatinput.pushTheExistingPlotForward")}
                 </span>
               </button>
-              {pushStoryMenuOpen && (
-                <div
-                  role="menu"
-                  data-chat-input-popup="story"
-                  className="mari-chat-style-surface mari-chat-input-popup absolute bottom-full left-1/2 z-50 mb-2 w-64 -translate-x-1/2 rounded-xl border border-[var(--marinara-chat-chrome-panel-border)] bg-[var(--card)] p-1 shadow-2xl"
-                >
-                  <button
-                    type="button"
-                    role="menuitem"
-                    onClick={() => handleArmPushStory("natural")}
-                    className="flex w-full flex-col items-start gap-0.5 rounded-lg px-3 py-2 text-left transition-colors hover:bg-foreground/10"
-                  >
-                    <span className="text-sm font-medium text-foreground">
-                      {localizeUi("ui.chat.chatinput.naturally")}
-                    </span>
-                    <span className="text-xs text-foreground/60">
-                      {localizeUi("ui.chat.chatinput.pushTheExistingPlotForward")}
-                    </span>
-                  </button>
-                  <button
-                    type="button"
-                    role="menuitem"
-                    onClick={() => handleArmPushStory("random")}
-                    className="flex w-full flex-col items-start gap-0.5 rounded-lg px-3 py-2 text-left transition-colors hover:bg-foreground/10"
-                  >
-                    <span className="text-sm font-medium text-foreground">
-                      {localizeUi("ui.chat.chatinput.randomly")}
-                    </span>
-                    <span className="text-xs text-foreground/60">
-                      {localizeUi("ui.chat.chatinput.addAPlausibleSurpriseToTheScene")}
-                    </span>
-                  </button>
-                </div>
-              )}
+              <button
+                type="button"
+                role="menuitem"
+                onClick={() => handleArmPushStory("random")}
+                className="flex w-full flex-col items-start gap-0.5 rounded-lg px-3 py-2 text-left transition-colors hover:bg-foreground/10"
+              >
+                <span className="text-sm font-medium text-foreground">{localizeUi("ui.chat.chatinput.randomly")}</span>
+                <span className="text-xs text-foreground/60">
+                  {localizeUi("ui.chat.chatinput.addAPlausibleSurpriseToTheScene")}
+                </span>
+              </button>
             </div>
-          )}
-          {forkDirectorActive && (
-            <button
-              type="button"
-              onClick={() => onOpenForkDirector?.()}
-              disabled={isInputBusy}
-              className={cn(
-                ROLEPLAY_AGENT_ACTION_BUTTON_CLASS,
-                "text-foreground/50 hover:bg-foreground/10 hover:text-foreground/80 disabled:hover:bg-transparent disabled:hover:text-foreground/50",
-              )}
-              title={localizeUi("ui.chat.forkdirector.buttonTitle")}
-            >
-              <Clapperboard size="0.875rem" />
-              <span>{localizeUi("ui.chat.forkdirector.button")}</span>
-            </button>
-          )}
-          {sparkAgentType !== null && (
-            <button
-              type="button"
-              onClick={() => void handleSparkClick()}
-              disabled={isInputBusy || sparkRunning}
-              className={cn(
-                ROLEPLAY_AGENT_ACTION_BUTTON_CLASS,
-                "text-foreground/50 hover:bg-foreground/10 hover:text-foreground/80 disabled:hover:bg-transparent disabled:hover:text-foreground/50",
-              )}
-              title={localizeUi("ui.chat.chatinput.sparkTitle")}
-            >
-              {sparkRunning ? <Loader2 size="0.875rem" className="animate-spin" /> : <Lightbulb size="0.875rem" />}
-              <span>{localizeUi("ui.chat.chatinput.spark")}</span>
-            </button>
-          )}
-          {combatActionActive && (
-            <button
-              type="button"
-              onClick={() => onStartEncounter?.()}
-              disabled={isInputBusy}
-              className={cn(
-                ROLEPLAY_AGENT_ACTION_BUTTON_CLASS,
-                "text-foreground/50 hover:bg-foreground/10 hover:text-foreground/80 disabled:hover:bg-transparent disabled:hover:text-foreground/50",
-              )}
-              title={localizeUi("ui.chat.chatinput.startCombatEncounter")}
-            >
-              <Swords size="0.875rem" />
-              <span>{localizeUi("ui.chat.chatinput.encounter")}</span>
-            </button>
           )}
         </div>
       )}

@@ -13,7 +13,7 @@ import { getCharacterFeatureKey } from "../../lib/character-tracker-data";
 import { getSpriteExpressionForCharacter } from "../../lib/sprite-expressions";
 import type { TrackerProfileColors } from "../../lib/tracker-profile-style";
 import { AddRowButton, EmptySection, SectionHeader, TRACKER_SECTION_SHELL_CLASS } from "../controls/SectionControls";
-import { CharacterTrackerCard } from "../character-card/CharacterTrackerCard";
+import { ForkCharacterCard } from "../character-card/ForkCharacterCard";
 import { FeaturedCharacterTrackerCard } from "../character-card/FeaturedCharacterTrackerCard";
 import { useTranslation as useUiTranslation } from "react-i18next";
 
@@ -100,14 +100,15 @@ export function CharacterTrackerPanel({
     const compactEntries = characterEntries.filter((entry) => !entry.featured);
     const getCharacterEntryKey = (entry: (typeof characterEntries)[number]) =>
       `${activeChatId}-${entry.character.characterId}-${entry.index}`;
-    const useCompactCardColumns = trackerPanelSizeProfile !== "compact";
+    // Fork: Option A cards take the full width so nothing is cut off; the edit modes keep two columns.
+    const useCompactCardColumns = trackerPanelSizeProfile !== "compact" && (deleteMode || addMode);
     const shouldRenderCompactGhostSlot = useCompactCardColumns && compactEntries.length % 2 === 1;
     const renderCompactCharacterCard = (entry: (typeof characterEntries)[number]) => (
       <div
         key={getCharacterEntryKey(entry)}
         className={cn(COMPACT_CHARACTER_CARD_SLOT_CLASS, CHARACTER_CARD_RENDER_CONTAINMENT_CLASS)}
       >
-        <CharacterTrackerCard
+        <ForkCharacterCard
           character={entry.character}
           characterPicture={entry.characterPicture}
           profileColors={entry.profileColors}

@@ -63,7 +63,8 @@ export function PersonaInventoryPanel({
   status,
   spriteExpression,
   trackerPanelSide,
-  statDisplayMode,
+  // Fork: persona stats always show as rings (Option A).
+  statDisplayMode: _statDisplayMode,
   resolveStatIcon,
   personaStats,
   action,
@@ -148,7 +149,9 @@ export function PersonaInventoryPanel({
         }
       : undefined;
   const showPersonaStatDeck = personaStats.length > 0 || addMode;
-  const renderPersonaGauges = shouldRenderStatGauges(statDisplayMode, addMode, deleteMode, lockMode);
+  // Fork: Option A shows persona stats as rings with a word under each, whatever the stat display setting.
+  const personaStatDisplayMode: TrackerStatDisplayMode = "gauges";
+  const renderPersonaGauges = shouldRenderStatGauges(personaStatDisplayMode, addMode, deleteMode, lockMode);
   const personaPortraitSide = getTrackerProfilePortraitSide(trackerPanelSide);
   const personaDetailsSide = getOppositeTrackerProfileSide(personaPortraitSide);
   const personaStatusAccessibleName = status
@@ -270,7 +273,7 @@ export function PersonaInventoryPanel({
                     deleteMode={deleteMode}
                     addMode={addMode}
                     visualTone="instrument"
-                    displayMode={statDisplayMode}
+                    displayMode={personaStatDisplayMode}
                     resolveIcon={(stat, occurrence) => resolveStatIcon.resolvePersonaStatIcon(stat.name, occurrence)}
                     onSetIcon={(stat, occurrence, icon) =>
                       resolveStatIcon.setPersonaStatIcon(stat.name, occurrence, icon)

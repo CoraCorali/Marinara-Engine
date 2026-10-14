@@ -40,6 +40,7 @@ import { ForkReferenceBoard } from "./ForkReferenceBoard";
 import { ForkBondsPanel } from "./ForkBondsPanel";
 import { ForkDirectorPanel, type DirectorTurn } from "./ForkDirectorPanel";
 import type { BoardScope } from "../../hooks/use-fork-board";
+import { useForkSlopStore } from "../../stores/fork-slop.store";
 import { readChatMetadata } from "../../lib/chat-wizard-defaults";
 import { useChatWindowLayout } from "../../hooks/use-chat-window-layout";
 import { ChatSettingsBubble } from "./ChatSettingsBubble";
@@ -572,6 +573,8 @@ export const ChatArea = memo(function ChatArea({
   }, [hostsChatSettings]);
   // The Chat Settings button shows while a chat that hosts Chat Settings is open.
   const chatSettingsHosted = useFloatingWindowStore((state) => (state.hosts[CHAT_SETTINGS_WINDOW_ID] ?? 0) > 0);
+  // Fork: "Add to lorebook" can be switched off from the Slop panel.
+  const forkLorebookButton = useForkSlopStore((state) => state.lorebookButton);
   // Windows and popped-out drawers follow the open chat's saved layout.
   useChatWindowLayout(activeChatId ? (chat?.id === activeChatId ? chat : undefined) : null);
   useEffect(() => {
@@ -599,7 +602,7 @@ export const ChatArea = memo(function ChatArea({
         chatWindowIntroAllowed={chatWindowIntroAllowed}
         onChatWindowIntroOpenChange={onChatWindowIntroOpenChange}
       />
-      <SelectionLorebookButton />
+      {forkLorebookButton && <SelectionLorebookButton />}
       {chatSettingsButton}
     </>
   );

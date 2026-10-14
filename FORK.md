@@ -249,9 +249,27 @@ A review of everything built so far, after the theme detour.
 - **Fix this part and the Director use the same model the story does**, resolved in one shared
   helper, and Fix this part logs its prompt in debug mode.
 
+### The tidy row and the tracker cards
+
+- **One row above the message box.** The in-scene strip, Board, People, Director, Spark, Push story,
+  Encounter and Slop used to stack in two or three rows. They are now pills in one row that scrolls
+  sideways when it runs out of width. The pictures the AI is seeing ride on the **Board** pill as a
+  little stack of up to three, so they no longer need a row of their own, and Slop is an icon at the
+  end. Icons take the theme's accent colour, so the row turns sapphire under Sapphire Nocturne.
+- **"Add to lorebook" can be switched off.** The Slop panel has a switch for it. With it off, a
+  selection offers only **Fix this part**, which moves up into its place.
+- **Tracker cards (Option A).** A present character is a card now instead of a cramped two-column
+  table: a portrait ring, the mood as a pill, the thought as a bubble, then labelled **Wearing** and
+  **Looks** rows that wrap instead of cutting off, then the stats as bars with a word beside the
+  number ("wary 45"). Cards take the full width of the panel. Everything is still tap to edit. The
+  add, delete, hide and lock modes switch back to Marinara's own card, which carries every control
+  for them.
+- **Persona stats are rings with a word under each** ("steady", "low"), whatever the stat display
+  setting says, since that is what Option A showed.
+
 ## Upstream files touched
 
-Fork-only code lives in `packages/client/src/lib/fork/`, `packages/server/src/services/import/fork/`
+Fork-only code lives in `packages/client/src/lib/fork/`, `Fork*` components, `packages/server/src/services/import/fork/`
 and `scripts/regressions/fork-*.regression.ts`.
 Edits to upstream files are marked with a `Fork:` comment.
 
@@ -291,6 +309,12 @@ Edits to upstream files are marked with a `Fork:` comment.
 | `packages/shared/src/schemas/lorebook.schema.ts` | Whole-word default |
 | `packages/server/src/services/storage/lorebooks.storage.ts` | Whole-word default |
 | `packages/server/src/routes/chats.routes.ts` | A branch copies the board and the bonds |
+| `packages/client/src/components/chat/ChatInput.tsx` | The action row is one scrolling row of pills, led by the fork's own buttons |
+| `packages/client/src/components/chat/ChatArea.tsx` | Hides "Add to lorebook" when it is switched off |
+| `packages/client/src/components/chat/ChatRoleplaySurface.tsx` | Hands the board pills to the action row instead of its own strip |
+| `packages/client/src/features/tracker-panel/components/sections/CharacterTrackerPanel.tsx` | Option A cards, one per row |
+| `packages/client/src/features/tracker-panel/components/sections/PersonaInventoryPanel.tsx` | Persona stats always as rings |
+| `packages/client/src/features/tracker-panel/components/controls/StatGauge.tsx` | A word under each ring |
 
 ## Known upstream issue kept as is
 
