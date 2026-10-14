@@ -5895,6 +5895,7 @@
   "ui.chat.forkdirector.saveForNext": "Save for next",
   "ui.chat.forkdirector.send": "Send to the Director",
   "ui.chat.forkdirector.startOver": "Start over",
+  "ui.chat.forkdirector.take": "Take {{take}}",
   "ui.chat.forkdirector.talkItOut": "talk it out…",
   "ui.chat.forkdirector.theNoteIllUse": "the note I’ll use",
   "ui.chat.forkdirector.thinking": "Thinking…",

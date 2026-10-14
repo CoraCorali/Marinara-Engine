@@ -2,7 +2,7 @@
 // Fork: the Director's chair — talk out the next reply off the record
 // ──────────────────────────────────────────────
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Loader2, RotateCcw, SendHorizontal } from "lucide-react";
+import { Clapperboard, Loader2, RotateCcw, SendHorizontal } from "lucide-react";
 import { useTranslation as useUiTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { api } from "../../lib/api-client";
@@ -92,6 +92,8 @@ export function ForkDirectorPanel({
   );
 
   const empty = turns.length === 0 && !sending;
+  // Each answer from the Director is another take on the note.
+  const takeNumber = Math.max(1, turns.filter((turn) => turn.role === "assistant").length);
 
   return (
     <div className="flex max-h-[72vh] min-h-[24rem] flex-col">
@@ -133,22 +135,30 @@ export function ForkDirectorPanel({
           </div>
         )}
 
-        {turns.map((turn, index) => (
-          <div
-            key={`${turn.role}-${index}`}
-            className={
-              turn.role === "user"
-                ? "ml-auto max-w-[85%] rounded-2xl rounded-br-sm bg-[var(--primary)] px-3 py-2 text-sm text-[var(--primary-foreground)]"
-                : "mr-auto max-w-[90%] rounded-2xl rounded-bl-sm bg-[var(--secondary)] px-3 py-2 text-sm text-foreground"
-            }
-          >
-            {turn.content}
-          </div>
-        ))}
+        {turns.map((turn, index) =>
+          turn.role === "user" ? (
+            <div
+              key={`${turn.role}-${index}`}
+              className="ml-auto max-w-[85%] whitespace-pre-wrap rounded-3xl rounded-br-md bg-[linear-gradient(135deg,var(--primary),color-mix(in_srgb,var(--primary)_70%,black))] px-4 py-2.5 text-sm leading-relaxed text-[var(--primary-foreground)] shadow-[0_4px_14px_color-mix(in_srgb,var(--primary)_30%,transparent)]"
+            >
+              {turn.content}
+            </div>
+          ) : (
+            <div key={`${turn.role}-${index}`} className="mr-auto flex max-w-[92%] items-end gap-2">
+              <DirectorAvatar />
+              <div className="whitespace-pre-wrap rounded-3xl rounded-bl-md border border-[var(--border)] bg-[var(--secondary)] px-4 py-2.5 text-sm leading-relaxed text-foreground shadow-[0_4px_14px_rgba(0,0,0,0.18)]">
+                {turn.content}
+              </div>
+            </div>
+          ),
+        )}
         {sending && (
-          <div className="mr-auto flex items-center gap-2 rounded-2xl bg-[var(--secondary)] px-3 py-2 text-sm text-[var(--muted-foreground)]">
-            <Loader2 size="0.875rem" className="animate-spin" />
-            {localizeUi("ui.chat.forkdirector.thinking")}
+          <div className="mr-auto flex items-end gap-2">
+            <DirectorAvatar />
+            <div className="flex items-center gap-2 rounded-3xl rounded-bl-md border border-[var(--border)] bg-[var(--secondary)] px-4 py-2.5 text-sm text-[var(--muted-foreground)]">
+              <Loader2 size="0.875rem" className="animate-spin" />
+              {localizeUi("ui.chat.forkdirector.thinking")}
+            </div>
           </div>
         )}
         <div ref={endRef} />
@@ -203,46 +213,62 @@ export function ForkDirectorPanel({
       {/* The note and the two buttons are what you came for, so they are pinned under the
           conversation rather than scrolling away inside it. The note is editable: the model's
           wording is a starting point, not a verdict. */}
-      <div className="mt-3 rounded-xl border border-dashed border-[var(--primary)] bg-[var(--primary)]/10 p-2.5">
-        <label
-          htmlFor="fork-director-note"
-          className="text-[0.625rem] font-bold uppercase tracking-wide text-[var(--primary)]"
-        >
-          {localizeUi("ui.chat.forkdirector.theNoteIllUse")}
-        </label>
-        <textarea
-          id="fork-director-note"
-          value={note}
-          rows={2}
-          onChange={(event) => onChange(turns, event.target.value)}
-          placeholder={localizeUi("ui.chat.forkdirector.notePlaceholder")}
-          className="mt-1 w-full resize-none bg-transparent text-sm text-foreground outline-none placeholder:text-[var(--muted-foreground)]"
+      {/* The note is a film slate: a striped clapper bar, then the board you chalk the direction on. */}
+      <div className="mt-3 overflow-hidden rounded-xl shadow-[0_8px_22px_rgba(0,0,0,0.35)]">
+        <div
+          aria-hidden="true"
+          className="h-4 origin-bottom-left -rotate-[2deg] bg-[repeating-linear-gradient(-45deg,#f5f2ea_0_12px,#1c1b1f_12px_24px)]"
         />
-        <div className="mt-1.5 flex gap-2">
-          <button
-            type="button"
-            onClick={() => void onRewrite(note)}
-            disabled={!note.trim() || !canRewrite || busy || sending}
-            className="min-h-11 flex-1 rounded-xl bg-[var(--primary)] text-sm font-bold text-[var(--primary-foreground)] disabled:opacity-50"
-          >
-            {localizeUi("ui.chat.forkdirector.rewriteReply")}
-          </button>
-          <button
-            type="button"
-            onClick={() => onSaveForNext(note)}
-            disabled={!note.trim() || busy || sending}
-            className="min-h-11 rounded-xl border-2 border-[var(--border)] px-4 text-sm font-bold text-foreground disabled:opacity-50"
-          >
-            {localizeUi("ui.chat.forkdirector.saveForNext")}
-          </button>
+        <div className="bg-[#1c1b1f] p-3 text-[#f5f2ea]">
+          <div className="mb-1.5 flex items-center justify-between border-b border-[#f5f2ea]/25 pb-1.5 font-mono text-[0.625rem] font-bold uppercase tracking-[0.18em]">
+            <label htmlFor="fork-director-note">{localizeUi("ui.chat.forkdirector.theNoteIllUse")}</label>
+            <span className="text-[#f5f2ea]/70">{localizeUi("ui.chat.forkdirector.take", { take: takeNumber })}</span>
+          </div>
+          <textarea
+            id="fork-director-note"
+            value={note}
+            rows={2}
+            onChange={(event) => onChange(turns, event.target.value)}
+            placeholder={localizeUi("ui.chat.forkdirector.notePlaceholder")}
+            className="w-full resize-none bg-transparent font-mono text-sm leading-relaxed text-[#f5f2ea] outline-none [field-sizing:content] placeholder:text-[#f5f2ea]/45"
+          />
+          <div className="mt-2 flex gap-2">
+            <button
+              type="button"
+              onClick={() => void onRewrite(note)}
+              disabled={!note.trim() || !canRewrite || busy || sending}
+              className="min-h-11 flex-1 rounded-lg bg-[var(--primary)] text-sm font-bold text-[var(--primary-foreground)] disabled:opacity-50"
+            >
+              {localizeUi("ui.chat.forkdirector.rewriteReply")}
+            </button>
+            <button
+              type="button"
+              onClick={() => onSaveForNext(note)}
+              disabled={!note.trim() || busy || sending}
+              className="min-h-11 rounded-lg border-2 border-[#f5f2ea]/35 px-4 text-sm font-bold text-[#f5f2ea] disabled:opacity-50"
+            >
+              {localizeUi("ui.chat.forkdirector.saveForNext")}
+            </button>
+          </div>
+          {/* A disabled button that will not say why is the worst kind. */}
+          {!canRewrite && note.trim() && (
+            <p className="mt-1.5 text-[0.6875rem] text-[#f5f2ea]/70">
+              {localizeUi("ui.chat.forkdirector.noReplyToRewriteYet")}
+            </p>
+          )}
         </div>
-        {/* A disabled button that will not say why is the worst kind. */}
-        {!canRewrite && note.trim() && (
-          <p className="mt-1.5 text-[0.6875rem] text-[var(--muted-foreground)]">
-            {localizeUi("ui.chat.forkdirector.noReplyToRewriteYet")}
-          </p>
-        )}
       </div>
     </div>
+  );
+}
+
+function DirectorAvatar() {
+  return (
+    <span
+      aria-hidden="true"
+      className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#1c1b1f] text-[#f5f2ea] ring-2 ring-[color-mix(in_srgb,var(--primary)_60%,transparent)]"
+    >
+      <Clapperboard size="0.875rem" />
+    </span>
   );
 }

@@ -387,6 +387,14 @@ tokens of thinking and a reply cut off mid-sentence.
   flashes on every half-written reply. Saved per script in the browser, so the regex table itself is
   unchanged.
 
+### The Director's chair, dressed for the set
+
+- **Prettier bubbles.** Your lines are rounded bubbles in a soft theme-accent gradient; the
+  Director's answers sit beside a little clapperboard avatar, and both keep their line breaks.
+- **The note is a film slate**: a striped clapper bar across the top, then a dark board with the
+  direction chalked on in a typewriter face, "Take 2" counting the Director's answers, and
+  **Rewrite reply** and **Save for next** underneath. The slate grows with the note.
+
 ## Upstream files touched
 
 Fork-only code lives in `packages/client/src/lib/fork/`, `Fork*` components, `packages/shared/src/features/fork-bond-shapes.ts`, `packages/server/src/services/import/fork/`
