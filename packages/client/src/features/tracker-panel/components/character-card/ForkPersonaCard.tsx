@@ -222,7 +222,7 @@ export function ForkPersonaCard({
           </p>
           <button type="button" onClick={() => openForkPanel("people")} className={LINE_CLASS}>
             <span className="min-w-0 flex-1 truncate">
-              <span className="font-bold">{closestName}</span>
+              <span className="font-bold">{closestName}</span>{" "}
               {localizeUi("ui.characters.characterversionhistorypanel.value1", {
                 value1: [closest.rung, closest.drift].filter(Boolean).join(" · "),
               })}
