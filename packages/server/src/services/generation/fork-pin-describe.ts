@@ -28,6 +28,7 @@ export const PIN_DESCRIBE_PROMPT = [
   `- slot (wearing only, else ""): one of ${FORK_WEAR_SLOTS.join(", ")}. Several garments together (on a person or laid out) are "outfit"; a close-up of a hairstyle is "hair".`,
   '- shows (wearing only): "model" if someone is wearing it, "clothes" if it is laid out with no one in it.',
   "- caption: the visible items in plain, everyday words a person would type, with colour and material, separated by commas, at most 18 words. For example: pink zip hoodie, cream top, grey leggings, white fluffy boots, white shoulder bag.",
+  "- When the picture is a close-up of hair, makeup or nails, the caption is only about that one thing (for example: blonde spiral curls in a high updo), not the clothes or jewelry also in the shot.",
   "- Describe only what is worn, held or shown. Never describe the person's body, face, skin or build. Ignore watermarks, logos and brand names.",
 ].join("\n");
 

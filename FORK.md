@@ -512,6 +512,11 @@ to a model was traced from its prompt to what is done with the answer.
   as words; outfit sync no longer overwrites one character with another or a stale list; putting
   choices away cannot bring them back; the weather tile button gets out of the way in lock mode;
   and the ? buttons and Open People are easier to tap.
+- **Live tests with Opus 4.6, Opus 5.5 and Fable 5.1 through LinkAPI**: Describe it named the
+  pieces and told a flat-lay from an outfit on a model, without describing anyone's body; a hair
+  close-up now gets a hair-only caption (it used to list the jewelry and top in the shot too). A
+  message mentioning the navy outfit sent its picture, and the replies used it on Kyli's own curvy
+  build and the hair pin's curls.
 - **`fork` is a reserved chat-metadata namespace** (`forkPersonaToday`), so a package cannot take it;
   the upstream check for this now passes.
 - **Regressions**: 538 of 540 passed in the full run. The capability check failed on the metadata
