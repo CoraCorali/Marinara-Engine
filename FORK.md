@@ -83,6 +83,20 @@ It now gets five things, each left out when the chat has nothing to put in it:
 
 Markup is stripped and every part is length-capped before it is sent.
 
+### Building the theme
+
+- **The Board visual theme.** A third visual style beside Default and SillyTavern, chosen in
+  **Settings → Appearance → Visual style**. Cream paper, rose and sage and gold, with the story
+  itself on cork. It defines the same 67-variable contract every visual theme defines, and has a
+  dark mode that reads as the same board under a lamp rather than a different theme.
+  Its art lives in `packages/client/public/images/fork-board/` rather than inline, because a theme
+  saved through Settings is capped at 256 KiB of CSS whose images must be `data:` URIs, which no
+  sticker set fits inside. Shipping the files lets the browser cache them too. 84 cutouts and a
+  cork tile, 757 KiB in all, cut from Jules' own sticker sheets.
+  Photo frames carry the measured position of their own cutout window, so a picture sits behind
+  the frame and shows through the hole instead of being guessed into place.
+  Glow effects and the weather layers stay off under this theme; weather was what dropped frames.
+
 ## Upstream files touched
 
 Fork-only code lives in `packages/client/src/lib/fork/`, `packages/server/src/services/import/fork/`
@@ -109,6 +123,9 @@ Edits to upstream files are marked with a `Fork:` comment.
 | `packages/client/src/components/chat/ChatInput.tsx` | Director button (and the Spark button) |
 | `packages/server/src/routes/generate.routes.ts` | Saves which agent made the choices |
 | `packages/server/src/routes/generate/retry-agents-route.ts` | Same, for re-rolled choices |
+| `packages/client/src/styles/globals.css` | Imports the Board theme |
+| `packages/client/src/stores/ui.store.ts` | `board` added to the visual-theme union |
+| `packages/client/src/components/panels/SettingsPanel.tsx` | Board card in Visual style |
 | `packages/shared/src/schemas/lorebook.schema.ts` | Whole-word default |
 | `packages/server/src/services/storage/lorebooks.storage.ts` | Whole-word default |
 

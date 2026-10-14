@@ -1,6 +1,7 @@
 @import "tailwindcss";
 @source "./capability-package-safelist.html";
 @import "./themes/sillytavern.css";
+@import "./themes/board.css"; /* Fork: corkboard visual theme */
 @import "./themes/chat-widgets.css";
 @import "./themes/chat-widget-surfaces.css";
 
@@ -6497,9 +6498,7 @@ strong {
 
   /* 100cqw is the chat pane (CenterContent is a size container), so the right edge ignores the
      transcript's scrollbar, as the composer does. */
-  [data-chat-mode="roleplay"][data-roleplay-presentation="classic"][data-chat-position="right"]
-    [data-chat-scroll]
-    > * {
+  [data-chat-mode="roleplay"][data-roleplay-presentation="classic"][data-chat-position="right"] [data-chat-scroll] > * {
     margin-left: max(
       0px,
       100cqw - 2 * var(--mari-roleplay-transcript-gutter) - var(--mari-chat-position-clearance, 0px) -

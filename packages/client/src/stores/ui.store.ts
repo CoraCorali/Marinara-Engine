@@ -68,7 +68,7 @@ function normalizeConnectionPanelSort(value: unknown): ConnectionPanelSort {
     : "name-asc";
 }
 type FontSize = 12 | 14 | 16 | 17 | 19 | 22 | 26 | 30 | 34;
-export type VisualTheme = "default" | "sillytavern";
+export type VisualTheme = "default" | "sillytavern" | "board"; // Fork: "board" is the corkboard theme
 export type ChatWidgetPreset = "default" | "dottore" | "mari";
 export type ChatWidgetShape = "preset" | "rounded" | "square" | "cut-corner" | "arched";
 
