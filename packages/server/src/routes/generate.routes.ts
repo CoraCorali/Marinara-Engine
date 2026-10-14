@@ -229,6 +229,8 @@ import { createCharactersStorage } from "../services/storage/characters.storage.
 import { resolveChatUserIdentity } from "../services/chat-user-identity.js";
 import { createBoardPinsStorage } from "../services/board/fork-board-pins.js";
 import { boardPinsAsImageEntries } from "../services/generation/fork-board-prompt.js";
+import { createClosetStorage } from "../services/closet/fork-closet-items.js";
+import { closetItemsAsImageEntries } from "../services/generation/fork-closet-prompt.js";
 import { createAgentsStorage } from "../services/storage/agents.storage.js";
 import { createGameStateStorage, parseStoredRulesetLive } from "../services/storage/game-state.storage.js";
 import {
@@ -7665,15 +7667,20 @@ export async function generateRoutes(app: FastifyInstance, options: GenerateRout
               wrapFormat,
             );
           }
-          // Fork: reference board pins ride along with lorebook reference images so both share
-          // one image budget. Roleplay only; the board is a roleplay feature.
+          // Fork: board pins and the persona's outfit ride along with lorebook reference images so
+          // all three share one image budget. Roleplay only; both are roleplay features. The
+          // outfit goes first: what she has on should survive a crowded board.
           const forkBoardImageEntries =
             chatMode === "roleplay"
               ? boardPinsAsImageEntries(await createBoardPinsStorage(app.db).listForPrompt(input.chatId, personaId))
               : [];
+          const forkClosetImageEntries =
+            chatMode === "roleplay" && personaId
+              ? closetItemsAsImageEntries(await createClosetStorage(app.db).listWorn(personaId))
+              : [];
           await appendLorebookImageMessages(
             targetScopedMessagesForGen,
-            [...(responderLorebookScan?.imageEntries ?? []), ...forkBoardImageEntries],
+            [...forkClosetImageEntries, ...(responderLorebookScan?.imageEntries ?? []), ...forkBoardImageEntries],
             {
               onNotice: notifyLorebookImages,
               rememberImage: (dataUrl) => lorebookReferenceImages.add(dataUrl),

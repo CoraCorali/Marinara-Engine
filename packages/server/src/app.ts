@@ -8,6 +8,7 @@ import multipart from "@fastify/multipart";
 import fastifyStatic from "@fastify/static";
 import { registerForkTables, getDB, closeDB, type DB } from "./db/connection.js";
 import { boardPins } from "./services/board/fork-board-pins.js";
+import { closetItems } from "./services/closet/fork-closet-items.js";
 import { getRuntimeStopBudgetMs, runShutdownStepsWithin } from "./lib/shutdown-steps.js";
 import { registerRoutes } from "./routes/index.js";
 import { errorHandler } from "./middleware/error-handler.js";
@@ -149,7 +150,7 @@ export async function buildApp(https?: { cert: Buffer; key: Buffer }) {
   const db = await startup.phase("storage.open", () => getDB());
   // Fork: register the reference board's table the same way capability packages register theirs,
   // so it needs no storage-format bump and an older Marinara just ignores the file.
-  registerForkTables([boardPins]);
+  registerForkTables([boardPins, closetItems]);
   app.decorate("db", db);
   let stopMessageTrashMaintenance: (() => Promise<void>) | undefined;
   app.addHook("onClose", async () => {

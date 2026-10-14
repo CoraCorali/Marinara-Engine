@@ -83,6 +83,22 @@ It now gets five things, each left out when the chat has nothing to put in it:
 
 Markup is stripped and every part is length-capped before it is sent.
 
+### 2026-10-14
+
+- **The closet.** A persona's wardrobe. Each piece is a picture with a label and a slot, and one
+  piece per slot is worn at a time. A dress takes the place of a top and a bottom, and either of
+  those takes the place of the dress; the rest are independent, so a bag and a necklace sit happily
+  beside anything. What she has on rides along with every reply as pictures, so an outfit stays put
+  instead of drifting a paragraph later. The outfit goes into the image budget ahead of the board
+  and lorebook pictures, since what she is wearing should survive a crowded board. A **Closet**
+  button sits beside **Board** above the message box. A closet holds at most 80 pieces, and its
+  pictures reuse the lorebook reference-image store, so they share its size and type limits, its
+  validated paths and its serving route. Deleting a persona clears her closet and its pictures.
+  The table registers itself the way capability packages register theirs, so it needs no storage
+  format bump and stock Marinara simply ignores the file.
+  The in-scene strip above the message box no longer hides itself when a chat has no pins, since
+  the Closet button lives there too.
+
 ## Upstream files touched
 
 Fork-only code lives in `packages/client/src/lib/fork/`, `packages/server/src/services/import/fork/`
@@ -101,10 +117,13 @@ Edits to upstream files are marked with a `Fork:` comment.
 | `packages/client/src/components/modals/ImportPresetModal.tsx` | Update-or-copy prompt on preset import |
 | `packages/server/src/services/import/marinara.importer.ts` | Preset update in place, regex pack install |
 | `packages/server/src/routes/prompts.routes.ts` | Preset export carries its regex pack |
-| `packages/server/src/app.ts` | Registers the board table at startup |
+| `packages/server/src/app.ts` | Registers the board and closet tables at startup |
 | `packages/server/src/db/connection.ts` | `registerForkTables` helper |
 | `packages/server/src/routes/index.ts` | Registers the board and Director routes |
-| `packages/server/src/routes/generate.routes.ts` | Sends in-scene pins with the reply |
+| `packages/server/src/routes/generate.routes.ts` | Sends in-scene pins and the worn outfit with the reply |
+| `packages/client/src/components/chat/ChatArea.tsx` | Closet modal and its opener |
+| `packages/client/src/components/chat/ForkBoardStrip.tsx` | Closet button beside Board |
+| `packages/server/src/services/storage/characters.storage.ts` | Clears the closet when a persona goes |
 | `packages/client/src/components/chat/ChatRoleplaySurface.tsx` | In-scene strip |
 | `packages/client/src/components/chat/ChatInput.tsx` | Director button (and the Spark button) |
 | `packages/server/src/routes/generate.routes.ts` | Saves which agent made the choices |

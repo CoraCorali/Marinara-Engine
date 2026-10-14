@@ -765,6 +765,7 @@ type RoleplaySurfaceProps = {
   resendableUserMessageId?: string | null;
   /** Fork: reference board scopes and the panel opener. */
   forkBoardChatScope?: BoardScope;
+  onOpenForkCloset?: () => void;
   forkBoardPersonaScope?: BoardScope;
   onOpenForkBoard?: () => void;
   onOpenForkDirector?: () => void;
@@ -889,6 +890,7 @@ export function ChatRoleplaySurface({
   resendableUserMessageId = null,
   onEditAndResend,
   forkBoardChatScope = null,
+  onOpenForkCloset,
   forkBoardPersonaScope = null,
   onOpenForkBoard,
   onOpenForkDirector,
@@ -2014,6 +2016,7 @@ export function ChatRoleplaySurface({
                     chatScope={forkBoardChatScope}
                     personaScope={forkBoardPersonaScope}
                     onOpenBoard={onOpenForkBoard}
+                    onOpenCloset={onOpenForkCloset ?? (() => undefined)}
                   />
                 )}
 
@@ -2176,6 +2179,7 @@ export function ChatRoleplaySurface({
                         chatScope={forkBoardChatScope}
                         personaScope={forkBoardPersonaScope}
                         onOpenBoard={onOpenForkBoard}
+                        onOpenCloset={onOpenForkCloset ?? (() => undefined)}
                       />
                     )}
                   </div>
