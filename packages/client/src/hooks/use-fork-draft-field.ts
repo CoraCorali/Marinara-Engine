@@ -6,7 +6,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 /**
  * Hold what is being typed locally and save it a moment after typing stops.
  *
- * The first cut of the closet and the tracker called the mutation straight from onChange, which
+ * The first cut of the tracker called the mutation straight from onChange, which
  * meant one PATCH per character typed and one per step of a dragged slider. Besides the traffic,
  * the responses arrive out of order and the query invalidation they trigger can overwrite the box
  * mid-word with a stale value.

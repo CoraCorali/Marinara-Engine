@@ -37,7 +37,6 @@ import { getCurrentInputSnapshot, useChatStore } from "../../stores/chat.store";
 import { hasActiveTextSelection } from "../../lib/text-selection";
 import { getResendableUserMessageId } from "../../lib/fork/edit-and-resend";
 import { ForkReferenceBoard } from "./ForkReferenceBoard";
-import { ForkClosetPanel } from "./ForkClosetPanel";
 import { ForkBondsPanel } from "./ForkBondsPanel";
 import { ForkDirectorPanel, type DirectorTurn } from "./ForkDirectorPanel";
 import type { BoardScope } from "../../hooks/use-fork-board";
@@ -2317,10 +2316,6 @@ const LocalChatArea = memo(function LocalChatArea({
   );
   const handleOpenForkBoard = useCallback(() => setForkBoardOpen(true), []);
 
-  // Fork: the closet. A wardrobe belongs to the persona, so it follows her into every chat.
-  const [forkClosetOpen, setForkClosetOpen] = useState(false);
-  const handleOpenForkCloset = useCallback(() => setForkClosetOpen(true), []);
-
   // Fork: typed relationships, kept per chat.
   const [forkBondsOpen, setForkBondsOpen] = useState(false);
   // Fork: who the tracker can follow — the cards in this chat, by name.
@@ -2518,7 +2513,7 @@ const LocalChatArea = memo(function LocalChatArea({
       // The composer is where a guided direction already lives, so the next send carries it.
       // A half-written message is never thrown away for it.
       const composer = document.querySelector<HTMLTextAreaElement>("textarea[data-chat-composer]");
-      if (!composer) return;
+      if (!composer || composer.dataset.chatId !== activeChatId) return;
       if (composer.value.trim().length > 0) {
         toast.error(localizeUi("ui.chat.forkdirector.clearYourMessageBoxFirst"));
         return;
@@ -2528,7 +2523,7 @@ const LocalChatArea = memo(function LocalChatArea({
       setDirectorOpen(false);
       toast.success(localizeUi("ui.chat.forkdirector.savedForNext"));
     },
-    [localizeUi],
+    [activeChatId, localizeUi],
   );
 
   const latestAssistantMessageForSwipes = useMemo(() => {
@@ -3627,7 +3622,6 @@ const LocalChatArea = memo(function LocalChatArea({
           onEditAndResend={handleEditAndResend}
           forkBoardChatScope={forkBoardChatScope}
           forkBoardPersonaScope={forkBoardPersonaScope}
-          onOpenForkCloset={handleOpenForkCloset}
           onOpenForkBonds={handleOpenForkBonds}
           onOpenForkBoard={handleOpenForkBoard}
           onOpenForkDirector={handleOpenDirector}
@@ -3720,22 +3714,13 @@ const LocalChatArea = memo(function LocalChatArea({
         <ForkReferenceBoard chatScope={forkBoardChatScope} personaScope={forkBoardPersonaScope} />
       </Modal>
       <Modal
-        open={forkClosetOpen}
-        onClose={() => setForkClosetOpen(false)}
-        title={localizeUi("ui.chat.forkcloset.title")}
-        width="max-w-lg"
-        mobileFullscreen
-      >
-        <ForkClosetPanel personaId={chatPersonaId ?? null} personaName={chatPersona?.name || "She"} />
-      </Modal>
-      <Modal
         open={forkBondsOpen}
         onClose={() => setForkBondsOpen(false)}
         title={localizeUi("ui.chat.forkbonds.title")}
         width="max-w-lg"
         mobileFullscreen
       >
-        <ForkBondsPanel chatId={activeChatId ?? null} cast={forkBondsCast} personaName={chatPersona?.name || "she"} />
+        <ForkBondsPanel chatId={activeChatId ?? null} cast={forkBondsCast} />
       </Modal>
       {illustratorPromptReviewModal}
       <ImagePromptReviewModal

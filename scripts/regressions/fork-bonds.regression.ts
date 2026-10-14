@@ -87,7 +87,7 @@ assert.ok(block.includes("wanting high, patience low"), "meters read as words, n
 assert.ok(block.includes("He is sulking"), "her own note goes through");
 assert.ok(block.includes("Nessa: Friend. closeness very high, trust very high."), "a friend is scored as a friend");
 // 60 is middling and 70 is high, by the thresholds the block itself uses.
-assert.ok(block.includes("Gia: Ex. unfinished middling, bitterness high."));
+assert.ok(block.includes("Gia: Ex. unfinished business middling, bitterness high."));
 assert.ok(!/\b82\b|\b34\b/.test(block), "no bare numbers: a model reads 'running thin' better than 34");
 
 // A chat that never opens the tracker costs nothing.
@@ -107,9 +107,8 @@ assert.ok(
 );
 
 // ── What an agent's reading is allowed to do ──
-const { planBondUpdates, MAX_METER_STEP } = await import(
-  "../../packages/server/src/services/bonds/fork-bond-updates.js"
-);
+const { planBondUpdates, MAX_METER_STEP } =
+  await import("../../packages/server/src/services/bonds/fork-bond-updates.js");
 
 const current = await store.listForChat(CHAT);
 const byName: Record<string, string> = { Vee: "char-vee", Nessa: "char-nessa", Gia: "char-gia" };
@@ -151,7 +150,16 @@ const newCard = planBondUpdates({ bonds: [{ who: "Gia", kind: "ex" }] }, [], res
 assert.equal(newCard.creations[0]!.characterId, "char-gia");
 
 // Naming the same person twice does not apply twice.
-const twice = planBondUpdates({ bonds: [{ who: "Vee", first: 90 }, { who: "Vee", first: 95 }] }, current, resolve);
+const twice = planBondUpdates(
+  {
+    bonds: [
+      { who: "Vee", first: 90 },
+      { who: "Vee", first: 95 },
+    ],
+  },
+  current,
+  resolve,
+);
 assert.equal(twice.changes.length, 1);
 assert.equal(twice.creations.length, 0, "the second mention is not mistaken for a new person");
 
@@ -175,6 +183,31 @@ assert.equal(
 await store.removeChat(CHAT);
 assert.equal((await store.listForChat(CHAT)).length, 0);
 assert.equal((await store.listForChat("chat-2")).length, 1, "other chats are untouched");
+
+// ── A branch copies the relationships, and deleting a chat clears them ──
+const { boardPins } = await import("../../packages/server/src/services/board/fork-board-pins.js");
+registerForkTables([boardPins]);
+const { copyForkChatData, removeForkChatData } = await import("../../packages/server/src/services/fork-chat-data.js");
+await store.create({
+  chatId: "branch-src",
+  characterId: "char-x",
+  label: "Theo",
+  kind: "love",
+  stage: "dating",
+  first: 70,
+  second: 40,
+  note: "Raw after the fight.",
+});
+await copyForkChatData(db, "branch-src", "branch-new");
+const copied = await store.listForChat("branch-new");
+assert.equal(copied.length, 1, "the branch has the bond");
+assert.equal(copied[0]!.stage, "dating");
+assert.equal(copied[0]!.first, 70);
+assert.equal(copied[0]!.note, "Raw after the fight.");
+assert.notEqual(copied[0]!.id, (await store.listForChat("branch-src"))[0]!.id, "a copy, not the same row");
+await removeForkChatData(db, "branch-new");
+assert.equal((await store.listForChat("branch-new")).length, 0, "deleting the branch clears its bonds");
+assert.equal((await store.listForChat("branch-src")).length, 1, "and leaves the source alone");
 
 await closeDB();
 rmSync(dir, { recursive: true, force: true });

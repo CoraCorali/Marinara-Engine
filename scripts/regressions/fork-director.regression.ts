@@ -120,6 +120,31 @@ assert.equal(buildDirectorContext({ cards: [], scene: [] }), "");
 // A blank message is dropped rather than sent as a bare label.
 assert.ok(!buildDirectorContext({ cards: [], scene: [{ role: "user", content: "   " }] }).includes("Writer:"));
 
+// The reply being discussed is read whole, so "the ending felt off" has an ending to look at.
+// Older messages are cut shorter, since they are only background.
+const longReply = `${"He talks. ".repeat(400)}THE ENDING`;
+const longScene = buildDirectorContext({
+  cards: [],
+  scene: [
+    { role: "assistant", content: `${"Old news. ".repeat(400)}OLD TAIL` },
+    { role: "user", content: "I wait." },
+    { role: "assistant", content: longReply },
+  ],
+});
+assert.ok(longScene.includes("THE ENDING"), "the newest reply is not cut short");
+assert.ok(!longScene.includes("OLD TAIL"), "an older message is still capped");
+
+// Relationships and pinned pictures reach the Director, kept as lines.
+const withStanding = buildDirectorContext({
+  cards: [],
+  scene: [{ role: "user", content: "hi" }],
+  standing: "Where things stand:\n- Theo: Romantic, dating.",
+});
+assert.ok(
+  withStanding.includes("<where_things_stand>\nWhere things stand:\n- Theo: Romantic, dating.\n</where_things_stand>"),
+);
+assert.ok(!bare.includes("<where_things_stand>"), "no relationships, no tag");
+
 // A huge board of lore cannot push the scene out of the prompt.
 const manyEntries = Array.from({ length: 40 }, (_, index) => ({
   name: `Entry ${index}`,

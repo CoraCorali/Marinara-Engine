@@ -26,3 +26,14 @@ export function boardPinsAsImageEntries(pins: readonly BoardPin[]): LorebookImag
     images: [{ path: pin.imagePath, caption: pin.caption.trim() }],
   }));
 }
+
+/**
+ * The captioned in-scene pins as words, for models that read text more reliably than pictures and
+ * for providers a picture never reaches. A pin with no caption has nothing to say in words.
+ */
+export function boardPinsNoteLine(pins: readonly BoardPin[]): string {
+  const lines = pins
+    .filter((pin) => pin.caption.trim())
+    .map((pin) => `- ${CATEGORY_LABELS[pin.category] ?? "Reference"}: ${pin.caption.trim()}`);
+  return lines.length > 0 ? ["Pinned for reference in this scene:", ...lines].join("\n") : "";
+}

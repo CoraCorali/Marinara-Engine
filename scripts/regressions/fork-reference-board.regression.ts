@@ -15,7 +15,8 @@ process.env.LOG_LEVEL = "silent";
 const { getDB, closeDB, registerForkTables } = await import("../../packages/server/src/db/connection.js");
 const { boardPins, createBoardPinsStorage, MAX_BOARD_PINS_PER_SCOPE, normalizeCategory } =
   await import("../../packages/server/src/services/board/fork-board-pins.js");
-const { boardPinsAsImageEntries } = await import("../../packages/server/src/services/generation/fork-board-prompt.js");
+const { boardPinsAsImageEntries, boardPinsNoteLine } =
+  await import("../../packages/server/src/services/generation/fork-board-prompt.js");
 
 const db = await getDB();
 registerForkTables([boardPins]);
@@ -114,6 +115,12 @@ const captionless = boardPinsAsImageEntries([
   },
 ]);
 assert.equal(captionless[0]!.name, "This place");
+
+// The captions also go as words, for providers that never see the pictures. No caption, no line.
+const noteLine = boardPinsNoteLine(await pins.listForPrompt("chat-1", "persona-1"));
+assert.ok(noteLine.startsWith("Pinned for reference in this scene:"));
+assert.ok(noteLine.includes("- The mood: red slip dress"));
+assert.equal(boardPinsNoteLine([{ ...captionless[0]!, caption: " " } as never]), "");
 
 // ── Deleting ──
 await pins.remove(kitchen!.id);

@@ -6,6 +6,7 @@ import { Plus, Trash2, Loader2, Pin, PinOff } from "lucide-react";
 import { useTranslation as useUiTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { showConfirmDialog } from "../../lib/app-dialogs";
+import { useForkDraftField } from "../../hooks/use-fork-draft-field";
 import {
   BOARD_PIN_CATEGORIES,
   useAddBoardPin,
@@ -23,6 +24,31 @@ const CATEGORY_LABEL_KEYS: Record<BoardPinCategory, string> = {
   thing: "ui.chat.forkboard.categoryThing",
   vibe: "ui.chat.forkboard.categoryVibe",
 };
+
+/** A caption that saves a moment after you stop typing, and on close, rather than only on blur. */
+function CaptionInput({
+  id,
+  value,
+  placeholder,
+  onCommit,
+}: {
+  id: string;
+  value: string;
+  placeholder: string;
+  onCommit: (caption: string) => void;
+}) {
+  const [draft, change, flush] = useForkDraftField(value, onCommit);
+  return (
+    <input
+      id={id}
+      value={draft}
+      placeholder={placeholder}
+      onChange={(event) => change(event.target.value)}
+      onBlur={flush}
+      className="min-h-11 rounded-lg bg-[var(--secondary)] px-2 text-sm text-foreground outline-none"
+    />
+  );
+}
 
 interface Props {
   chatScope: BoardScope;
@@ -152,15 +178,11 @@ export function ForkReferenceBoard({ chatScope, personaScope }: Props) {
                 <label className="sr-only" htmlFor={`fork-pin-caption-${pin.id}`}>
                   {localizeUi("ui.chat.forkboard.caption")}
                 </label>
-                <input
+                <CaptionInput
                   id={`fork-pin-caption-${pin.id}`}
-                  defaultValue={pin.caption}
+                  value={pin.caption}
                   placeholder={localizeUi("ui.chat.forkboard.captionPlaceholder")}
-                  onBlur={(event) => {
-                    const caption = event.target.value;
-                    if (caption !== pin.caption) updatePin.mutate({ id: pin.id, caption });
-                  }}
-                  className="min-h-11 rounded-lg bg-[var(--secondary)] px-2 text-sm text-foreground outline-none"
+                  onCommit={(caption) => updatePin.mutate({ id: pin.id, caption })}
                 />
                 <label className="sr-only" htmlFor={`fork-pin-category-${pin.id}`}>
                   {localizeUi("ui.chat.forkboard.category")}

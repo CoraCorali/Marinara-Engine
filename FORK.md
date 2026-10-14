@@ -85,27 +85,6 @@ Markup is stripped and every part is length-capped before it is sent.
 
 ### 2026-10-14
 
-- **The closet.** A persona's wardrobe. Each piece is a picture with a label and a slot, and one
-  piece per slot is worn at a time. A dress takes the place of a top and a bottom, and either of
-  those takes the place of the dress; the rest are independent, so a bag and a necklace sit happily
-  beside anything. What she has on rides along with every reply as pictures, so an outfit stays put
-  instead of drifting a paragraph later. The outfit goes into the image budget ahead of the board
-  and lorebook pictures, since what she is wearing should survive a crowded board. A **Closet**
-  button sits beside **Board** above the message box. A closet holds at most 80 pieces, and its
-  pictures reuse the lorebook reference-image store, so they share its size and type limits, its
-  validated paths and its serving route. Deleting a persona clears her closet and its pictures.
-  The table registers itself the way capability packages register theirs, so it needs no storage
-  format bump and stock Marinara simply ignores the file.
-  The in-scene strip above the message box no longer hides itself when a chat has no pins, since
-  the Closet button lives there too.
-- **Drawing new pieces.** Describe a piece and it is drawn into the closet, using a picture she
-  already owns as the style reference, so a new skirt looks like it belongs beside the ones already
-  hanging up. The first piece in the closet is the reference; with an empty closet it draws without
-  one and says so. The slot shapes the request, so "a red one" still produces the right kind of
-  thing, and the wording asks for the garment alone, laid flat on plain white with clear space
-  around every edge, which is what makes a piece cuttable afterwards. It uses the default image
-  generation connection. A failed draw leaves nothing behind.
-
 - **Rain stops dropping frames.** Two things in the draw loop, both in the engine rather than in
   any theme. Every raindrop used to cost its own path and its own stroke, so a thunderstorm spent
   120 driver calls a frame on a field of two-pixel lines; drops now share a path with the others of
@@ -141,16 +120,14 @@ Markup is stripped and every part is length-capped before it is sent.
   real tap targets now, the choices themselves are a size up, and the labels no longer run a
   continuous accent animation, which four choices were doing at once on every turn.
 
-### Bug pass over the closet, the tracker and the new interfaces
+### Bug pass over the tracker and the new interfaces
 
 - **The bonds note was reaching the model twice.** It was pushed onto the shared message list and
   again onto the per-responder list, which is built from that same list, so every roleplay prompt
   carried it twice. Only the per-responder push remains, which is also the right place: it runs
   after macros resolve and lands once per responder in a group chat.
-- **The outfit now goes as words as well as pictures.** The sentence existed and was never
-  injected, so a provider that drops images got nothing at all from the closet.
-- **Editing a field no longer saves on every keystroke.** The closet's labels and the tracker's
-  names, notes and sliders each called the server from `onChange`, which meant one request per
+- **Editing a field no longer saves on every keystroke.** The tracker's names, notes and
+  sliders each called the server from `onChange`, which meant one request per
   character typed and one per step of a dragged slider. Besides the traffic, the replies arrive out
   of order and could overwrite the box mid-word. Fields now save a moment after you stop, a pending
   edit always beats what comes back from the server, and closing a panel mid-edit saves rather than
@@ -193,6 +170,36 @@ Markup is stripped and every part is length-capped before it is sent.
   > and trust. `note` is one short line on where it stands. Only include a relationship the scene
   > actually said something about, and leave out any field you are not sure changed.
 
+### Back on track
+
+A review of everything built so far, after the theme detour.
+
+- **The closet is gone.** The reference board already does that job: pin a picture, set it to
+  "Currently wearing" and caption it ("her black slip dress, hair down"), and it rides along with
+  every reply. Anyone who used the closet keeps its old table file and pictures on disk; nothing
+  reads them any more.
+- **Board captions now reach the model as words too**, under "Pinned for reference in this scene",
+  so a provider that drops images still knows what she has on. A pin with no caption sends only
+  its picture.
+- **A board caption saves while you type**, a moment after you stop, and when the board closes. It
+  used to save only when you tapped out of the box.
+- **A branch keeps the board and the tracker.** Branching a roleplay used to start the new branch
+  with an empty board and no relationships. It now gets its own copy of both, pictures included,
+  so deleting a pin in one branch never takes it from the other.
+- **Deleting a chat with all its branches clears their boards and bonds.** Only a single-chat
+  delete did before, so the group delete left pictures on disk.
+- **The Director reads the reply you are talking about.** Every message it saw was cut to its
+  first 600 characters, so "the ending felt off" was a question about text it never saw. The
+  newest reply and the turn it answered are now read whole, older messages get 1200 characters,
+  and character cards get 4000 per field instead of 1200.
+- **The Director knows where the relationships stand and what is pinned**, the same note the
+  writer model gets, so it judges a reply against the same picture of things.
+- **The Director's prompt shows in debug mode**, like every other model route.
+- **Save for next** only writes into this chat's message box.
+- **The romance ladder is tappable.** Each rung was an 8px-tall button; the bar is still thin but
+  the button around it is a full tap target.
+- **"Unfinished business"** reads as that in the prompt, not "unfinished high".
+
 ## Upstream files touched
 
 Fork-only code lives in `packages/client/src/lib/fork/`, `packages/server/src/services/import/fork/`
@@ -213,16 +220,14 @@ Edits to upstream files are marked with a `Fork:` comment.
 | `packages/client/src/components/modals/ImportPresetModal.tsx` | Update-or-copy prompt on preset import |
 | `packages/server/src/services/import/marinara.importer.ts` | Preset update in place, regex pack install |
 | `packages/server/src/routes/prompts.routes.ts` | Preset export carries its regex pack |
-| `packages/server/src/app.ts` | Registers the board and closet tables at startup |
+| `packages/server/src/app.ts` | Registers the board and tracker tables at startup |
 | `packages/server/src/db/connection.ts` | `registerForkTables` helper |
 | `packages/server/src/routes/index.ts` | Registers the board and Director routes |
-| `packages/server/src/routes/generate.routes.ts` | Sends in-scene pins and the worn outfit with the reply |
-| `packages/client/src/components/chat/ChatArea.tsx` | Closet modal and its opener |
-| `packages/client/src/components/chat/ForkBoardStrip.tsx` | Closet button beside Board |
+| `packages/server/src/routes/generate.routes.ts` | Sends in-scene pins, their captions and the bonds note with the reply |
 | `packages/client/src/components/chat/ForkBoardStrip.tsx` | Bonds button too |
 | `packages/client/src/components/chat/CyoaChoices.tsx` | Readable controls and choices |
-| `packages/server/src/services/storage/chats.storage.ts` | Clears a chat's bonds when it goes |
-| `packages/server/src/services/storage/characters.storage.ts` | Clears the closet when a persona goes |
+| `packages/server/src/services/storage/chats.storage.ts` | Clears a chat's board and bonds when it, or its whole branch group, goes |
+| `packages/server/src/services/storage/characters.storage.ts` | Clears the persona's board when a persona goes |
 | `packages/client/src/lib/weather-renderer.ts` | Batched rain drawing |
 | `packages/client/src/workers/weather-effects.worker.ts` | Draws the field in one pass, no per-particle allocation |
 | `packages/client/src/components/chat/WeatherEffects.tsx` | Same, on the non-worker path |
@@ -232,6 +237,7 @@ Edits to upstream files are marked with a `Fork:` comment.
 | `packages/server/src/routes/generate/retry-agents-route.ts` | Same, for re-rolled choices |
 | `packages/shared/src/schemas/lorebook.schema.ts` | Whole-word default |
 | `packages/server/src/services/storage/lorebooks.storage.ts` | Whole-word default |
+| `packages/server/src/routes/chats.routes.ts` | A branch copies the board and the bonds |
 
 ## Known upstream issue kept as is
 

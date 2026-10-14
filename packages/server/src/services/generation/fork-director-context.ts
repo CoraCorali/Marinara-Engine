@@ -5,8 +5,16 @@
 
 /** How far back the Director reads. Enough to judge the last reply, never the whole story. */
 export const DIRECTOR_SCENE_MESSAGES = 10;
-const MAX_CARD_FIELD_CHARS = 1200;
-const MAX_SCENE_MESSAGE_CHARS = 600;
+const MAX_CARD_FIELD_CHARS = 4000;
+/** Older scene messages are background, so a shorter cut is fine for them. */
+const MAX_SCENE_MESSAGE_CHARS = 1200;
+/**
+ * The reply being discussed, and the writer's turn it answered, are read whole. "The ending felt
+ * out of character" means nothing to a Director that only saw the opening paragraph.
+ */
+const MAX_LATEST_MESSAGE_CHARS = 12000;
+const LATEST_MESSAGES = 2;
+const MAX_STANDING_CHARS = 3000;
 const MAX_LORE_ENTRIES = 12;
 const MAX_LORE_CHARS = 600;
 const MAX_SUMMARY_CHARS = 2500;
@@ -49,6 +57,8 @@ export interface DirectorContextSources {
   summary?: string | null;
   /** The tail of the story, oldest first. */
   scene: DirectorSceneMessage[];
+  /** Where the relationships stand and what is pinned in the scene, as the writer model gets it. */
+  standing?: string | null;
 }
 
 function cardText(card: DirectorCard): string {
@@ -84,9 +94,13 @@ export function buildDirectorContext(sources: DirectorContextSources): string {
     .filter(Boolean)
     .join("\n");
   const summary = clampPlainText(sources.summary, MAX_SUMMARY_CHARS);
+  // Kept as lines rather than flattened: it is a list.
+  const standing = typeof sources.standing === "string" ? sources.standing.trim().slice(0, MAX_STANDING_CHARS) : "";
+  const latestFrom = sources.scene.length - LATEST_MESSAGES;
   const scene = sources.scene
-    .map((message) => {
-      const content = clampPlainText(message.content, MAX_SCENE_MESSAGE_CHARS);
+    .map((message, index) => {
+      const limit = index >= latestFrom ? MAX_LATEST_MESSAGE_CHARS : MAX_SCENE_MESSAGE_CHARS;
+      const content = clampPlainText(message.content, limit);
       // Narration and other characters all read as the story; only the writer's own turns are theirs.
       return content ? `${message.role === "user" ? "Writer" : "Story"}: ${content}` : "";
     })
@@ -98,6 +112,7 @@ export function buildDirectorContext(sources: DirectorContextSources): string {
     persona && `<the_writers_character>\n${persona}\n</the_writers_character>`,
     lore && `<lore_in_play>\n${lore}\n</lore_in_play>`,
     summary && `<story_so_far>\n${summary}\n</story_so_far>`,
+    standing && `<where_things_stand>\n${standing}\n</where_things_stand>`,
     scene && `<recent_scene>\n${scene}\n</recent_scene>`,
   ]
     .filter(Boolean)

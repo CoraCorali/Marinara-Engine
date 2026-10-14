@@ -19,6 +19,9 @@ const STAGE_LABELS: Record<LoveStage, string> = {
   married: "married",
 };
 
+/** Meter names that need more than their storage key to read as English. */
+const METER_PHRASES: Record<string, string> = { unfinished: "unfinished business" };
+
 /** A meter in words, because a model reads "running thin" better than it reads 34. */
 function meterWord(value: number): string {
   if (value >= 85) return "very high";
@@ -32,7 +35,10 @@ function bondLine(bond: Bond, nameFor: (characterId: string) => string): string 
   const [first, second] = BOND_METERS[bond.kind];
   const who = bond.label.trim() || nameFor(bond.characterId) || "Someone";
   const head = bond.stage ? `${KIND_LABELS[bond.kind]}, ${STAGE_LABELS[bond.stage]}` : KIND_LABELS[bond.kind];
-  const meters = `${first} ${meterWord(bond.first)}, ${second} ${meterWord(bond.second)}`;
+  const meters = [
+    `${METER_PHRASES[first] ?? first} ${meterWord(bond.first)}`,
+    `${METER_PHRASES[second] ?? second} ${meterWord(bond.second)}`,
+  ].join(", ");
   const note = bond.note.trim();
   return `- ${who}: ${head}. ${meters}.${note ? ` ${note}` : ""}`;
 }

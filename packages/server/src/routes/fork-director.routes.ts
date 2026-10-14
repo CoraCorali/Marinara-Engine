@@ -24,7 +24,12 @@ import {
   type DirectorSceneMessage,
 } from "../services/generation/fork-director-context.js";
 import { cardPromptText } from "../services/prompt/card-text.js";
-import { logger } from "../lib/logger.js";
+import { createBondsStorage } from "../services/bonds/fork-bonds.js";
+import { createBoardPinsStorage } from "../services/board/fork-board-pins.js";
+import { bondsPromptBlock } from "../services/generation/fork-bonds-prompt.js";
+import { boardPinsNoteLine } from "../services/generation/fork-board-prompt.js";
+import { isDebugAgentsEnabled } from "../config/runtime-config.js";
+import { logDebugOverride, logger } from "../lib/logger.js";
 
 const SYSTEM_PROMPT = `You are the Director: the person the writer talks to between takes about their roleplay.
 
@@ -79,6 +84,7 @@ export async function forkDirectorRoutes(app: FastifyInstance) {
       chatId?: unknown;
       messages?: unknown;
       connectionId?: unknown;
+      debugMode?: unknown;
     };
     const chatId = typeof body.chatId === "string" ? body.chatId : "";
     if (!chatId) return reply.status(400).send({ error: "chatId is required" });
@@ -182,12 +188,28 @@ export async function forkDirectorRoutes(app: FastifyInstance) {
       }
     })();
 
+    // What the writer model is told about the relationships and the pinned pictures, so the
+    // Director judges a reply against the same picture of things.
+    const standing = [
+      bondsPromptBlock(
+        await createBondsStorage(app.db).listForChat(chatId),
+        (characterId) => String(cards[cardRows.findIndex((row) => row.id === characterId)]?.name ?? ""),
+        persona?.name ?? "",
+      ),
+      boardPinsNoteLine(
+        await createBoardPinsStorage(app.db).listForPrompt(chatId, identity?.source === "persona" ? identity.id : null),
+      ),
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+
     const context = buildDirectorContext({
       cards,
       persona,
       lore,
       summary: resolveRoleplayChatSummary(String(chat.mode ?? ""), chatMeta),
       scene,
+      standing,
     });
 
     const provider = createLLMProvider(
@@ -203,10 +225,17 @@ export async function forkDirectorRoutes(app: FastifyInstance) {
       conn.id,
     );
 
-    const result = await provider.chatComplete(
-      [{ role: "system", content: context ? `${SYSTEM_PROMPT}\n\n${context}` : SYSTEM_PROMPT }, ...turns],
-      { model: conn.model, temperature: 0.6 },
+    const promptMessages = [
+      { role: "system" as const, content: context ? `${SYSTEM_PROMPT}\n\n${context}` : SYSTEM_PROMPT },
+      ...turns,
+    ];
+    logDebugOverride(
+      body.debugMode === true || isDebugAgentsEnabled(),
+      "[debug/fork-director] prompt for chat %s:\n%s",
+      chatId,
+      promptMessages.map((message) => `[${message.role}]\n${message.content}`).join("\n\n"),
     );
+    const result = await provider.chatComplete(promptMessages, { model: conn.model, temperature: 0.6 });
 
     const raw = (result.content ?? "").trim();
     // A model that ignores the JSON shape still has something useful to say, so keep its words.

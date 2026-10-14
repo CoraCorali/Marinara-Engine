@@ -6,6 +6,7 @@ import { Loader2, RotateCcw, SendHorizontal } from "lucide-react";
 import { useTranslation as useUiTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { api } from "../../lib/api-client";
+import { useUIStore } from "../../stores/ui.store";
 
 export interface DirectorTurn {
   role: "user" | "assistant";
@@ -43,6 +44,7 @@ export function ForkDirectorPanel({
   canRewrite,
   busy,
 }: Props) {
+  const debugMode = useUIStore((s) => s.debugMode);
   const { t: localizeUi } = useUiTranslation();
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
@@ -74,6 +76,7 @@ export function ForkDirectorPanel({
         const data = await api.post<{ say: string; note: string }>("/fork-director/talk", {
           chatId,
           messages: nextTurns,
+          debugMode,
         });
         onChange([...nextTurns, { role: "assistant", content: data.say }], data.note || note);
       } catch (error) {
@@ -85,7 +88,7 @@ export function ForkDirectorPanel({
         setSending(false);
       }
     },
-    [chatId, localizeUi, note, onChange, sending, turns],
+    [chatId, debugMode, localizeUi, note, onChange, sending, turns],
   );
 
   const empty = turns.length === 0 && !sending;

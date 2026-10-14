@@ -128,7 +128,6 @@ interface CastMember {
 interface Props {
   chatId: string | null;
   cast: CastMember[];
-  personaName: string;
 }
 
 /**
@@ -136,7 +135,7 @@ interface Props {
  * through married, and every kind names its own two meters, so a sister is never scored on
  * "wanting" and a friend is never scored like a love interest.
  */
-export function ForkBondsPanel({ chatId, cast, personaName }: Props) {
+export function ForkBondsPanel({ chatId, cast }: Props) {
   const { t: localizeUi } = useUiTranslation();
   const { data: bonds, isLoading } = useBonds(chatId);
   const addBond = useAddBond(chatId);
@@ -152,9 +151,7 @@ export function ForkBondsPanel({ chatId, cast, personaName }: Props) {
 
   return (
     <div className="flex max-h-[70vh] min-h-[20rem] flex-col gap-3">
-      <p className="text-xs text-[var(--muted-foreground)]">
-        {localizeUi("ui.chat.forkbonds.intro", { value1: personaName || "she" })}
-      </p>
+      <p className="text-xs text-[var(--muted-foreground)]">{localizeUi("ui.chat.forkbonds.intro")}</p>
 
       <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto">
         {isLoading && (
@@ -224,14 +221,20 @@ export function ForkBondsPanel({ chatId, cast, personaName }: Props) {
                           onClick={() => updateBond.mutate({ id: bond.id, stage })}
                           aria-pressed={bond.stage === stage}
                           aria-label={localizeUi(STAGE_LABEL_KEYS[stage])}
-                          className={
-                            "h-2 flex-1 rounded-full " + (reached ? "bg-[var(--primary)]" : "bg-[var(--muted)]")
-                          }
-                        />
+                          title={localizeUi(STAGE_LABEL_KEYS[stage])}
+                          // The bar is thin, the button around it is a full tap target.
+                          className="flex h-11 flex-1 items-center"
+                        >
+                          <span
+                            className={
+                              "h-2 w-full rounded-full " + (reached ? "bg-[var(--primary)]" : "bg-[var(--muted)]")
+                            }
+                          />
+                        </button>
                       );
                     })}
                   </div>
-                  <div className="mt-1.5 text-[0.625rem] font-bold uppercase tracking-wide text-[var(--primary)]">
+                  <div className="text-[0.625rem] font-bold uppercase tracking-wide text-[var(--primary)]">
                     {localizeUi(STAGE_LABEL_KEYS[bond.stage ?? "talking"])}
                   </div>
                 </div>

@@ -228,9 +228,7 @@ import { createPromptsStorage } from "../services/storage/prompts.storage.js";
 import { createCharactersStorage } from "../services/storage/characters.storage.js";
 import { resolveChatUserIdentity } from "../services/chat-user-identity.js";
 import { createBoardPinsStorage } from "../services/board/fork-board-pins.js";
-import { boardPinsAsImageEntries } from "../services/generation/fork-board-prompt.js";
-import { createClosetStorage } from "../services/closet/fork-closet-items.js";
-import { closetItemsAsImageEntries, wornOutfitLine } from "../services/generation/fork-closet-prompt.js";
+import { boardPinsAsImageEntries, boardPinsNoteLine } from "../services/generation/fork-board-prompt.js";
 import { createBondsStorage } from "../services/bonds/fork-bonds.js";
 import { bondsPromptBlock } from "../services/generation/fork-bonds-prompt.js";
 import { applyBondsAgentResult } from "../services/bonds/fork-bond-updates.js";
@@ -7670,20 +7668,13 @@ export async function generateRoutes(app: FastifyInstance, options: GenerateRout
               wrapFormat,
             );
           }
-          // Fork: board pins and the persona's outfit ride along with lorebook reference images so
-          // all three share one image budget. Roleplay only; both are roleplay features. The
-          // outfit goes first: what she has on should survive a crowded board.
-          const forkBoardImageEntries =
-            chatMode === "roleplay"
-              ? boardPinsAsImageEntries(await createBoardPinsStorage(app.db).listForPrompt(input.chatId, personaId))
-              : [];
-          const forkClosetImageEntries =
-            chatMode === "roleplay" && personaId
-              ? closetItemsAsImageEntries(await createClosetStorage(app.db).listWorn(personaId))
-              : [];
+          // Fork: in-scene board pins ride along with lorebook reference images so both share one
+          // image budget. Roleplay only.
+          const forkBoardPins =
+            chatMode === "roleplay" ? await createBoardPinsStorage(app.db).listForPrompt(input.chatId, personaId) : [];
           await appendLorebookImageMessages(
             targetScopedMessagesForGen,
-            [...forkClosetImageEntries, ...(responderLorebookScan?.imageEntries ?? []), ...forkBoardImageEntries],
+            [...(responderLorebookScan?.imageEntries ?? []), ...boardPinsAsImageEntries(forkBoardPins)],
             {
               onNotice: notifyLorebookImages,
               rememberImage: (dataUrl) => lorebookReferenceImages.add(dataUrl),
@@ -7717,11 +7708,11 @@ export async function generateRoutes(app: FastifyInstance, options: GenerateRout
             providerMacroContext,
             historyMacroProfilesById,
           );
-          // Fork: where every bond stands, and what the persona has on, as one system note next to
+          // Fork: where every bond stands, and the captioned board pins, as one system note next to
           // the newest turn. This is the only place either is injected: everything here descends
           // from finalMessages, so pushing earlier would arrive twice. Late on purpose, because a
-          // relationship is what a model most often contradicts after twenty messages. The outfit
-          // goes as words as well as pictures, since some providers never receive the images.
+          // relationship is what a model most often contradicts after twenty messages. Pins go as
+          // words as well as pictures, since some providers never receive the images.
           if (chatMode === "roleplay") {
             const forkNoteParts = [
               bondsPromptBlock(
@@ -7729,7 +7720,7 @@ export async function generateRoutes(app: FastifyInstance, options: GenerateRout
                 (characterId) => charInfo.find((character) => character.id === characterId)?.name ?? "",
                 personaName,
               ),
-              personaId ? wornOutfitLine(await createClosetStorage(app.db).listWorn(personaId), personaName) : "",
+              boardPinsNoteLine(forkBoardPins),
             ].filter(Boolean);
             if (forkNoteParts.length > 0) {
               preparedMessagesForGen.push({
