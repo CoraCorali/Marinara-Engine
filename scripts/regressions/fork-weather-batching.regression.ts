@@ -7,8 +7,14 @@
  */
 import assert from "node:assert/strict";
 
-const { createWeatherParticle, drawWeatherParticles, resolveWeatherRenderConfig } =
-  await import("../../packages/client/src/lib/weather-renderer.js");
+const {
+  createWeatherField,
+  createWeatherParticle,
+  drawWeatherParticles,
+  parseWeatherSeason,
+  resolveWeatherRenderConfig,
+  stepWeatherParticles,
+} = await import("../../packages/client/src/lib/weather-renderer.js");
 
 /** A canvas that records what it was asked to do, and nothing else. */
 function recordingContext() {
@@ -46,13 +52,14 @@ const field = (type: string, count: number) =>
 
 // ── A thunderstorm is the worst case the app can produce ──
 const storm = resolveWeatherRenderConfig("thunderstorm", "night");
-assert.equal(storm.type, "rain");
-assert.equal(storm.count, 120, "the heaviest rain the app draws");
+assert.equal(storm.type, "downpour");
+assert.equal(storm.lightning, true);
+assert.equal(storm.count, 130, "the heaviest rain the app draws");
 
 const heavy = recordingContext();
-drawWeatherParticles(heavy.context as never, field("rain", storm.count));
+drawWeatherParticles(heavy.context as never, field("downpour", storm.count));
 assert.ok(heavy.calls.moveTo >= 1, "the drops were actually drawn");
-assert.ok(heavy.calls.stroke <= 15, `120 drops should cost at most 15 strokes, not ${heavy.calls.stroke}`);
+assert.ok(heavy.calls.stroke <= 15, `130 drops should cost at most 15 strokes, not ${heavy.calls.stroke}`);
 assert.equal(heavy.calls.beginPath, heavy.calls.stroke, "every path opened is a path stroked");
 
 // Every drop still reaches the canvas: batching changes the number of calls, not what is drawn.
@@ -81,5 +88,74 @@ const empty = recordingContext();
 drawWeatherParticles(empty.context as never, []);
 assert.equal(empty.calls.beginPath, 0);
 assert.equal(empty.calls.stroke, 0);
+
+// Drizzle, rain and downpour share the batch.
+const allRain = recordingContext();
+drawWeatherParticles(allRain.context as never, [
+  ...field("drizzle", 40),
+  ...field("rain", 40),
+  ...field("downpour", 40),
+]);
+assert.ok(allRain.calls.stroke <= 15, "every kind of rain batches together");
+assert.equal(allRain.calls.moveTo, 120);
+
+// ── Which effect a weather line gets ──
+const kind = (weather: string) => resolveWeatherRenderConfig(weather, null).type;
+assert.equal(kind("Drizzle"), "drizzle");
+assert.equal(kind("light rain"), "drizzle");
+assert.equal(kind("Rain showers"), "rain");
+assert.equal(kind("Heavy rain"), "downpour");
+assert.equal(kind("Torrential downpour"), "downpour");
+assert.equal(kind("Thunderstorm"), "downpour");
+assert.equal(kind("Light snow"), "flurry");
+assert.equal(kind("Snow flurries"), "flurry");
+assert.equal(kind("Snowing"), "snow");
+assert.equal(kind("Heavy snow"), "snow");
+assert.ok(resolveWeatherRenderConfig("Heavy snow", null).count > resolveWeatherRenderConfig("Snowing", null).count);
+assert.equal(kind("Blizzard"), "blizzard");
+assert.equal(kind("Windy"), "gust");
+// The old order got these wrong.
+assert.equal(kind("Cold rain"), "rain", "cold rain is rain, not snow");
+assert.equal(kind("Windy and rainy"), "rain", "wind is a layer over the rain, not instead of it");
+assert.ok(resolveWeatherRenderConfig("Windy and rainy", null).extras.some((layer) => layer.type === "gust"));
+assert.equal(kind("Dust storm"), "sand", "a dust storm is not a rainstorm");
+assert.notEqual(kind("Flash flood warning"), "ash", "flash is not ash");
+assert.equal(kind("Freezing"), "flurry");
+
+// ── Seasons ──
+assert.equal(parseWeatherSeason(null, "October 12th"), "autumn");
+assert.equal(parseWeatherSeason(null, "Late fall, year 3"), "autumn");
+assert.equal(parseWeatherSeason("Snowfall", null), null, "snowfall is not fall");
+assert.equal(parseWeatherSeason(null, "Mon, Jan 4"), "winter");
+assert.equal(parseWeatherSeason("A warm summer evening", null), "summer");
+assert.equal(parseWeatherSeason(null, "Day 3 of the voyage"), null);
+const autumnRain = resolveWeatherRenderConfig("Light rain", "afternoon", "October 2");
+assert.ok(
+  autumnRain.extras.some((layer) => layer.type === "autumn-leaf"),
+  "autumn leaves in the rain",
+);
+const winterStorm = resolveWeatherRenderConfig("Blizzard", null, "January");
+assert.equal(winterStorm.extras.length, 0, "a season never adds to a storm");
+const springDay = resolveWeatherRenderConfig(null, "noon", "April 9");
+assert.ok(
+  springDay.extras.some((layer) => layer.type === "petal"),
+  "no weather, but spring still shows",
+);
+
+// ── The shared field and step ──
+const fieldConfig = resolveWeatherRenderConfig("Windy and rainy", "night", "October");
+const particles = createWeatherField(fieldConfig, 390, 844);
+const expected =
+  fieldConfig.count +
+  fieldConfig.extras.reduce((sum, layer) => sum + layer.count, 0) +
+  (fieldConfig.addFireflies ? 10 : 0) +
+  (fieldConfig.addStars ? 18 : 0);
+assert.equal(particles.length, expected, "every layer is in the field");
+for (let frame = 0; frame < 600; frame += 1) stepWeatherParticles(particles, 1, 390, 844);
+assert.equal(particles.length, expected, "stepping respawns rather than drops particles");
+assert.ok(
+  particles.every((p) => Number.isFinite(p.x) && Number.isFinite(p.y)),
+  "nothing runs off to infinity",
+);
 
 console.log("fork weather batching: ok");

@@ -19,7 +19,15 @@ export interface WeatherParticle {
     | "ash"
     | "sand"
     | "hail"
-    | "aurora";
+    | "aurora"
+    // Fork: finer weather and the seasons.
+    | "drizzle"
+    | "downpour"
+    | "flurry"
+    | "blizzard"
+    | "gust"
+    | "autumn-leaf"
+    | "pollen";
   wobble: number;
   life: number;
   maxLife: number;
@@ -29,11 +37,22 @@ export interface WeatherParticle {
 
 type WeatherCanvasContext = CanvasRenderingContext2D | OffscreenCanvasRenderingContext2D;
 
+/** Fork: a second layer over the main weather, such as gusts in the rain or the season's leaves. */
+export interface WeatherLayer {
+  type: WeatherParticle["type"];
+  count: number;
+}
+
+export type WeatherSeason = "spring" | "summer" | "autumn" | "winter";
+
 export interface WeatherRenderConfig {
   type: WeatherParticle["type"];
   count: number;
   overlay: string;
   lightning: boolean;
+  /** Fork: extra layers drawn with the main weather. */
+  extras: WeatherLayer[];
+  season: WeatherSeason | null;
   tint: string;
   addFireflies: boolean;
   addStars: boolean;
@@ -45,75 +64,157 @@ export interface WeatherRenderConfig {
 }
 
 // ── Map weather string → effect config ──
-function parseWeather(weather?: string | null): {
+type WeatherEffect = {
   type: WeatherParticle["type"];
   count: number;
   overlay: string;
   lightning: boolean;
-} {
-  if (!weather) return { type: "dust", count: 0, overlay: "", lightning: false };
+  extras: WeatherLayer[];
+};
+
+/** Fork: the falling-water and falling-snow types, for the checks that treat them alike. */
+const WET_TYPES = new Set<WeatherParticle["type"]>(["rain", "drizzle", "downpour", "hail"]);
+const SNOW_TYPES = new Set<WeatherParticle["type"]>(["snow", "flurry", "blizzard"]);
+
+/**
+ * Fork: which effect a tracker's weather line gets.
+ *
+ * Order matters, and the old order picked wrong: "cold rain" showed snow because cold was checked
+ * before rain, "windy and rainy" showed leaves and no rain, "drizzle" and "showers" fell through to
+ * nothing, and "flash flood" matched "ash". Precipitation is decided first, wind is a layer on top
+ * of it rather than a replacement, and words match whole.
+ */
+function parseWeather(weather?: string | null): WeatherEffect {
+  const none: WeatherEffect = { type: "dust", count: 0, overlay: "", lightning: false, extras: [] };
+  if (!weather) return none;
 
   const w = weather.toLowerCase();
+  const has = (pattern: RegExp) => pattern.test(w);
+  const windy = has(/\b(wind|windy|breez\w*|gust\w*|gale\w*)\b/);
+  const gusts: WeatherLayer[] = windy ? [{ type: "gust", count: 8 }] : [];
 
-  // Thunderstorm / lightning
-  if (w.includes("thunder") || w.includes("lightning")) {
-    return { type: "rain", count: 120, overlay: "rgba(50,80,120,0.10)", lightning: true };
+  // Thunderstorm: heavy rain with lightning.
+  if (has(/thunder|lightning/)) {
+    return { type: "downpour", count: 130, overlay: "rgba(40,60,100,0.14)", lightning: true, extras: gusts };
   }
-  if (w.includes("hail")) {
-    return { type: "hail", count: 40, overlay: "rgba(180,200,230,0.06)", lightning: false };
+  if (has(/\bhail/)) {
+    return { type: "hail", count: 40, overlay: "rgba(180,200,230,0.06)", lightning: false, extras: gusts };
   }
-  if (w.includes("blizzard")) {
-    return { type: "snow", count: 90, overlay: "rgba(200,220,255,0.10)", lightning: false };
+  // Before rain, since "dust storm" would otherwise read as a rainstorm.
+  if (has(/sandstorm|\bsand\b|dust storm|sirocco/)) {
+    return { type: "sand", count: 65, overlay: "rgba(180,150,100,0.12)", lightning: false, extras: [] };
   }
-  if (w.includes("snow") || w.includes("sleet")) {
-    const isHeavy = w.includes("heavy");
-    return { type: "snow", count: isHeavy ? 75 : 35, overlay: "rgba(200,220,255,0.06)", lightning: false };
+  // Snow, from a blizzard down to a few flakes.
+  if (has(/blizzard|snowstorm|whiteout/) || (has(/snow/) && windy && has(/heavy/))) {
+    return { type: "blizzard", count: 120, overlay: "rgba(210,225,255,0.12)", lightning: false, extras: [] };
   }
-  if (w.includes("frost") || w.includes("cold") || w.includes("freez")) {
-    return { type: "snow", count: 12, overlay: "rgba(180,210,240,0.06)", lightning: false };
+  if (has(/snow|sleet/) && has(/heavy|thick|deep|pouring|lots/)) {
+    return { type: "snow", count: 90, overlay: "rgba(200,220,255,0.09)", lightning: false, extras: gusts };
   }
-  if (w.includes("fog") || w.includes("mist") || w.includes("haze")) {
-    return { type: "fog", count: 12, overlay: "rgba(180,180,200,0.12)", lightning: false };
+  if (has(/flurr|light snow|dusting|few flakes|snowflakes?/) || (has(/snow/) && has(/light|soft|gentle/))) {
+    return { type: "flurry", count: 30, overlay: "rgba(200,220,255,0.04)", lightning: false, extras: gusts };
   }
-  if (w.includes("sand") || w.includes("dust storm") || w.includes("sirocco")) {
-    return { type: "sand", count: 65, overlay: "rgba(180,150,100,0.12)", lightning: false };
+  if (has(/snow|sleet/)) {
+    return { type: "snow", count: 45, overlay: "rgba(200,220,255,0.06)", lightning: false, extras: gusts };
   }
-  if (w.includes("ash") || w.includes("volcanic") || w.includes("smoke")) {
-    return { type: "ash", count: 30, overlay: "rgba(80,60,60,0.10)", lightning: false };
+  // Rain, from a drizzle up to a downpour.
+  if (has(/drizzl|sprinkl|spitting|light rain|misty rain|fine rain/)) {
+    return { type: "drizzle", count: 90, overlay: "rgba(60,80,110,0.05)", lightning: false, extras: gusts };
   }
-  if (w.includes("ember") || w.includes("fire") || w.includes("inferno")) {
-    return { type: "ember", count: 24, overlay: "rgba(120,40,10,0.08)", lightning: false };
-  }
-  if (w.includes("wind") || w.includes("breez") || w.includes("gust")) {
-    return { type: "leaf", count: 18, overlay: "", lightning: false };
-  }
-  if (w.includes("cherry") || w.includes("blossom") || w.includes("petal")) {
-    return { type: "petal", count: 22, overlay: "rgba(255,180,200,0.04)", lightning: false };
-  }
-  if (w.includes("aurora") || w.includes("northern light") || w.includes("polar light")) {
-    return { type: "aurora", count: 6, overlay: "rgba(20,60,40,0.08)", lightning: false };
-  }
-  if (w.includes("rain") || w.includes("storm") || w.includes("downpour")) {
-    const isHeavy = w.includes("heavy") || w.includes("storm") || w.includes("downpour");
+  if (has(/downpour|pouring|torrential|heavy rain|lashing|sheets of rain|rainstorm|monsoon|\bstorm/)) {
     return {
-      type: "rain",
-      count: isHeavy ? 120 : 55,
-      overlay: "rgba(50,80,120,0.08)",
-      lightning: isHeavy && w.includes("storm"),
+      type: "downpour",
+      count: 130,
+      overlay: "rgba(40,60,100,0.12)",
+      lightning: has(/\bstorm/),
+      extras: gusts,
     };
   }
-  if (w.includes("clear") || w.includes("sunny") || w.includes("bright")) {
-    return { type: "dust", count: 8, overlay: "", lightning: false };
+  if (has(/rain|shower|wet\b/)) {
+    return { type: "rain", count: 60, overlay: "rgba(50,80,120,0.08)", lightning: false, extras: gusts };
   }
-  if (w.includes("cloud") || w.includes("overcast") || w.includes("grey") || w.includes("gray")) {
-    return { type: "dust", count: 6, overlay: "rgba(100,100,120,0.05)", lightning: false };
+  if (has(/\bfog|mist|haze|hazy/)) {
+    return { type: "fog", count: 12, overlay: "rgba(180,180,200,0.12)", lightning: false, extras: [] };
   }
+  if (has(/\bash\b|ashfall|volcan|smok/)) {
+    return { type: "ash", count: 30, overlay: "rgba(80,60,60,0.10)", lightning: false, extras: [] };
+  }
+  if (has(/\bembers?\b|wildfire|\bfire\b|inferno|burning/)) {
+    return { type: "ember", count: 24, overlay: "rgba(120,40,10,0.08)", lightning: false, extras: [] };
+  }
+  if (has(/frost|\bcold\b|freez|icy|chill/)) {
+    return { type: "flurry", count: 10, overlay: "rgba(180,210,240,0.06)", lightning: false, extras: gusts };
+  }
+  if (windy) {
+    return { type: "gust", count: 14, overlay: "", lightning: false, extras: [{ type: "leaf", count: 8 }] };
+  }
+  if (has(/cherry|blossom|petal/)) {
+    return { type: "petal", count: 22, overlay: "rgba(255,180,200,0.04)", lightning: false, extras: [] };
+  }
+  if (has(/aurora|northern light|polar light/)) {
+    return { type: "aurora", count: 6, overlay: "rgba(20,60,40,0.08)", lightning: false, extras: [] };
+  }
+  if (has(/cloud|overcast|grey|gray/)) {
+    return { type: "dust", count: 6, overlay: "rgba(100,100,120,0.05)", lightning: false, extras: [] };
+  }
+  return { type: "dust", count: 8, overlay: "", lightning: false, extras: [] };
+}
 
-  return { type: "dust", count: 8, overlay: "", lightning: false };
+const MONTH_SEASONS: Array<[RegExp, WeatherSeason]> = [
+  [/\b(dec(ember)?|jan(uary)?|feb(ruary)?)\b/, "winter"],
+  [/\b(mar(ch)?|apr(il)?|may)\b/, "spring"],
+  [/\b(jun(e)?|jul(y)?|aug(ust)?)\b/, "summer"],
+  [/\b(sep(t(ember)?)?|oct(ober)?|nov(ember)?)\b/, "autumn"],
+];
+
+/**
+ * Fork: the season, from a season named in the weather or the date, or else from the date's month
+ * (northern hemisphere). "Fall" only counts in the date, since a weather line says "snowfall" and
+ * "nightfall". Null when nothing says.
+ */
+export function parseWeatherSeason(weather?: string | null, date?: string | null): WeatherSeason | null {
+  const w = (weather ?? "").toLowerCase();
+  const d = (date ?? "").toLowerCase();
+  const named = `${w} ${d}`;
+  if (/\bspring\b/.test(named) && !/\bspring (rain|shower)/.test(w)) return "spring";
+  if (/\bsummer\b|midsummer/.test(named)) return "summer";
+  if (/\bautumn\b/.test(named) || /\bfall\b/.test(d)) return "autumn";
+  if (/\bwinter\b|midwinter/.test(named)) return "winter";
+  for (const [pattern, season] of MONTH_SEASONS) {
+    if (pattern.test(d)) return season;
+  }
+  return null;
+}
+
+/**
+ * Fork: what a season adds over the weather. Quiet on purpose: a few petals, motes or leaves at
+ * the edge of things, never on top of a storm, and winter only adds flakes when nothing else is
+ * falling.
+ */
+function seasonLayers(season: WeatherSeason | null, base: WeatherParticle["type"]): WeatherLayer[] {
+  if (!season) return [];
+  const stormy = base === "downpour" || base === "blizzard" || base === "hail";
+  const smothered = base === "sand" || base === "ash" || base === "ember" || base === "aurora";
+  if (stormy || smothered) return [];
+  const falling = WET_TYPES.has(base) || SNOW_TYPES.has(base);
+  switch (season) {
+    case "spring":
+      return base === "petal" ? [] : [{ type: "petal", count: falling ? 4 : 10 }];
+    case "summer":
+      return falling ? [] : [{ type: "pollen", count: 14 }];
+    case "autumn":
+      return [{ type: "autumn-leaf", count: falling ? 5 : 12 }];
+    case "winter":
+      return falling ? [] : [{ type: "flurry", count: 14 }];
+  }
 }
 
 // ── Map time of day → tint + fireflies ──
 type CelestialBody = "sun" | "moon" | "none";
+
+function isFalling(type?: WeatherParticle["type"]): boolean {
+  return Boolean(type && (WET_TYPES.has(type) || SNOW_TYPES.has(type)));
+}
 
 function parseTime(
   timeOfDay?: string | null,
@@ -151,8 +252,8 @@ function parseTime(
     return {
       ...base,
       tint: "rgba(10,10,40,0.15)",
-      addFireflies: baseType !== "rain" && baseType !== "snow",
-      addStars: baseType !== "fog" && baseType !== "snow",
+      addFireflies: !isFalling(baseType),
+      addStars: baseType !== "fog" && !isFalling(baseType),
       celestial: "moon",
       hour: hour >= 0 ? hour : 0,
     };
@@ -161,7 +262,7 @@ function parseTime(
     return {
       ...base,
       tint: "rgba(80,30,20,0.10)",
-      addFireflies: baseType !== "rain",
+      addFireflies: !isFalling(baseType),
       addStars: false,
       celestial: "sun",
       hour: hour >= 0 ? hour : 18,
@@ -184,8 +285,8 @@ function parseTime(
       return {
         ...base,
         tint: "rgba(10,10,40,0.15)",
-        addFireflies: baseType !== "rain" && baseType !== "snow",
-        addStars: baseType !== "fog" && baseType !== "snow",
+        addFireflies: !isFalling(baseType),
+        addStars: baseType !== "fog" && !isFalling(baseType),
         celestial: "moon",
       };
     }
@@ -193,7 +294,7 @@ function parseTime(
       return {
         ...base,
         tint: "rgba(80,30,20,0.10)",
-        addFireflies: baseType !== "rain",
+        addFireflies: !isFalling(baseType),
         celestial: "sun",
         sunsetGlow: hour >= 17,
       };
@@ -254,14 +355,27 @@ function extractHour(t: string): number {
   return -1;
 }
 
-export function resolveWeatherRenderConfig(weather?: string | null, timeOfDay?: string | null): WeatherRenderConfig {
+export function resolveWeatherRenderConfig(
+  weather?: string | null,
+  timeOfDay?: string | null,
+  date?: string | null,
+): WeatherRenderConfig {
   const weatherConfig = parseWeather(weather);
   const timeConfig = parseTime(timeOfDay, weatherConfig.type);
+  const season = parseWeatherSeason(weather, date);
   const isClearSky =
     !weather ||
     /clear|sunny|bright/i.test(weather) ||
-    !/(rain|storm|snow|blizzard|fog|mist|haze|hail|sand|ash|smoke|overcast|cloud|grey|gray)/i.test(weather);
-  return { ...weatherConfig, ...timeConfig, isClearSky };
+    !/(rain|storm|snow|blizzard|fog|mist|haze|hail|sand|ash|smoke|overcast|cloud|grey|gray|drizzl|shower|flurr|sleet|thunder)/i.test(
+      weather,
+    );
+  return {
+    ...weatherConfig,
+    ...timeConfig,
+    extras: [...weatherConfig.extras, ...seasonLayers(season, weatherConfig.type)],
+    season,
+    isClearSky,
+  };
 }
 
 // ── Create particle ──
@@ -375,6 +489,66 @@ export function createWeatherParticle(
       base.opacity = 0.4 + Math.random() * 0.3;
       base.maxLife = 150;
       break;
+    // Fork: finer weather and the seasons.
+    case "drizzle":
+      base.vy = 4 + Math.random() * 2;
+      base.vx = -0.4 + Math.random() * -0.6;
+      base.size = 0.8;
+      base.opacity = 0.14 + Math.random() * 0.12;
+      base.maxLife = 260;
+      break;
+    case "downpour":
+      base.vy = 15 + Math.random() * 6;
+      base.vx = -3 + Math.random() * -2.5;
+      base.size = 1.4 + Math.random() * 0.8;
+      base.opacity = 0.3 + Math.random() * 0.2;
+      base.maxLife = 120;
+      break;
+    case "flurry":
+      base.vy = 0.3 + Math.random() * 0.5;
+      base.vx = -0.2 + Math.random() * 0.4;
+      base.size = 1 + Math.random() * 1.4;
+      base.opacity = 0.35 + Math.random() * 0.25;
+      base.maxLife = 900;
+      break;
+    case "blizzard":
+      base.vy = 2 + Math.random() * 2.5;
+      base.vx = 4 + Math.random() * 4;
+      base.size = 1.4 + Math.random() * 2.2;
+      base.opacity = 0.45 + Math.random() * 0.3;
+      base.maxLife = 260;
+      // Blown sideways faster than it falls, so a respawn comes in from the left edge as often as
+      // the top; from the top alone, the lower half of a tall screen never saw any.
+      if (fromTop && Math.random() < 0.5) {
+        base.x = -10;
+        base.y = Math.random() * h;
+      }
+      break;
+    case "gust":
+      base.vy = -0.2 + Math.random() * 0.4;
+      base.vx = 9 + Math.random() * 7;
+      base.size = 50 + Math.random() * 90; // streak length
+      base.opacity = 0.16 + Math.random() * 0.16;
+      base.maxLife = 160;
+      base.x = fromTop ? -base.size : base.x;
+      base.y = Math.random() * h;
+      break;
+    case "autumn-leaf":
+      base.vy = 0.7 + Math.random() * 0.9;
+      base.vx = 0.4 + Math.random() * 1.2;
+      base.size = 4 + Math.random() * 3;
+      base.opacity = 0.55 + Math.random() * 0.3;
+      base.maxLife = 600;
+      base.color = `hsl(${(12 + Math.random() * 30) | 0}, ${(65 + Math.random() * 20) | 0}%, ${(38 + Math.random() * 14) | 0}%)`;
+      break;
+    case "pollen":
+      base.vy = -0.15 + Math.random() * 0.25;
+      base.vx = 0.1 + Math.random() * 0.3;
+      base.size = 1.3 + Math.random() * 1.8;
+      base.opacity = 0.35 + Math.random() * 0.3;
+      base.maxLife = 700 + Math.random() * 400;
+      base.y = Math.random() * h; // drifts in place, so a respawn anywhere, not along the top edge
+      break;
     case "aurora":
       base.vy = 0;
       base.vx = 0.1 + Math.random() * 0.2;
@@ -388,11 +562,76 @@ export function createWeatherParticle(
   return base;
 }
 
+// ── Fork: one field and one step for both the worker and the main-thread fallback ──
+
+const FIREFLY_COUNT = 10;
+const STAR_COUNT = 18;
+
+/** Types that drift sideways as they fall. A Set, because this is tested once per particle per frame. */
+const DRIFTING_TYPES = new Set<WeatherParticle["type"]>([
+  "snow",
+  "flurry",
+  "leaf",
+  "autumn-leaf",
+  "petal",
+  "ash",
+  "pollen",
+]);
+
+/** Every particle a config asks for: the weather, its extra layers, and the night's fireflies and stars. */
+export function createWeatherField(config: WeatherRenderConfig, w: number, h: number): WeatherParticle[] {
+  const particles: WeatherParticle[] = [];
+  const add = (type: WeatherParticle["type"], count: number) => {
+    for (let index = 0; index < count; index += 1) particles.push(createWeatherParticle(type, w, h));
+  };
+  add(config.type, config.count);
+  for (const layer of config.extras ?? []) add(layer.type, layer.count);
+  if (config.addFireflies) add("firefly", FIREFLY_COUNT);
+  if (config.addStars) add("star", STAR_COUNT);
+  return particles;
+}
+
+/** Move every particle one step and respawn the ones that left the screen or ran out of life. */
+export function stepWeatherParticles(particles: WeatherParticle[], frameScale: number, w: number, h: number) {
+  for (let index = particles.length - 1; index >= 0; index -= 1) {
+    const p = particles[index]!;
+    p.life += frameScale;
+    p.x += p.vx * frameScale;
+    p.y += p.vy * frameScale;
+    if (DRIFTING_TYPES.has(p.type)) {
+      p.wobble += 0.02 * frameScale;
+      p.x += Math.sin(p.wobble) * 0.5 * frameScale;
+    } else if (p.type === "blizzard") {
+      p.wobble += 0.05 * frameScale;
+      p.y += Math.sin(p.wobble) * 0.6 * frameScale;
+    } else if (p.type === "gust") {
+      p.wobble += 0.04 * frameScale;
+    } else if (p.type === "ember") {
+      p.wobble += 0.04 * frameScale;
+      p.x += Math.sin(p.wobble) * 0.6 * frameScale;
+    } else if (p.type === "firefly") {
+      p.wobble += 0.03 * frameScale;
+      p.x += Math.sin(p.wobble) * 0.8 * frameScale;
+      p.y += Math.cos(p.wobble * 0.7) * 0.4 * frameScale;
+    }
+    // A gust is long, so it may be off the right edge only once its tail is too.
+    const margin = p.type === "gust" ? p.size + 20 : 20;
+    const offScreen = p.y > h + 20 || p.y < -20 || p.x > w + margin || p.x < -margin;
+    if (offScreen || p.life > p.maxLife) particles[index] = createWeatherParticle(p.type, w, h, true);
+  }
+}
+
 // ── Draw helpers ──
 
 /** The visible alpha of a particle: zero once it has faded out or has not faded in yet. */
+/**
+ * Fork: fast weather fades in over a few frames instead of sixty. A downpour drop crosses a phone
+ * screen in under a second, so a sixty-frame fade left it half-invisible for its whole fall.
+ */
+const QUICK_FADE_TYPES = new Set<WeatherParticle["type"]>(["drizzle", "downpour", "blizzard", "gust"]);
+
 function particleAlpha(p: WeatherParticle): number {
-  const fadeIn = Math.min(p.life / 60, 1);
+  const fadeIn = Math.min(p.life / (QUICK_FADE_TYPES.has(p.type) ? 8 : 60), 1);
   const fadeOut = Math.max(1 - p.life / p.maxLife, 0);
   return p.opacity * fadeIn * fadeOut;
 }
@@ -456,7 +695,9 @@ function drawRainBatched(ctx: WeatherCanvasContext, drops: readonly WeatherParti
 export function drawWeatherParticles(ctx: WeatherCanvasContext, particles: readonly WeatherParticle[]) {
   let rain: WeatherParticle[] | null = null;
   for (const particle of particles) {
-    if (particle.type === "rain") {
+    // Fork: drizzle and downpour are rain at other speeds, so they batch with it. Their streak
+    // length already follows their speed.
+    if (particle.type === "rain" || particle.type === "drizzle" || particle.type === "downpour") {
       (rain ??= []).push(particle);
       continue;
     }
@@ -590,6 +831,62 @@ export function drawWeatherParticle(ctx: WeatherCanvasContext, p: WeatherParticl
     }
     case "hail": {
       ctx.fillStyle = "rgba(230,240,255,0.85)";
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+      ctx.fill();
+      break;
+    }
+    // Fork: finer weather and the seasons.
+    case "drizzle":
+    case "downpour": {
+      ctx.strokeStyle = "rgba(180,210,255,0.8)";
+      ctx.lineWidth = p.size;
+      ctx.beginPath();
+      ctx.moveTo(p.x, p.y);
+      ctx.lineTo(p.x + p.vx * 2, p.y + p.vy * 2);
+      ctx.stroke();
+      break;
+    }
+    case "flurry":
+    case "blizzard": {
+      ctx.fillStyle = "rgba(255,255,255,0.85)";
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+      ctx.fill();
+      break;
+    }
+    case "gust": {
+      // A faint curved streak of air, brighter at its leading end.
+      const tailX = p.x - p.size;
+      const bend = Math.sin(p.wobble) * 6;
+      const streak = ctx.createLinearGradient(tailX, p.y, p.x, p.y);
+      streak.addColorStop(0, "rgba(235,240,250,0)");
+      streak.addColorStop(1, "rgba(235,240,250,0.9)");
+      ctx.strokeStyle = streak;
+      ctx.lineWidth = 1.6;
+      ctx.lineCap = "round";
+      ctx.beginPath();
+      ctx.moveTo(tailX, p.y + bend);
+      ctx.quadraticCurveTo(p.x - p.size * 0.5, p.y - bend, p.x, p.y);
+      ctx.stroke();
+      ctx.lineCap = "butt";
+      break;
+    }
+    case "autumn-leaf": {
+      ctx.fillStyle = p.color;
+      ctx.save();
+      ctx.translate(p.x, p.y);
+      ctx.rotate(p.wobble);
+      ctx.beginPath();
+      ctx.ellipse(0, 0, p.size, p.size * 0.45, 0, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+      break;
+    }
+    case "pollen": {
+      const shimmer = Math.sin(p.life * 0.03 + p.wobble) * 0.3 + 0.7;
+      ctx.globalAlpha = alpha * shimmer;
+      ctx.fillStyle = "rgba(255,225,140,0.9)";
       ctx.beginPath();
       ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
       ctx.fill();

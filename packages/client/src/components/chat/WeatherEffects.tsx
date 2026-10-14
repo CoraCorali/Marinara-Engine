@@ -6,11 +6,13 @@ import { useEffect, useRef, useMemo, useState } from "react";
 import { advanceWeatherFrameClock } from "../../lib/weather-frame-clock";
 import { useReducedAmbientEffects } from "../../hooks/use-reduced-ambient-effects";
 import {
+  createWeatherField,
   createWeatherParticle,
   drawWeatherMoon,
   drawWeatherParticles,
   drawWeatherSun,
   resolveWeatherRenderConfig,
+  stepWeatherParticles,
   weatherCelestialX,
   weatherCelestialY,
   type WeatherParticle,
@@ -19,12 +21,12 @@ import {
 const MAX_CANVAS_DPR = 1;
 const MAX_CANVAS_PIXELS = 1920 * 1080;
 const BASE_FRAME_MS = 1000 / 60;
-const FIREFLY_COUNT = 10;
-const STAR_COUNT = 18;
 
 interface WeatherEffectsProps {
   weather?: string | null;
   timeOfDay?: string | null;
+  /** Fork: the scene's date, for the season's layer. */
+  date?: string | null;
   showCelestial?: boolean;
   /** Freeze ambient rendering while local text generation needs the GPU. */
   paused?: boolean;
@@ -34,7 +36,13 @@ interface WeatherEffectsProps {
 // Main component
 // ═══════════════════════════════════════════════
 
-export function WeatherEffects({ weather, timeOfDay, showCelestial = true, paused = false }: WeatherEffectsProps) {
+export function WeatherEffects({
+  weather,
+  timeOfDay,
+  date,
+  showCelestial = true,
+  paused = false,
+}: WeatherEffectsProps) {
   const reduceAmbientEffects = useReducedAmbientEffects();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const particlesRef = useRef<WeatherParticle[]>([]);
@@ -51,14 +59,19 @@ export function WeatherEffects({ weather, timeOfDay, showCelestial = true, pause
   }, [paused]);
 
   const config = useMemo(() => {
-    return resolveWeatherRenderConfig(weather, timeOfDay);
-  }, [weather, timeOfDay]);
+    return resolveWeatherRenderConfig(weather, timeOfDay, date);
+  }, [weather, timeOfDay, date]);
 
   // Render when we have particles, celestial bodies, or time-based ambient effects
   const shouldDrawCelestial = showCelestial && config.celestial !== "none";
   const shouldRender =
     !reduceAmbientEffects &&
-    (config.count > 0 || config.addFireflies || config.addStars || shouldDrawCelestial || config.sunsetGlow);
+    (config.count > 0 ||
+      config.extras.length > 0 ||
+      config.addFireflies ||
+      config.addStars ||
+      shouldDrawCelestial ||
+      config.sunsetGlow);
 
   useEffect(() => {
     if (!shouldRender) return;
@@ -176,23 +189,7 @@ export function WeatherEffects({ weather, timeOfDay, showCelestial = true, pause
     window.addEventListener("resize", resize);
 
     // Initialize particles — use CSS pixel dimensions (not canvas resolution)
-    particlesRef.current = [];
-    const w = canvas.width / canvasScale;
-    const h = canvas.height / canvasScale;
-
-    for (let i = 0; i < config.count; i++) {
-      particlesRef.current.push(createWeatherParticle(config.type, w, h));
-    }
-    if (config.addFireflies) {
-      for (let i = 0; i < FIREFLY_COUNT; i++) {
-        particlesRef.current.push(createWeatherParticle("firefly", w, h));
-      }
-    }
-    if (config.addStars) {
-      for (let i = 0; i < STAR_COUNT; i++) {
-        particlesRef.current.push(createWeatherParticle("star", w, h));
-      }
-    }
+    particlesRef.current = createWeatherField(config, canvas.width / canvasScale, canvas.height / canvasScale);
 
     const tick = (timestamp: number) => {
       if (!running) return;
@@ -263,35 +260,7 @@ export function WeatherEffects({ weather, timeOfDay, showCelestial = true, pause
 
       const particles = particlesRef.current;
 
-      for (let i = particles.length - 1; i >= 0; i--) {
-        const p = particles[i];
-        p.life += frameScale;
-
-        // Update position
-        p.x += p.vx * frameScale;
-        p.y += p.vy * frameScale;
-
-        // Wobble for organic movement
-        if (p.type === "snow" || p.type === "leaf" || p.type === "petal" || p.type === "ash") {
-          p.wobble += 0.02 * frameScale;
-          p.x += Math.sin(p.wobble) * 0.5 * frameScale;
-        }
-        if (p.type === "ember") {
-          p.wobble += 0.04 * frameScale;
-          p.x += Math.sin(p.wobble) * 0.6 * frameScale;
-        }
-        if (p.type === "firefly") {
-          p.wobble += 0.03 * frameScale;
-          p.x += Math.sin(p.wobble) * 0.8 * frameScale;
-          p.y += Math.cos(p.wobble * 0.7) * 0.4 * frameScale;
-        }
-
-        // Respawn if off-screen or expired
-        const offScreen = p.y > ch + 20 || p.y < -20 || p.x > cw + 20 || p.x < -20;
-        if (offScreen || p.life > p.maxLife) {
-          particles[i] = createWeatherParticle(p.type, cw, ch, true);
-        }
-      }
+      stepWeatherParticles(particles, frameScale, cw, ch);
 
       // Drawn once the whole field has moved, so rain batches into a few strokes.
       drawWeatherParticles(ctx, particles);
@@ -328,7 +297,7 @@ export function WeatherEffects({ weather, timeOfDay, showCelestial = true, pause
 
   return (
     <canvas
-      key={`${weather ?? ""}:${timeOfDay ?? ""}:${showCelestial ? "celestial" : "particles"}:${workerFailed ? "fallback" : "worker"}`}
+      key={`${weather ?? ""}:${timeOfDay ?? ""}:${date ?? ""}:${showCelestial ? "celestial" : "particles"}:${workerFailed ? "fallback" : "worker"}`}
       ref={canvasRef}
       className="pointer-events-none absolute inset-0 z-0 h-full w-full [contain:strict]"
     />

@@ -196,6 +196,28 @@ A review of everything built so far, after the theme detour.
   its result type, the **Edit trackers** permission and the cards and persona as context, and
   switches it on for this chat. Once it is on, the panel says so instead. Nothing to paste.
 
+### Weather that matches the scene
+
+- **Drizzle, rain, heavy rain and thunderstorms each look different.** Drizzle is fine, short and
+  faint; rain is what it was; heavy rain is dense, fast and slanted; a thunderstorm is heavy rain
+  with the lightning. Fast drops fade in over a few frames instead of sixty, which is why a
+  downpour used to look half there: a drop crossed the screen before it finished fading in.
+- **Light snow, snow, heavy snow and blizzards.** Light snow is a few small slow flakes, heavy
+  snow is thick, and a blizzard blows in sideways from the left edge as well as the top, so the
+  bottom of a tall screen gets snow too.
+- **Wind is its own effect.** "Windy" draws faint streaks of moving air with a few leaves, and
+  wind with rain or snow adds the streaks on top instead of replacing the weather.
+- **The wrong picks are gone.** "Cold rain" showed snow, "windy and rainy" showed leaves and no
+  rain, "drizzle" and "showers" showed nothing, "dust storm" would have read as a rainstorm, and
+  "flash flood" matched "ash". Precipitation is decided first now and words match whole.
+- **Seasons.** The scene's date sets a quiet seasonal layer: a few petals in spring, drifting
+  golden motes in summer, orange and red leaves in autumn, and a few flakes in winter when nothing
+  else is falling. A season named in the weather or the date wins ("late autumn"); otherwise the
+  month decides, northern hemisphere. "Fall" only counts in the date, since a weather line says
+  "snowfall". A season never adds to a storm, and it shows even when no weather is tracked.
+- Particle movement lives in one shared function now, used by both the worker and the
+  main-thread fallback, so the two can no longer drift apart.
+
 ## Upstream files touched
 
 Fork-only code lives in `packages/client/src/lib/fork/`, `packages/server/src/services/import/fork/`
@@ -227,7 +249,8 @@ Edits to upstream files are marked with a `Fork:` comment.
 | `packages/server/src/services/storage/characters.storage.ts` | Clears the persona's board when a persona goes |
 | `packages/client/src/lib/weather-renderer.ts` | Batched rain drawing |
 | `packages/client/src/workers/weather-effects.worker.ts` | Draws the field in one pass, no per-particle allocation |
-| `packages/client/src/components/chat/WeatherEffects.tsx` | Same, on the non-worker path |
+| `packages/client/src/components/chat/WeatherEffects.tsx` | Same, on the non-worker path; passes the date for seasons |
+| `packages/client/src/lib/weather-renderer.ts` | New weather kinds, the weather rules, seasons, shared particle step |
 | `packages/client/src/components/chat/ChatRoleplaySurface.tsx` | In-scene strip |
 | `packages/client/src/components/chat/ChatInput.tsx` | Director button (and the Spark button) |
 | `packages/server/src/routes/generate.routes.ts` | Saves which agent made the choices |

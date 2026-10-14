@@ -1,10 +1,11 @@
 import {
-  createWeatherParticle,
+  createWeatherField,
   drawWeatherMoon,
   drawWeatherParticles,
   drawWeatherSun,
   weatherCelestialX,
   weatherCelestialY,
+  stepWeatherParticles,
   type WeatherParticle,
   type WeatherRenderConfig,
 } from "../lib/weather-renderer";
@@ -24,12 +25,8 @@ type VisibilityMessage = { type: "visibility"; hidden: boolean };
 type WeatherWorkerMessage = InitMessage | ResizeMessage | VisibilityMessage;
 
 const FRAME_MS = 1000 / 30;
-/** Types that drift sideways as they fall. A Set, because this is tested once per particle per frame. */
-const DRIFTING_TYPES = new Set(["snow", "leaf", "petal", "ash"]);
 
 const BASE_FRAME_MS = 1000 / 60;
-const FIREFLY_COUNT = 10;
-const STAR_COUNT = 18;
 
 let canvas: OffscreenCanvas | null = null;
 let context: OffscreenCanvasRenderingContext2D | null = null;
@@ -48,20 +45,7 @@ let nextLightning = Infinity;
 
 function populateParticles() {
   if (!config) return;
-  particles = [];
-  for (let index = 0; index < config.count; index += 1) {
-    particles.push(createWeatherParticle(config.type, width, height));
-  }
-  if (config.addFireflies) {
-    for (let index = 0; index < FIREFLY_COUNT; index += 1) {
-      particles.push(createWeatherParticle("firefly", width, height));
-    }
-  }
-  if (config.addStars) {
-    for (let index = 0; index < STAR_COUNT; index += 1) {
-      particles.push(createWeatherParticle("star", width, height));
-    }
-  }
+  particles = createWeatherField(config, width, height);
 }
 
 function resizeSurface(nextWidth: number, nextHeight: number, nextScale: number) {
@@ -132,27 +116,7 @@ function drawFrame(now: number, advanceSimulation = true) {
     }
   }
 
-  for (let index = particles.length - 1; index >= 0; index -= 1) {
-    const particle = particles[index]!;
-    particle.life += frameScale;
-    particle.x += particle.vx * frameScale;
-    particle.y += particle.vy * frameScale;
-    if (DRIFTING_TYPES.has(particle.type)) {
-      particle.wobble += 0.02 * frameScale;
-      particle.x += Math.sin(particle.wobble) * 0.5 * frameScale;
-    } else if (particle.type === "ember") {
-      particle.wobble += 0.04 * frameScale;
-      particle.x += Math.sin(particle.wobble) * 0.6 * frameScale;
-    } else if (particle.type === "firefly") {
-      particle.wobble += 0.03 * frameScale;
-      particle.x += Math.sin(particle.wobble) * 0.8 * frameScale;
-      particle.y += Math.cos(particle.wobble * 0.7) * 0.4 * frameScale;
-    }
-    const outside = particle.y > height + 20 || particle.y < -20 || particle.x > width + 20 || particle.x < -20;
-    if (outside || particle.life > particle.maxLife) {
-      particles[index] = createWeatherParticle(particle.type, width, height, true);
-    }
-  }
+  stepWeatherParticles(particles, frameScale, width, height);
   // Drawn after the whole field has moved, so rain can go out in a few strokes instead of one
   // per drop.
   drawWeatherParticles(context, particles);
