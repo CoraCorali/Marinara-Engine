@@ -436,6 +436,39 @@ A full review of every fork feature, with a test for each fix that has logic in 
 - Smaller: the moments list shows status names, the bond ring has a plain-colour fallback, tracker
   card rows keep their own keys.
 
+### UI pass, and the prompts checked end to end
+
+Every fork panel was walked through at phone width with a navy theme, and every feature that talks
+to a model was traced from its prompt to what is done with the answer.
+
+- **Every model feature has a working prompt**: the relationship tracker agent, the Director and Fix
+  this part each carry their own, and what comes back is read and applied. Scene Spark is the one
+  that needs an agent you make yourself; the Spark button appears once an active custom agent gives
+  Interactive Choices.
+- **The relationship and board note goes before a preset's assistant prefill**, so the prefill stays
+  the last turn. Pushed after it, the model started a fresh reply and the prefill was glued on front.
+- **A swipe is told where things stood before the reply it replaces**, both the writer and the
+  tracker agent. Before, the agent saw the old swipe's move, reported no change, and the undo then
+  took the move away with nothing put back.
+- **The Director sees its current note**, so a note you edited by hand is kept rather than
+  overwritten by its next answer, and an answer with only a note shows the note, not raw JSON.
+- **A save that fails says so.** Captions, categories, in-scene, bond fields and moments used to
+  snap back silently.
+- **Confirm before** resetting the slop list, starting the Director over, or removing a moment you
+  wrote up.
+- **The People and Director panels use the whole phone screen** instead of a small inner window.
+- **Theme colours**: on/off settings are pill switches, the Director's slate takes the theme's tint,
+  an armed Push story lights up in the accent, Scene Spark's choice chips are readable, the board's
+  delete icon uses the theme's destructive colour, and Edit & resend uses the accent.
+- **Fits a phone**: route-bar rung names wrap instead of cutting off, the board's tabs and Pin button
+  stay on one line, tap targets are at least 40px, and no text is under 11px.
+- **Small things**: the pill row fades at its edge so more pills look swipeable, a person you add opens
+  and scrolls into view, tapping another mark no longer throws away a rewrite waiting to be used,
+  tracker cards no longer make the list jump, and Fix this part respects reduced motion and the
+  app's safe-area inset.
+- **Two upstream regressions updated** for earlier fork changes: the agent result list now ends with
+  the tracker's result, and the weather repaint test knows the field is built by one shared helper.
+
 ## Upstream files touched
 
 Fork-only code lives in `packages/client/src/lib/fork/`, `Fork*` components, `packages/shared/src/features/fork-bond-shapes.ts`, `packages/server/src/services/import/fork/`
@@ -497,6 +530,9 @@ Edits to upstream files are marked with a `Fork:` comment.
 | `packages/client/src/components/agents/RegexScriptEditor.tsx`                              | The wait-until-finished checkbox                                                                  |
 | `packages/client/src/components/chat/ChatArea.tsx`                                         | Passes portraits to the People panel                                                              |
 | `packages/client/src/components/chat/ConversationMessage.tsx`                              | Wait-until-finished regex in Conversation mode                                                    |
+| `packages/client/src/components/chat/ChatArea.tsx`                                         | The Director's dialog lets the panel fill a phone screen                                          |
+| `scripts/regressions/agent-runtime.regression.ts`                                          | Expects the tracker's result type at the end of the list                                          |
+| `scripts/regressions/weather-effects-suspended-repaint.regression.ts`                      | Knows the shared field helper                                                                     |
 | `packages/client/src/stores/agent.store.ts`                                                | Remembers which choice agent made the choices on screen                                           |
 | `packages/server/src/routes/generate/retry-agents-route.ts`                                | Passes the reply to the tracker update, so a re-roll replaces its move                            |
 

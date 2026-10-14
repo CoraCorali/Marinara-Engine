@@ -208,6 +208,8 @@ const EXPECTED_AGENT_RESULT_TYPE_VALUES = [
   "frontend_theme_update",
   "about_me_update",
   "memory_nag",
+  // Fork: the relationship tracker's result, appended so every upstream value keeps its place.
+  "fork_bonds_update",
 ] as const;
 
 assert.deepEqual(

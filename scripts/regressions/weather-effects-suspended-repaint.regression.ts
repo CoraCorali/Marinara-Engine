@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { stripTypeScriptTypes } from "node:module";
 import { runInNewContext } from "node:vm";
 import {
+  createWeatherField,
   createWeatherParticle,
   resolveWeatherRenderConfig,
   type WeatherParticle,
@@ -101,6 +102,13 @@ for (const suspendedBy of ["paused", "hidden"]) {
         creationSizes.push([args[1], args[2]]);
         return createWeatherParticle(...args);
       },
+      // Fork: the field is built by one shared helper now; each of its particles is still made
+      // through createWeatherParticle, so the sizes it was made at are recorded the same way.
+      createWeatherField: (...args: Parameters<typeof createWeatherField>) =>
+        createWeatherField(...args).map((particle) => {
+          creationSizes.push([args[1], args[2]]);
+          return particle;
+        }),
       requestAnimationFrame: () => ++scheduledFrames,
       cancelAnimationFrame() {},
     };
