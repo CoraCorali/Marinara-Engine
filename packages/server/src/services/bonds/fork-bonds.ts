@@ -169,13 +169,39 @@ export function toBond(row: BondRow): Bond {
     label: row.label ?? "",
     kind,
     status: normalizeForkLoveStatus(kind, row.stage),
-    rung: normalizeForkBondRung(kind, row.rung) ?? defaultForkBondRung(kind),
+    rung:
+      normalizeForkBondRung(kind, row.rung) ?? (row.rung ? null : legacyRung(kind, row)) ?? defaultForkBondRung(kind),
     route: kind === "love" ? (row.route ?? "").slice(0, MAX_BOND_ROUTE) : "",
     condition: normalizeForkBondCondition(row.condition) ?? "",
     drift: normalizeForkBondDrift(row.drift) ?? "",
     fields,
     order: row.order ?? 0,
   };
+}
+
+/** Where a first-version romance's stage put it on the feelings ladder. */
+const LEGACY_LOVE_RUNGS: Record<string, string> = {
+  talking: "Familiar",
+  dating: "Close",
+  together: "Confidant",
+  living: "Intimate",
+  engaged: "Intimate",
+  married: "Devoted",
+};
+
+/**
+ * A rung for a bond saved by the first version, which had a stage and two meters instead. A
+ * husband should not reopen as a Stranger: a romance takes its rung from its old stage, and any
+ * other kind from the meter that meant closeness (hostility for a rival, whose ladder climbs
+ * towards Nemesis; the reverse of bitterness for an ex), spread over its warm ladder.
+ */
+function legacyRung(kind: ForkBondKind, row: BondRow): string | null {
+  if (kind === "love") return LEGACY_LOVE_RUNGS[row.stage] ?? null;
+  const meter = kind === "rival" ? row.second : kind === "ex" ? 100 - (row.second ?? 50) : row.first;
+  if (typeof meter !== "number" || !Number.isFinite(meter)) return null;
+  const ladder = FORK_BOND_SHAPES[kind].ladders[0]!;
+  const step = Math.min(ladder.length - 1, Math.max(0, Math.floor((meter / 100) * ladder.length)));
+  return ladder[step]!;
 }
 
 function cleanRoute(value: unknown): string {

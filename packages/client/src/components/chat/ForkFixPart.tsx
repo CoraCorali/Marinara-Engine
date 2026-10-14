@@ -539,8 +539,10 @@ function SlopListEditor({ latestReply }: { latestReply: string }) {
   const [adding, setAdding] = useState("");
 
   const matches = latestReply ? findSlopMatches(latestReply, phrases) : [];
-  const found = new Set(matches.map((match) => latestReply.slice(match.start, match.end).toLocaleLowerCase()));
-  const inLatest = (phrase: string) => found.has(phrase.toLocaleLowerCase());
+  // Curly and straight apostrophes match each other, so compare them as one.
+  const key = (text: string) => text.replace(/’/g, "'").toLocaleLowerCase();
+  const found = new Set(matches.map((match) => key(latestReply.slice(match.start, match.end))));
+  const inLatest = (phrase: string) => found.has(key(phrase.trim()));
 
   const add = () => {
     const phrase = adding.trim();
@@ -613,9 +615,9 @@ function SlopListEditor({ latestReply }: { latestReply: string }) {
       </form>
 
       <ul className="flex flex-wrap gap-1.5" aria-label={localizeUi("ui.chat.forkfix.slopListTitle")}>
-        {phrases.map((phrase) => (
+        {phrases.map((phrase, index) => (
           <li
-            key={phrase}
+            key={`${index}-${phrase}`}
             className={cn(
               "flex min-h-9 items-center gap-1 rounded-full border pl-3 pr-1 text-xs font-semibold",
               inLatest(phrase)

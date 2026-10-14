@@ -46,6 +46,11 @@ export const useForkWeatherStore = create<ForkWeatherState>()(
 /** One chat's weather choices, with the defaults filled in. */
 export function useChatWeatherPrefs(chatId: string | null): WeatherPrefs {
   const stored = useForkWeatherStore((state) => (chatId ? state.byChat[chatId] : undefined));
-  // Memoised: the weather canvas restarts whenever its config changes identity.
-  return useMemo(() => (stored ? { ...DEFAULT_WEATHER_PREFS, ...stored } : DEFAULT_WEATHER_PREFS), [stored]);
+  // Memoised on content: the weather canvas restarts whenever its config changes identity, and
+  // tapping an already-chosen chip saves an equal but new object.
+  const key = stored ? JSON.stringify(stored) : "";
+  return useMemo(
+    () => (key ? { ...DEFAULT_WEATHER_PREFS, ...(JSON.parse(key) as Partial<WeatherPrefs>) } : DEFAULT_WEATHER_PREFS),
+    [key],
+  );
 }

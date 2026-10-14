@@ -154,14 +154,31 @@ export const FORK_BOND_ROUTE_EXAMPLES = [
   "🥀 Tragic",
 ] as const;
 
+/** Lower case and trimmed, so a model's "Love" or " married " still names the right thing. */
+function token(value: unknown): string {
+  return typeof value === "string" ? value.trim().toLocaleLowerCase() : "";
+}
+
+/** A kind this tracker has, or null for anything else. */
+export function readForkBondKind(value: unknown): ForkBondKind | null {
+  const wanted = token(value);
+  return FORK_BOND_KINDS.includes(wanted as ForkBondKind) ? (wanted as ForkBondKind) : null;
+}
+
 export function normalizeForkBondKind(value: unknown): ForkBondKind {
-  return FORK_BOND_KINDS.includes(value as ForkBondKind) ? (value as ForkBondKind) : "other";
+  return readForkBondKind(value) ?? "other";
+}
+
+/** A romance status as spelled, or null. */
+export function readForkLoveStatus(value: unknown): ForkLoveStatus | null {
+  const wanted = token(value);
+  return FORK_LOVE_STATUSES.includes(wanted as ForkLoveStatus) ? (wanted as ForkLoveStatus) : null;
 }
 
 /** A romance's status, or null for every other kind. */
 export function normalizeForkLoveStatus(kind: ForkBondKind, value: unknown): ForkLoveStatus | null {
   if (kind !== "love") return null;
-  return FORK_LOVE_STATUSES.includes(value as ForkLoveStatus) ? (value as ForkLoveStatus) : "talking";
+  return readForkLoveStatus(value) ?? "talking";
 }
 
 /** Letters only, so "💛 shifting", "SHIFTING" and "Shifting!" are the same word. */

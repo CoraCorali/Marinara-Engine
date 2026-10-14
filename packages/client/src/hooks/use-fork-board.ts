@@ -16,6 +16,7 @@ export interface BoardPin {
   category: BoardPinCategory;
   inScene: boolean;
   order: number;
+  createdAt?: string;
 }
 
 export type BoardScope = { scopeType: "chat" | "persona"; scopeId: string } | null;

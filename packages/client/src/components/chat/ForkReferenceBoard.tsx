@@ -71,7 +71,9 @@ function sortPins(pins: readonly BoardPin[], mode: SortMode): BoardPin[] {
         BOARD_PIN_CATEGORIES.indexOf(a.category) - BOARD_PIN_CATEGORIES.indexOf(b.category) || a.order - b.order,
     );
   }
-  if (mode === "newest") return list.sort((a, b) => b.order - a.order);
+  // Reordering changes `order`, so "newest" goes by when the pin was added.
+  if (mode === "newest")
+    return list.sort((a, b) => (b.createdAt ?? "").localeCompare(a.createdAt ?? "") || b.order - a.order);
   return list.sort((a, b) => a.order - b.order);
 }
 

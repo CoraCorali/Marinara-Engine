@@ -26,16 +26,25 @@ export function ForkPinToBoardButton({ url }: { url: string }) {
     if (pinning) return;
     setPinning(true);
     try {
-      const response = await fetch(url);
-      if (!response.ok) throw new Error(String(response.status));
-      const blob = await response.blob();
-      const type = blob.type || "image/png";
-      const extension = type.split("/")[1]?.replace("jpeg", "jpg") || "png";
+      // Reading the picture fails with a bare status code or a browser network message; neither
+      // means anything to the reader, so that half always gets the plain message.
+      let blob: Blob;
+      try {
+        const response = await fetch(url);
+        if (!response.ok) throw new Error(String(response.status));
+        blob = await response.blob();
+      } catch {
+        toast.error(localizeUi("ui.chat.forkboard.couldNotPinThatPicture"));
+        return;
+      }
+      const type = blob.type.startsWith("image/") ? blob.type : "image/png";
+      const extension = type.split("/")[1]?.replace("jpeg", "jpg").replace("svg+xml", "svg") || "png";
       await addPin.mutateAsync({ file: new File([blob], `pinned.${extension}`, { type }) });
       toast.success(localizeUi("ui.chat.forkboard.pinnedFromChat"));
     } catch (error) {
+      // The upload's own message says what was wrong (too big, wrong type).
       toast.error(
-        error instanceof Error && error.message.length > 3
+        error instanceof Error && error.message
           ? error.message
           : localizeUi("ui.chat.forkboard.couldNotPinThatPicture"),
       );

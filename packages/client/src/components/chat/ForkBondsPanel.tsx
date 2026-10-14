@@ -107,7 +107,7 @@ const TINT_STYLES = `
 .fork-bond-tint[data-hue="1"] { background: oklch(from var(--primary) l c calc(h + 150) / 0.13); border-color: oklch(from var(--primary) l c calc(h + 150) / 0.3); }
 .fork-bond-tint[data-hue="2"] { background: oklch(from var(--primary) l c calc(h + 60) / 0.13); border-color: oklch(from var(--primary) l c calc(h + 60) / 0.3); }
 .fork-bond-tint[data-hue="3"] { background: oklch(from var(--primary) l c calc(h + 250) / 0.13); border-color: oklch(from var(--primary) l c calc(h + 250) / 0.3); }
-.fork-bond-ring { background: conic-gradient(from 210deg, var(--primary), oklch(from var(--primary) l c calc(h + 60)), oklch(from var(--primary) l c calc(h + 150)), oklch(from var(--primary) l c calc(h + 250)), var(--primary)); }
+.fork-bond-ring { background: var(--primary); background: conic-gradient(from 210deg, var(--primary), oklch(from var(--primary) l c calc(h + 60)), oklch(from var(--primary) l c calc(h + 150)), oklch(from var(--primary) l c calc(h + 250)), var(--primary)); }
 `;
 
 /** A field that saves a moment after you stop, instead of once per keystroke. */
@@ -248,6 +248,9 @@ function MomentRow({
 }) {
   const { t: localizeUi } = useUiTranslation();
   const when = new Date(moment.createdAt);
+  // A status move is stored by its key ("dating"); a rung move by its ladder name ("Close").
+  const label = (value: string) =>
+    STATUS_LABEL_KEYS[value as ForkLoveStatus] ? localizeUi(STATUS_LABEL_KEYS[value as ForkLoveStatus]) : value;
   return (
     <li className="relative flex flex-col gap-1 border-l-2 border-[color-mix(in_srgb,var(--primary)_45%,transparent)] pb-1 pl-3">
       <span
@@ -256,7 +259,7 @@ function MomentRow({
       />
       <div className="flex items-center gap-2 text-xs">
         <span className="rounded-full bg-[color-mix(in_srgb,var(--primary)_16%,transparent)] px-2 py-0.5 font-semibold text-foreground">
-          {moment.from || "—"} → {moment.to}
+          {label(moment.from) || "—"} → {label(moment.to)}
         </span>
         {!Number.isNaN(when.getTime()) && (
           <span className="text-[var(--muted-foreground)]">{when.toLocaleDateString()}</span>

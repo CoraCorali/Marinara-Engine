@@ -21,6 +21,8 @@ import {
   normalizeForkBondKind,
   normalizeForkBondRung,
   normalizeForkLoveStatus,
+  readForkBondKind,
+  readForkLoveStatus,
   stepForkBondRung,
   type ForkBondKind,
   type ForkLoveStatus,
@@ -74,6 +76,19 @@ function readUpdates(data: unknown): Record<string, unknown>[] {
     : [];
 }
 
+/**
+ * A stable id for someone who is not a card. Letters in any script are kept, so two people with
+ * names in Japanese or Cyrillic never collapse into the same "outsider-" id and merge.
+ */
+export function outsiderId(name: string): string {
+  const slug = name
+    .trim()
+    .toLocaleLowerCase()
+    .replace(/[^\p{L}\p{N}]+/gu, "-")
+    .replace(/^-+|-+$/g, "");
+  return `outsider-${slug || "someone"}`;
+}
+
 /** Names match the way a person means them to: case and surrounding spaces do not count. */
 function sameName(left: string, right: string): boolean {
   return left.trim().toLocaleLowerCase() === right.trim().toLocaleLowerCase();
@@ -89,10 +104,10 @@ function readFields(kind: ForkBondKind, update: Record<string, unknown>): Record
 }
 
 function stepStatus(current: ForkLoveStatus | null, wanted: unknown): ForkLoveStatus | undefined {
-  if (wanted === undefined || wanted === null || wanted === "") return undefined;
-  if (!FORK_LOVE_STATUSES.includes(wanted as ForkLoveStatus)) return undefined;
+  const target = readForkLoveStatus(wanted);
+  if (!target) return undefined;
   const from = FORK_LOVE_STATUSES.indexOf(current ?? "talking");
-  const to = FORK_LOVE_STATUSES.indexOf(wanted as ForkLoveStatus);
+  const to = FORK_LOVE_STATUSES.indexOf(target);
   if (to === from) return undefined;
   const capped = to > from ? Math.min(from + MAX_STATUS_STEP, to) : Math.max(from - MAX_STATUS_STEP, to);
   return FORK_LOVE_STATUSES[capped];
@@ -145,7 +160,7 @@ export function planBondUpdates(
       // taken as given rather than stepped; it has nothing to step from.
       const kind = normalizeForkBondKind(update.kind);
       creations.push({
-        characterId: resolveCharacterId(who) ?? `outsider-${who.toLocaleLowerCase().replace(/[^a-z0-9]+/g, "-")}`,
+        characterId: resolveCharacterId(who) ?? outsiderId(who),
         label: who,
         kind,
         ...(kind === "love" ? { status: normalizeForkLoveStatus(kind, wantedStatus) ?? "talking" } : {}),
@@ -165,12 +180,11 @@ export function planBondUpdates(
     // A kind only changes when the agent names one it actually knows, so a missing field never
     // quietly resets a romance to "someone else".
     let kind = match.kind;
-    if (typeof update.kind === "string" && FORK_BOND_KINDS.includes(update.kind as ForkBondKind)) {
-      if (update.kind !== match.kind) {
-        kind = update.kind as ForkBondKind;
-        change.kind = kind;
-        touched = true;
-      }
+    const namedKind = readForkBondKind(update.kind);
+    if (namedKind && namedKind !== match.kind) {
+      kind = namedKind;
+      change.kind = kind;
+      touched = true;
     }
     const kindChanged = kind !== match.kind;
 

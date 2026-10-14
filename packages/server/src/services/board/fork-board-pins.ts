@@ -55,6 +55,7 @@ export type BoardPin = {
   category: BoardPinCategory;
   inScene: boolean;
   order: number;
+  createdAt: string;
 };
 
 export function normalizeCategory(value: unknown): BoardPinCategory {
@@ -71,6 +72,7 @@ export function toBoardPin(row: BoardPinRow): BoardPin {
     category: normalizeCategory(row.category),
     inScene: row.inScene !== "false",
     order: row.order ?? 0,
+    createdAt: row.createdAt ?? "",
   };
 }
 

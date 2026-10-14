@@ -210,9 +210,14 @@ export async function forkDirectorRoutes(app: FastifyInstance) {
       chatId,
       promptMessages.map((message) => `[${message.role}]\n${message.content}`).join("\n\n"),
     );
-    const result = await resolved.provider.chatComplete(promptMessages, { model: resolved.model, temperature: 0.6 });
-
-    const raw = (result.content ?? "").trim();
+    let raw = "";
+    try {
+      const result = await resolved.provider.chatComplete(promptMessages, { model: resolved.model, temperature: 0.6 });
+      raw = (result.content ?? "").trim();
+    } catch (error) {
+      logger.error(error, "[fork-director] The model could not answer");
+      return reply.status(502).send({ error: error instanceof Error ? error.message : "The model could not answer" });
+    }
     // A model that ignores the JSON shape still has something useful to say, so keep its words.
     let say = raw;
     let note = "";

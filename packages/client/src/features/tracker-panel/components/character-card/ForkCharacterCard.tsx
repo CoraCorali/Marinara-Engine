@@ -138,7 +138,7 @@ export function ForkCharacterCard(props: Props) {
       {rows.length > 0 && (
         <dl className="grid grid-cols-[4.5rem_minmax(0,1fr)] items-baseline gap-x-2 gap-y-1.5">
           {rows.map((row) => (
-            <div key={row.label} className="contents">
+            <div key={row.lockKey} className="contents">
               <dt className={ROW_LABEL_CLASS}>{row.label}</dt>
               <dd className="m-0 min-w-0">
                 <InlineEdit

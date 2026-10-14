@@ -18,7 +18,7 @@ const { getDB, closeDB, registerForkTables } = await import("../../packages/serv
 const { bonds, bondMoments, createBondsStorage, describeMoves, toBond, MAX_BONDS_PER_CHAT } =
   await import("../../packages/server/src/services/bonds/fork-bonds.js");
 const { bondsPromptBlock } = await import("../../packages/server/src/services/generation/fork-bonds-prompt.js");
-const { planBondUpdates, bondsAgentStateBlock } =
+const { planBondUpdates, bondsAgentStateBlock, outsiderId } =
   await import("../../packages/server/src/services/bonds/fork-bond-updates.js");
 
 // ── The shapes ──
@@ -113,7 +113,38 @@ const legacy = toBond({
   updatedAt: "",
 });
 assert.equal(legacy.fields.heart, "Sulking about last night.", "the old note becomes the heart");
-assert.equal(legacy.rung, "Stranger");
+assert.equal(legacy.rung, "Close", "a first-version romance keeps how far it had got");
+const oldRow = {
+  id: "o",
+  chatId: "c",
+  characterId: "y",
+  label: "",
+  stage: "",
+  note: "",
+  order: 0,
+  createdAt: "",
+  updatedAt: "",
+};
+assert.equal(toBond({ ...oldRow, kind: "love", stage: "married" }).rung, "Devoted", "a husband is not a Stranger");
+assert.equal(
+  toBond({ ...oldRow, kind: "friend", first: 90 }).rung,
+  "Ride-or-die",
+  "an old friend's closeness carries over",
+);
+assert.equal(toBond({ ...oldRow, kind: "ex", second: 100 }).rung, "Bitter", "an old ex's bitterness carries over");
+assert.equal(
+  toBond({ ...oldRow, kind: "love", stage: "married", rung: "Wary" }).rung,
+  "Wary",
+  "a saved rung always wins over the old stage",
+);
+
+// ── Models write words their own way ──
+assert.equal(shared.normalizeForkBondKind(" Love "), "love");
+assert.equal(shared.normalizeForkLoveStatus("love", "MARRIED"), "married");
+assert.equal(shared.readForkBondKind("soulmate"), null);
+assert.notEqual(outsiderId("さくら"), outsiderId("ひなた"), "names in any script stay apart");
+assert.equal(outsiderId("Old Tom!"), "outsider-old-tom");
+assert.equal(outsiderId("  ???  "), "outsider-someone");
 
 // ── Moments ──
 const before = (await store.getById(vee!.id))!;
