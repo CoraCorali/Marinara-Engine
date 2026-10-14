@@ -5278,12 +5278,6 @@ function AppearanceSettings({ group = "app" }: { group?: AppearanceGroup }) {
                         label: "SillyTavern",
                         desc: "Classic SillyTavern look — clean & minimal",
                       },
-                      // Fork: the corkboard theme (see FORK.md)
-                      {
-                        id: "board" as VisualTheme,
-                        label: "Board",
-                        desc: "Cork noticeboard — paper, tape and pushpins",
-                      },
                     ] as const
                   ).map((opt) => (
                     <button
