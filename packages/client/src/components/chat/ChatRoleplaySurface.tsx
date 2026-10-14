@@ -767,6 +767,7 @@ type RoleplaySurfaceProps = {
   forkBoardChatScope?: BoardScope;
   forkBoardPersonaScope?: BoardScope;
   onOpenForkBoard?: () => void;
+  onOpenForkDirector?: () => void;
   onEditAndResend?: (messageId: string, content: string) => Promise<void>;
   onSetActiveSwipe: (messageId: string, index: number) => void;
   onToggleConversationStart: (
@@ -890,6 +891,7 @@ export function ChatRoleplaySurface({
   forkBoardChatScope = null,
   forkBoardPersonaScope = null,
   onOpenForkBoard,
+  onOpenForkDirector,
   onSetActiveSwipe,
   onToggleConversationStart,
   onToggleHiddenFromAI,
@@ -2194,6 +2196,7 @@ export function ChatRoleplaySurface({
                   mode={isRoleplay ? "roleplay" : "conversation"}
                   combatAgentEnabled={combatAgentEnabled}
                   onStartEncounter={onStartEncounter}
+                  onOpenForkDirector={onOpenForkDirector}
                   characterNames={characterNames}
                   groupResponseOrder={
                     chatCharIds.length > 1 && groupChatMode === "individual"

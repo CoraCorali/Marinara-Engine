@@ -37,6 +37,7 @@ import { getCurrentInputSnapshot, useChatStore } from "../../stores/chat.store";
 import { hasActiveTextSelection } from "../../lib/text-selection";
 import { getResendableUserMessageId } from "../../lib/fork/edit-and-resend";
 import { ForkReferenceBoard } from "./ForkReferenceBoard";
+import { ForkDirectorPanel, type DirectorTurn } from "./ForkDirectorPanel";
 import type { BoardScope } from "../../hooks/use-fork-board";
 import { readChatMetadata } from "../../lib/chat-wizard-defaults";
 import { useChatWindowLayout } from "../../hooks/use-chat-window-layout";
@@ -2455,6 +2456,52 @@ const LocalChatArea = memo(function LocalChatArea({
     return null;
   }, [messages]);
 
+  // Fork: the Director's chair. The conversation is per chat and never enters the story; only the
+  // note it settles on does, as the direction for a regeneration or for the next reply.
+  const [directorOpen, setDirectorOpen] = useState(false);
+  const [directorByChat, setDirectorByChat] = useState<Record<string, { turns: DirectorTurn[]; note: string }>>({});
+  const directorState = (activeChatId && directorByChat[activeChatId]) || { turns: [], note: "" };
+  const handleOpenDirector = useCallback(() => setDirectorOpen(true), []);
+  const handleDirectorChange = useCallback(
+    (turns: DirectorTurn[], note: string) => {
+      if (!activeChatId) return;
+      setDirectorByChat((current) => ({ ...current, [activeChatId]: { turns, note } }));
+    },
+    [activeChatId],
+  );
+  const handleDirectorRewrite = useCallback(
+    async (note: string) => {
+      if (!activeChatId || !lastAssistantMessageId || !note.trim() || isStreaming) return;
+      setDirectorOpen(false);
+      try {
+        await generate({
+          chatId: activeChatId,
+          connectionId: null,
+          regenerateMessageId: lastAssistantMessageId,
+          generationGuide: buildGuidedGenerationInstructionMessage(note.trim()),
+          generationGuideSource: "guide",
+        });
+      } catch {
+        // The generate hook already shows the error toast.
+      }
+    },
+    [activeChatId, generate, isStreaming, lastAssistantMessageId],
+  );
+  const handleDirectorSaveForNext = useCallback(
+    (note: string) => {
+      if (!note.trim()) return;
+      // The composer is where a guided direction already lives, so the next send carries it.
+      const composer = document.querySelector<HTMLTextAreaElement>("textarea[data-chat-composer]");
+      if (composer) {
+        composer.value = `/guided ${note.trim()}`;
+        composer.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+      setDirectorOpen(false);
+      toast.success(localizeUi("ui.chat.forkdirector.savedForNext"));
+    },
+    [localizeUi],
+  );
+
   const latestAssistantMessageForSwipes = useMemo(() => {
     if (!messages) return null;
     for (let i = messages.length - 1; i >= 0; i--) {
@@ -3552,6 +3599,7 @@ const LocalChatArea = memo(function LocalChatArea({
           forkBoardChatScope={forkBoardChatScope}
           forkBoardPersonaScope={forkBoardPersonaScope}
           onOpenForkBoard={handleOpenForkBoard}
+          onOpenForkDirector={handleOpenDirector}
           onSetActiveSwipe={handleSetActiveSwipe}
           onToggleConversationStart={handleToggleConversationStart}
           onToggleHiddenFromAI={handleToggleHiddenFromAI}
@@ -3611,6 +3659,27 @@ const LocalChatArea = memo(function LocalChatArea({
           onClose={handleCloseAgentInjectionReview}
         />
       )}
+      <Modal
+        open={directorOpen}
+        onClose={() => setDirectorOpen(false)}
+        title={localizeUi("ui.chat.forkdirector.title")}
+        width="max-w-md"
+        mobileFullscreen
+        contentClassName="min-h-[26rem]"
+      >
+        {activeChatId && (
+          <ForkDirectorPanel
+            chatId={activeChatId}
+            turns={directorState.turns}
+            note={directorState.note}
+            onChange={handleDirectorChange}
+            onRewrite={handleDirectorRewrite}
+            onSaveForNext={handleDirectorSaveForNext}
+            canRewrite={Boolean(lastAssistantMessageId)}
+            busy={isStreaming}
+          />
+        )}
+      </Modal>
       <Modal
         open={forkBoardOpen}
         onClose={() => setForkBoardOpen(false)}

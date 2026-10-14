@@ -17,6 +17,7 @@ import {
   WandSparkles,
   Swords,
   Lightbulb,
+  Clapperboard,
 } from "lucide-react";
 import { createPortal } from "react-dom";
 import { toast } from "sonner";
@@ -207,6 +208,8 @@ interface ChatInputProps {
   onIllustrate?: (prompt?: string, messageRange?: [string, string]) => void | Promise<void>;
   combatAgentEnabled?: boolean;
   onStartEncounter?: () => void;
+  /** Fork: opens the Director's chair. */
+  onOpenForkDirector?: () => void;
   interactionsLocked?: boolean;
 }
 
@@ -220,6 +223,7 @@ export const ChatInput = memo(function ChatInput({
   onIllustrate,
   combatAgentEnabled,
   onStartEncounter,
+  onOpenForkDirector,
   interactionsLocked = false,
 }: ChatInputProps) {
   const { t: localizeUi } = useUiTranslation();
@@ -379,7 +383,10 @@ export const ChatInput = memo(function ChatInput({
       setSparkRunning(false);
     }
   }, [activeChatId, isInputBusy, retryAgents, sparkAgentType, sparkRunning]);
-  const showRoleplayAgentActions = narrativeDirectorActive || combatActionActive || sparkAgentType !== null;
+  // Fork: the Director's chair is available in any Roleplay chat.
+  const forkDirectorActive = mode === "roleplay" && typeof onOpenForkDirector === "function";
+  const showRoleplayAgentActions =
+    narrativeDirectorActive || combatActionActive || sparkAgentType !== null || forkDirectorActive;
   const consumeNarrativeDirectorMode = useCallback((): NarrativeDirectorMode | undefined => {
     if (!pushStoryMode || !narrativeDirectorActive) return undefined;
     setPushStoryMode(null);
@@ -1995,6 +2002,21 @@ export const ChatInput = memo(function ChatInput({
                 </div>
               )}
             </div>
+          )}
+          {forkDirectorActive && (
+            <button
+              type="button"
+              onClick={() => onOpenForkDirector?.()}
+              disabled={isInputBusy}
+              className={cn(
+                ROLEPLAY_AGENT_ACTION_BUTTON_CLASS,
+                "text-foreground/50 hover:bg-foreground/10 hover:text-foreground/80 disabled:hover:bg-transparent disabled:hover:text-foreground/50",
+              )}
+              title={localizeUi("ui.chat.forkdirector.buttonTitle")}
+            >
+              <Clapperboard size="0.875rem" />
+              <span>{localizeUi("ui.chat.forkdirector.button")}</span>
+            </button>
           )}
           {sparkAgentType !== null && (
             <button

@@ -42,6 +42,13 @@ upstream file it touches, so conflicts after a sync are quick to find.
   they share its size and type limits, its validated paths and its serving route.
   The board's table registers itself the way capability packages register theirs, so it needs no
   storage-format bump and stock Marinara simply ignores the file.
+- **Director's chair.** A 🎬 **Director** button above the message box opens an off-the-record chat
+  with the chat's own model. It can see the character cards and the recent scene, so you can say
+  "that felt out of character" and work out what should happen instead. Nothing said there enters
+  the roleplay. As you talk it keeps a short **note**, and **Rewrite reply** regenerates the last
+  reply with that note as its direction, keeping the original as a swipe. **Save for next** puts the
+  note in the composer as a `/guided` command instead, so it steers your next reply. The
+  conversation is kept per chat while the app is open.
 
 ## Upstream files touched
 
@@ -66,6 +73,7 @@ Edits to upstream files are marked with a `Fork:` comment.
 | `packages/server/src/routes/index.ts` | Registers the board routes |
 | `packages/server/src/routes/generate.routes.ts` | Sends in-scene pins with the reply |
 | `packages/client/src/components/chat/ChatRoleplaySurface.tsx` | In-scene strip |
+| `packages/client/src/components/chat/ChatInput.tsx` | Director button (and the Spark button) |
 | `packages/server/src/routes/generate.routes.ts` | Saves which agent made the choices |
 | `packages/server/src/routes/generate/retry-agents-route.ts` | Same, for re-rolled choices |
 | `packages/shared/src/schemas/lorebook.schema.ts` | Whole-word default |
