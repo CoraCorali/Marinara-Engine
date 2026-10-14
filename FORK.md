@@ -141,6 +141,24 @@ Markup is stripped and every part is length-capped before it is sent.
   real tap targets now, the choices themselves are a size up, and the labels no longer run a
   continuous accent animation, which four choices were doing at once on every turn.
 
+### Bug pass over the closet, the tracker and the new interfaces
+
+- **The bonds note was reaching the model twice.** It was pushed onto the shared message list and
+  again onto the per-responder list, which is built from that same list, so every roleplay prompt
+  carried it twice. Only the per-responder push remains, which is also the right place: it runs
+  after macros resolve and lands once per responder in a group chat.
+- **The outfit now goes as words as well as pictures.** The sentence existed and was never
+  injected, so a provider that drops images got nothing at all from the closet.
+- **Editing a field no longer saves on every keystroke.** The closet's labels and the tracker's
+  names, notes and sliders each called the server from `onChange`, which meant one request per
+  character typed and one per step of a dragged slider. Besides the traffic, the replies arrive out
+  of order and could overwrite the box mid-word. Fields now save a moment after you stop, a pending
+  edit always beats what comes back from the server, and closing a panel mid-edit saves rather than
+  loses what was typed.
+- **The tracker can follow someone who is not a card.** The add row used to disappear once every
+  card in the chat was tracked, so a neighbour, a boss or the man at the door could never be
+  tracked at all. There is a "someone else" option now, and the row no longer hides itself.
+
 ## Upstream files touched
 
 Fork-only code lives in `packages/client/src/lib/fork/`, `packages/server/src/services/import/fork/`

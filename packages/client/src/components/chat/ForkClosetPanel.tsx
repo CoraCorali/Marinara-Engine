@@ -6,6 +6,7 @@ import { Plus, Trash2, Loader2, Shirt, Sparkles } from "lucide-react";
 import { useTranslation as useUiTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { showConfirmDialog } from "../../lib/app-dialogs";
+import { useForkDraftField } from "../../hooks/use-fork-draft-field";
 import {
   CLOSET_SLOTS,
   useAddClosetItem,
@@ -28,6 +29,28 @@ const SLOT_LABEL_KEYS: Record<ClosetSlot, string> = {
   jewellery: "ui.chat.forkcloset.slotJewellery",
   extra: "ui.chat.forkcloset.slotExtra",
 };
+
+/** A label that saves a moment after you stop typing, not once per keystroke. */
+function DraftLabel({
+  value,
+  onCommit,
+  ariaLabel,
+}: {
+  value: string;
+  onCommit: (next: string) => void;
+  ariaLabel: string;
+}) {
+  const [draft, change, flush] = useForkDraftField(value, onCommit);
+  return (
+    <input
+      value={draft}
+      onChange={(event) => change(event.target.value)}
+      onBlur={flush}
+      aria-label={ariaLabel}
+      className="mt-1 w-16 bg-transparent text-[0.625rem] text-[var(--foreground)]/80 outline-none"
+    />
+  );
+}
 
 interface Props {
   personaId: string | null;
@@ -130,11 +153,10 @@ export function ForkClosetPanel({ personaId, personaName }: Props) {
                       >
                         <img src={item.imagePath} alt="" className="h-full w-full object-contain" />
                       </button>
-                      <input
+                      <DraftLabel
                         value={item.label}
-                        onChange={(event) => updateItem.mutate({ id: item.id, label: event.target.value })}
-                        aria-label={localizeUi("ui.chat.forkcloset.whatThisPieceIs")}
-                        className="mt-1 w-16 bg-transparent text-[0.625rem] text-[var(--foreground)]/80 outline-none"
+                        onCommit={(label) => updateItem.mutate({ id: item.id, label })}
+                        ariaLabel={localizeUi("ui.chat.forkcloset.whatThisPieceIs")}
                       />
                       <button
                         type="button"

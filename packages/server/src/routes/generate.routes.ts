@@ -230,7 +230,7 @@ import { resolveChatUserIdentity } from "../services/chat-user-identity.js";
 import { createBoardPinsStorage } from "../services/board/fork-board-pins.js";
 import { boardPinsAsImageEntries } from "../services/generation/fork-board-prompt.js";
 import { createClosetStorage } from "../services/closet/fork-closet-items.js";
-import { closetItemsAsImageEntries } from "../services/generation/fork-closet-prompt.js";
+import { closetItemsAsImageEntries, wornOutfitLine } from "../services/generation/fork-closet-prompt.js";
 import { createBondsStorage } from "../services/bonds/fork-bonds.js";
 import { bondsPromptBlock } from "../services/generation/fork-bonds-prompt.js";
 import { createAgentsStorage } from "../services/storage/agents.storage.js";
@@ -4999,19 +4999,6 @@ export async function generateRoutes(app: FastifyInstance, options: GenerateRout
         }
 
         finalMessages = injectOwnerSpatialPrompt(finalMessages, ownerSpatialProjection);
-        // Fork: where every bond stands, in Roleplay only, and only when something is tracked.
-        // Late in the prompt on purpose: a relationship is the thing a model most often
-        // contradicts after twenty messages, so it sits next to what it has to govern.
-        if (chatMode === "roleplay") {
-          const forkBondsNote = bondsPromptBlock(
-            await createBondsStorage(app.db).listForChat(input.chatId),
-            (characterId) => charInfo.find((character) => character.id === characterId)?.name ?? "",
-            personaName,
-          );
-          if (forkBondsNote) {
-            finalMessages.push({ role: "system", content: forkBondsNote, contextKind: "injection" });
-          }
-        }
 
         // Get current game state (if any)
         // Prefer committed game state after a real user turn, but keep visible
@@ -7729,16 +7716,26 @@ export async function generateRoutes(app: FastifyInstance, options: GenerateRout
             providerMacroContext,
             historyMacroProfilesById,
           );
-          // Fork: the same note on the per-responder path, after macros are resolved so nothing
-          // in it can be re-expanded.
+          // Fork: where every bond stands, and what the persona has on, as one system note next to
+          // the newest turn. This is the only place either is injected: everything here descends
+          // from finalMessages, so pushing earlier would arrive twice. Late on purpose, because a
+          // relationship is what a model most often contradicts after twenty messages. The outfit
+          // goes as words as well as pictures, since some providers never receive the images.
           if (chatMode === "roleplay") {
-            const forkBondsNote = bondsPromptBlock(
-              await createBondsStorage(app.db).listForChat(input.chatId),
-              (characterId) => charInfo.find((character) => character.id === characterId)?.name ?? "",
-              personaName,
-            );
-            if (forkBondsNote) {
-              preparedMessagesForGen.push({ role: "system", content: forkBondsNote, contextKind: "injection" });
+            const forkNoteParts = [
+              bondsPromptBlock(
+                await createBondsStorage(app.db).listForChat(input.chatId),
+                (characterId) => charInfo.find((character) => character.id === characterId)?.name ?? "",
+                personaName,
+              ),
+              personaId ? wornOutfitLine(await createClosetStorage(app.db).listWorn(personaId), personaName) : "",
+            ].filter(Boolean);
+            if (forkNoteParts.length > 0) {
+              preparedMessagesForGen.push({
+                role: "system",
+                content: forkNoteParts.join("\n\n"),
+                contextKind: "injection",
+              });
             }
           }
           if (chatMode === "conversation" && conversationIsGroup && !input.impersonate) {

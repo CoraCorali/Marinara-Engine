@@ -98,6 +98,18 @@ assert.equal(entries[0]!.images[0]!.path, "/api/lorebooks/entry-images/brown tee
 assert.equal(wornOutfitLine(outfit, "Kyli"), "Kyli is wearing: brown tee, sleep shorts, brown boots, hobo bag.");
 assert.equal(wornOutfitLine([], "Kyli"), "", "a persona with nothing on costs nothing");
 
+// ── The outfit also goes as words ──
+// Some providers never receive the pictures at all, so the sentence is not a nicety.
+const line = wornOutfitLine(outfit, "Kyli");
+assert.equal(line, "Kyli is wearing: brown tee, sleep shorts, brown boots, hobo bag.");
+// The order is the outfit's order, so it reads top down rather than in the order things were added.
+assert.ok(line.indexOf("brown tee") < line.indexOf("sleep shorts"));
+assert.ok(line.indexOf("sleep shorts") < line.indexOf("brown boots"));
+// A piece with no label still names what it is, rather than vanishing from the sentence.
+const unlabelled = [{ ...outfit[0]!, label: "   " }];
+assert.equal(wornOutfitLine(unlabelled, "Kyli"), "Kyli is wearing: top.");
+assert.equal(wornOutfitLine(outfit, "   "), wornOutfitLine(outfit, "She"), "a nameless persona still reads");
+
 // ── Another persona's closet is her own ──
 await closet.create({ personaId: "persona-rion", slot: "top", imagePath: "/p.png", label: "black shirt", wear: true });
 assert.equal((await closet.listForPersona("persona-rion")).length, 1);

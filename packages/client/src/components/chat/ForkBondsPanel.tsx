@@ -1,10 +1,11 @@
 // ──────────────────────────────────────────────
 // Fork: the relationship tracker — one card per bond, shaped by what kind it is
 // ──────────────────────────────────────────────
-import { useState } from "react";
+import { useState, type InputHTMLAttributes, type TextareaHTMLAttributes } from "react";
 import { Plus, Trash2, Loader2 } from "lucide-react";
 import { useTranslation as useUiTranslation } from "react-i18next";
 import { showConfirmDialog } from "../../lib/app-dialogs";
+import { useForkDraftField } from "../../hooks/use-fork-draft-field";
 import {
   BOND_KINDS,
   BOND_METERS,
@@ -47,6 +48,77 @@ const METER_LABEL_KEYS: Record<string, string> = {
   unfinished: "ui.chat.forkbonds.meterUnfinished",
   bitterness: "ui.chat.forkbonds.meterBitterness",
 };
+
+/** A field that saves a moment after you stop, instead of once per keystroke. */
+function DraftInput({
+  value,
+  onCommit,
+  className,
+  ...rest
+}: {
+  value: string;
+  onCommit: (next: string) => void;
+  className?: string;
+} & Omit<InputHTMLAttributes<HTMLInputElement>, "value" | "onChange" | "className">) {
+  const [draft, change, flush] = useForkDraftField(value, onCommit);
+  return (
+    <input
+      {...rest}
+      value={draft}
+      onChange={(event) => change(event.target.value)}
+      onBlur={flush}
+      className={className}
+    />
+  );
+}
+
+/** The same, for the "where it stands" note. */
+function DraftTextarea({
+  value,
+  onCommit,
+  className,
+  ...rest
+}: {
+  value: string;
+  onCommit: (next: string) => void;
+  className?: string;
+} & Omit<TextareaHTMLAttributes<HTMLTextAreaElement>, "value" | "onChange" | "className">) {
+  const [draft, change, flush] = useForkDraftField(value, onCommit);
+  return (
+    <textarea
+      {...rest}
+      value={draft}
+      onChange={(event) => change(event.target.value)}
+      onBlur={flush}
+      className={className}
+    />
+  );
+}
+
+/** A slider that saves where it was let go, not every pixel on the way. */
+function DraftRange({
+  value,
+  onCommit,
+  ...rest
+}: {
+  value: number;
+  onCommit: (next: number) => void;
+} & Omit<InputHTMLAttributes<HTMLInputElement>, "value" | "onChange" | "type">) {
+  const [draft, change, flush] = useForkDraftField(value, onCommit, 350);
+  return (
+    <input
+      {...rest}
+      type="range"
+      value={draft}
+      onChange={(event) => change(Number(event.target.value))}
+      onPointerUp={flush}
+      onKeyUp={flush}
+    />
+  );
+}
+
+/** The dropdown value for a bond with somebody who is not a card in this chat. */
+const OUTSIDER = "__outsider__";
 
 interface CastMember {
   id: string;
@@ -102,9 +174,9 @@ export function ForkBondsPanel({ chatId, cast, personaName }: Props) {
           return (
             <div key={bond.id} className="rounded-xl border border-[var(--border)] bg-[var(--card)] p-3">
               <div className="flex items-center gap-2">
-                <input
+                <DraftInput
                   value={nameFor(bond)}
-                  onChange={(event) => updateBond.mutate({ id: bond.id, label: event.target.value })}
+                  onCommit={(label) => updateBond.mutate({ id: bond.id, label })}
                   aria-label={localizeUi("ui.chat.forkbonds.whoThisIs")}
                   className="min-w-0 flex-1 bg-transparent text-sm font-bold text-foreground outline-none"
                 />
@@ -179,24 +251,21 @@ export function ForkBondsPanel({ chatId, cast, personaName }: Props) {
                     >
                       {localizeUi(METER_LABEL_KEYS[meter] ?? "ui.chat.forkbonds.meterCloseness")}
                     </label>
-                    <input
+                    <DraftRange
                       id={`bond-${field}-${bond.id}`}
-                      type="range"
                       min={0}
                       max={100}
                       value={value}
-                      onChange={(event) =>
-                        updateBond.mutate({ id: bond.id, [field]: Number(event.target.value) } as never)
-                      }
+                      onCommit={(next) => updateBond.mutate({ id: bond.id, [field]: next } as never)}
                       className="w-full accent-[var(--primary)]"
                     />
                   </div>
                 ))}
               </div>
 
-              <textarea
+              <DraftTextarea
                 value={bond.note}
-                onChange={(event) => updateBond.mutate({ id: bond.id, note: event.target.value })}
+                onCommit={(note) => updateBond.mutate({ id: bond.id, note })}
                 placeholder={localizeUi("ui.chat.forkbonds.whereItStands")}
                 aria-label={localizeUi("ui.chat.forkbonds.whereItStands")}
                 rows={2}
@@ -207,7 +276,7 @@ export function ForkBondsPanel({ chatId, cast, personaName }: Props) {
         })}
       </div>
 
-      {untracked.length > 0 && (
+      {
         <div className="flex items-center gap-2">
           <label className="sr-only" htmlFor="fork-bonds-add">
             {localizeUi("ui.chat.forkbonds.trackSomeone")}
@@ -224,13 +293,20 @@ export function ForkBondsPanel({ chatId, cast, personaName }: Props) {
                 {member.name}
               </option>
             ))}
+            {/* Not everyone who matters is a card in this chat. */}
+            <option value={OUTSIDER}>{localizeUi("ui.chat.forkbonds.someoneElse")}</option>
           </select>
           <button
             type="button"
             onClick={() => {
               if (!adding) return;
-              const member = untracked.find((entry) => entry.id === adding);
-              addBond.mutate({ characterId: adding, label: member?.name ?? "", kind: "other" });
+              if (adding === OUTSIDER) {
+                // Its own id, so it never collides with a card that appears later.
+                addBond.mutate({ characterId: `outsider-${Date.now()}`, label: "", kind: "other" });
+              } else {
+                const member = untracked.find((entry) => entry.id === adding);
+                addBond.mutate({ characterId: adding, label: member?.name ?? "", kind: "other" });
+              }
               setAdding("");
             }}
             disabled={!adding || addBond.isPending}
@@ -240,7 +316,7 @@ export function ForkBondsPanel({ chatId, cast, personaName }: Props) {
             {addBond.isPending ? <Loader2 size="0.875rem" className="animate-spin" /> : <Plus size="0.875rem" />}
           </button>
         </div>
-      )}
+      }
     </div>
   );
 }
