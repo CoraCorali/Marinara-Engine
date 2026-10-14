@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { HeartPulse, Sparkles } from "lucide-react";
+import { HeartPulse, Pencil, Sparkles } from "lucide-react";
 import type { CharacterStat, Persona } from "@marinara-engine/shared";
 import { isTrackerFieldLocked, personaStatTrackerLockKey, personaStatusTrackerLockKey } from "@marinara-engine/shared";
 import type { TrackerPanelSide, TrackerStatDisplayMode } from "../../../../stores/ui.store";
@@ -109,6 +109,9 @@ export function PersonaInventoryPanel({
     y: number;
     zoom: number;
   } | null>(null);
+  // Fork: the card leads; Marinara's own stat editor opens on request.
+  const [forkEditingStats, setForkEditingStats] = useState(false);
+  const forkShowsCard = Boolean(forkCard) && !deleteMode && !addMode && !lockMode && !forkEditingStats;
   const personaName = visibleText(persona?.name, "Persona");
   const personaExpression = spriteExpression?.trim() ?? "";
   const spritePersonaId = personaExpression && persona?.id ? persona.id : null;
@@ -220,12 +223,21 @@ export function PersonaInventoryPanel({
       />
 
       {/* Fork: the persona card (Option A) in place of the cockpit, outside the edit modes. */}
-      {!collapsed && forkCard && !deleteMode && !addMode && !lockMode && (
-        <div className="relative px-1 pb-1.5" style={getPersonaAmbienceStyle(persona, { paintBackground: false })}>
+      {!collapsed && forkShowsCard && (
+        <div
+          className="relative flex flex-col gap-1 px-1 pb-1.5"
+          style={getPersonaAmbienceStyle(persona, { paintBackground: false })}
+        >
           {forkCard}
+          <ForkEditStatsButton editing={false} onToggle={() => setForkEditingStats(true)} />
         </div>
       )}
-      {!collapsed && !(forkCard && !deleteMode && !addMode && !lockMode) && (
+      {!collapsed && forkCard && forkEditingStats && !deleteMode && !addMode && !lockMode && (
+        <div className="flex justify-end px-1">
+          <ForkEditStatsButton editing onToggle={() => setForkEditingStats(false)} />
+        </div>
+      )}
+      {!collapsed && !forkShowsCard && (
         <div className="relative px-1 pb-1 @min-[380px]:pb-1.5">
           <div
             className={TRACKER_PROFILE_CARD_SURFACE_CLASS}
@@ -302,5 +314,23 @@ export function PersonaInventoryPanel({
         </div>
       )}
     </div>
+  );
+}
+
+/** Fork: opens and closes Marinara's stat editor under the persona card. */
+function ForkEditStatsButton({ editing, onToggle }: { editing: boolean; onToggle: () => void }) {
+  const { t: localizeUi } = useUiTranslation();
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-expanded={editing}
+      className="flex min-h-8 items-center gap-1 self-end rounded-full px-2.5 text-[0.6875rem] font-semibold text-[color:var(--tracker-profile-muted-text,var(--muted-foreground))] hover:bg-foreground/10"
+    >
+      <Pencil size="0.625rem" />
+      {localizeUi(
+        editing ? "ui.chat.combinedplayerpanel.forkDoneEditingStats" : "ui.chat.combinedplayerpanel.forkEditStats",
+      )}
+    </button>
   );
 }

@@ -105,7 +105,10 @@ function words(text: string): string[] {
 export function forkMessageMentionsPin(message: string, caption: string): boolean {
   const captionWords = words(caption).filter((word) => !STOPWORDS.has(word));
   if (captionWords.length === 0) return false;
-  const messageText = ` ${words(message).join(" ")} `;
+  // Stopwords leave the message too, so "dress with lace" still finds the "dress lace" pair.
+  const messageText = ` ${words(message)
+    .filter((word) => !STOPWORDS.has(word))
+    .join(" ")} `;
   if (captionWords.length === 1) return captionWords[0]!.length >= 3 && messageText.includes(` ${captionWords[0]} `);
   for (let index = 0; index < captionWords.length - 1; index += 1) {
     if (messageText.includes(` ${captionWords[index]} ${captionWords[index + 1]} `)) return true;

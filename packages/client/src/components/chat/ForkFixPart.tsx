@@ -593,7 +593,13 @@ function SlopListEditor({ latestReply }: { latestReply: string }) {
             ? localizeUi("ui.chat.forkfix.slopCount", { count: matches.length })
             : localizeUi("ui.chat.forkfix.slopCountNoReply")}
         </span>
-        <HelpTooltip text={localizeUi("ui.chat.forkfix.slopListHelp")} side="bottom" wide size="0.875rem" />
+        <HelpTooltip
+          buttonClassName="-m-2 p-2"
+          text={localizeUi("ui.chat.forkfix.slopListHelp")}
+          side="bottom"
+          wide
+          size="0.875rem"
+        />
       </div>
       <label className="flex min-h-9 items-center justify-between gap-3 rounded-xl bg-[var(--secondary)] px-3 text-[0.8125rem] font-semibold text-foreground">
         {localizeUi("ui.chat.forkfix.highlightInReplies")}

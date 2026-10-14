@@ -253,20 +253,22 @@ export function TrackerSectionList({
             flushPersonaPortraitSave={flushPersonaPortraitSave}
             collapsed={isPanelCollapsed("persona")}
             onToggleCollapsed={() => toggleTrackerPanelSectionCollapsed("persona")}
-            // Fork: the persona card, linked to the board, the world state and People.
+            // Fork: the persona card, linked to the board, the world state and People (only with a persona).
             forkCard={
-              <ForkPersonaCard
-                activeChatId={activeChatId}
-                persona={activePersona}
-                status={playerStats?.status ?? ""}
-                onSaveStatus={savePersonaStatus}
-                personaStats={personaStats}
-                location={currentGameState.location ?? null}
-                holding={[...inventoryTrackerEquipped, ...inventoryTrackerInventory]
-                  .map((row) => row.name)
-                  .filter(Boolean)}
-                presentCharacters={presentCharacters}
-              />
+              activePersona ? (
+                <ForkPersonaCard
+                  activeChatId={activeChatId}
+                  persona={activePersona}
+                  status={playerStats?.status ?? ""}
+                  onSaveStatus={savePersonaStatus}
+                  personaStats={personaStats}
+                  location={currentGameState.location ?? null}
+                  holding={[...inventoryTrackerEquipped, ...inventoryTrackerInventory]
+                    .map((row) => row.name)
+                    .filter(Boolean)}
+                  presentCharacters={presentCharacters}
+                />
+              ) : undefined
             }
           />
         );

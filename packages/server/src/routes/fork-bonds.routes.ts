@@ -98,7 +98,8 @@ export async function forkBondsRoutes(app: FastifyInstance) {
     return updated;
   });
 
-  app.delete<{ Params: { id: string } }>("/pairs/:id", async (req) => {
+  app.delete<{ Params: { id: string } }>("/pairs/:id", async (req, reply) => {
+    if (!(await pairs.getById(req.params.id))) return reply.status(404).send({ error: "Pair not found" });
     await pairs.remove(req.params.id);
     return { success: true };
   });

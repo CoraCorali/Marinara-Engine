@@ -247,7 +247,7 @@ export function planPairUpdates(
     const kind = namedKind && namedKind !== match.kind ? namedKind : match.kind;
     if (kind !== match.kind) {
       change.kind = kind;
-      change.rung = defaultForkBondRung(kind);
+      change.rung = normalizeForkBondRung(kind, entry.rung) ?? defaultForkBondRung(kind);
     } else if (typeof entry.rung === "string") {
       const wanted = normalizeForkBondRung(kind, entry.rung);
       if (wanted && wanted !== match.rung) change.rung = stepForkBondRung(kind, match.rung, wanted);

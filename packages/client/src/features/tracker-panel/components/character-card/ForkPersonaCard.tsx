@@ -227,10 +227,15 @@ export function ForkPersonaCard({
           </p>
           <button type="button" onClick={() => openForkPanel("people")} className={LINE_CLASS}>
             <span className="min-w-0 flex-1 truncate">
-              <span className="font-bold">{closestName}</span>{" "}
-              {localizeUi("ui.characters.characterversionhistorypanel.value1", {
-                value1: [closest.rung, closest.drift].filter(Boolean).join(" · "),
-              })}
+              <span className="font-bold">{closestName}</span>
+              {(closest.rung || closest.drift) && (
+                <>
+                  {" "}
+                  {localizeUi("ui.chat.forkbonds.afterName", {
+                    value: [closest.rung, closest.drift].filter(Boolean).join(" · "),
+                  })}
+                </>
+              )}
             </span>
             <ChevronRight size="0.75rem" className="shrink-0 opacity-60" />
           </button>

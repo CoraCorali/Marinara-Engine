@@ -45,7 +45,11 @@ export function ForkOutfitSync({ chatId, scope }: { chatId: string | null; scope
   useEffect(() => {
     if (!chatId || !pins || !present) return;
     const writeOutfit = (characterId: string, outfit: string) => {
-      const next = (present as PresentCharacter[]).map((character) =>
+      // Read the store now, not the snapshot this pass started from: an earlier write in the same
+      // pass, or a toast answered later, must not put back what has changed since.
+      const latest = useGameStateStore.getState().current;
+      const base = latest && latest.chatId === chatId ? latest.presentCharacters : present;
+      const next = ((base ?? []) as PresentCharacter[]).map((character) =>
         character.characterId === characterId ? { ...character, outfit } : character,
       );
       trackerLines.current.set(characterId, outfit);

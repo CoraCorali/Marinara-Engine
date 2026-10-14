@@ -162,7 +162,7 @@ export function ForkBondPairs({ chatId, cast }: { chatId: string | null; cast: r
     <section className="flex flex-col gap-2">
       <h3 className="flex items-center gap-1.5 text-[0.6875rem] font-bold uppercase tracking-wide text-[var(--primary)]">
         {localizeUi("ui.chat.forkbonds.betweenThem")}
-        <HelpTooltip text={localizeUi("ui.chat.forkbonds.betweenThemHelp")} wide />
+        <HelpTooltip buttonClassName="-m-2 p-2" text={localizeUi("ui.chat.forkbonds.betweenThemHelp")} wide />
       </h3>
       {(pairs ?? []).map((pair) => (
         <PairCard key={pair.id} pair={pair} cast={cast} chatId={chatId} />

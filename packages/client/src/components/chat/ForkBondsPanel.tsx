@@ -62,7 +62,7 @@ const KIND_EMOJI: Record<ForkBondKind, string> = {
   other: "✨",
 };
 
-const STATUS_LABEL_KEYS: Record<ForkLoveStatus, string> = {
+export const STATUS_LABEL_KEYS: Record<ForkLoveStatus, string> = {
   talking: "ui.chat.forkbonds.stageTalking",
   dating: "ui.chat.forkbonds.stageDating",
   together: "ui.chat.forkbonds.stageTogether",
@@ -711,7 +711,13 @@ export function ForkBondsPanel({ chatId, cast }: Props) {
             {localizeUi("ui.chat.forkbonds.autoUpdate")}
           </button>
         )}
-        <HelpTooltip text={localizeUi("ui.chat.forkbonds.intro")} side="bottom" wide size="0.875rem" />
+        <HelpTooltip
+          buttonClassName="-m-2 p-2"
+          text={localizeUi("ui.chat.forkbonds.intro")}
+          side="bottom"
+          wide
+          size="0.875rem"
+        />
       </div>
 
       <div className="flex flex-col gap-3">

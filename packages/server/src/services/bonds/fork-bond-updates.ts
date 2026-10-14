@@ -387,8 +387,11 @@ export async function undoBondTurn(db: DB, chatId: string, messageId: string): P
           change.before?.kind !== change.after.kind
         ) {
           patch.kind = change.before?.kind;
+          // A kind put back starts at its first rung unless the old one is given.
+          patch.rung = change.before?.rung;
         }
-        if (change.after?.rung !== undefined && pair.rung === change.after.rung) patch.rung = change.before?.rung;
+        if (patch.kind === undefined && change.after?.rung !== undefined && pair.rung === change.after.rung)
+          patch.rung = change.before?.rung;
         if (Object.keys(patch).length > 0) await createBondPairsStorage(db).update(pair.id, patch);
         continue;
       }

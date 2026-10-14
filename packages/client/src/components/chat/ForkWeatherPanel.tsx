@@ -37,7 +37,7 @@ function Section({ title, help, children }: { title: string; help?: string; chil
     <section className="flex flex-col gap-1.5">
       <h3 className="flex items-center gap-1.5 text-[0.6875rem] font-bold uppercase tracking-wide text-[var(--primary)]">
         {title}
-        {help && <HelpTooltip text={help} wide />}
+        {help && <HelpTooltip buttonClassName="-m-2 p-2" text={help} wide />}
       </h3>
       {children}
     </section>

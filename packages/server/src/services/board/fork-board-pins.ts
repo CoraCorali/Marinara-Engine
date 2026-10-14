@@ -227,7 +227,19 @@ export function createBoardPinsStorage(db: DB) {
         this.listForScope("chat", chatId),
         personaId ? this.listForScope("persona", personaId) : Promise.resolve([]),
       ]);
-      return [...personaPins, ...chatPins].filter((pin) => pin.inScene);
+      const inChat = chatPins.filter((pin) => pin.inScene);
+      // A chat's outfit covers the persona board's always-on one for the same person and slot, so
+      // the writer is never told two outfits at once. The persona board itself is left alone.
+      const coveredByChat = (pin: BoardPin) =>
+        pin.category === "wearing" &&
+        Boolean(pin.who) &&
+        inChat.some(
+          (chatPin) =>
+            chatPin.category === "wearing" &&
+            chatPin.who === pin.who &&
+            forkWearSlotsReplacedBy(chatPin.slot).includes(pin.slot as ForkWearSlot),
+        );
+      return [...personaPins.filter((pin) => pin.inScene && !coveredByChat(pin)), ...inChat];
     },
 
     /**

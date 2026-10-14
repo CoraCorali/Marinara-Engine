@@ -3069,6 +3069,8 @@ export function useGenerate() {
 
             case "done": {
               sawDoneEvent = true;
+              // Fork: the bonds agent may have moved People during this reply; re-read it.
+              void qc.invalidateQueries({ queryKey: ["fork-bonds", params.chatId] });
               if (
                 illustrationQueued &&
                 !illustrationSettled &&
@@ -4063,6 +4065,8 @@ export function useGenerate() {
               break;
             }
             case "done": {
+              // Fork: the bonds agent may have moved People during this retry; re-read it.
+              void qc.invalidateQueries({ queryKey: ["fork-bonds", chatId] });
               if (spriteChangeReceived) {
                 qc.invalidateQueries({ queryKey: chatKeys.messages(chatId) });
               }

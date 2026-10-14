@@ -18,7 +18,7 @@ const { getDB, closeDB, registerForkTables } = await import("../../packages/serv
 const { bonds, bondMoments, bondTurns, createBondsStorage, describeMoves, toBond, MAX_BONDS_PER_CHAT } =
   await import("../../packages/server/src/services/bonds/fork-bonds.js");
 const { bondsPromptBlock } = await import("../../packages/server/src/services/generation/fork-bonds-prompt.js");
-const { planBondUpdates, bondsAgentStateBlock, outsiderId, applyBondsAgentResult, listBondsBeforeTurn } =
+const { planBondUpdates, bondsAgentStateBlock, outsiderId, applyBondsAgentResult, listBondsBeforeTurn, undoBondTurn } =
   await import("../../packages/server/src/services/bonds/fork-bond-updates.js");
 
 // ── The shapes ──
@@ -386,6 +386,12 @@ await applyBondsAgentResult(db, "chat-pairs", { pairs: [{ a: "Vee", b: "Gia", ru
 assert.equal((await pairStore.getById(veeGia.id))!.rung, "Dutiful");
 await applyBondsAgentResult(db, "chat-pairs", { pairs: [{ a: "Vee", b: "Gia", rung: "Close" }] }, pairResolve, "msg-p");
 assert.equal((await pairStore.getById(veeGia.id))!.rung, "Dutiful", "two swipes of one reply move a pair one rung");
+// Undoing a change of kind puts the old rung back too, not the old kind's first rung.
+await applyBondsAgentResult(db, "chat-pairs", { pairs: [{ a: "Vee", b: "Gia", kind: "rival" }] }, pairResolve, "msg-k");
+assert.equal((await pairStore.getById(veeGia.id))!.kind, "rival");
+await undoBondTurn(db, "chat-pairs", "msg-k");
+assert.equal((await pairStore.getById(veeGia.id))!.kind, "family");
+assert.equal((await pairStore.getById(veeGia.id))!.rung, "Dutiful", "the swipe brings back the rung it had");
 assert.ok(
   bondsAgentStateBlock([], pairNames, await pairStore.listForChat("chat-pairs")).includes('"a":"Gia","b":"Vee"'),
   "the agent is shown the pairs it can move",

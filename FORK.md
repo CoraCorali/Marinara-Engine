@@ -469,6 +469,56 @@ to a model was traced from its prompt to what is done with the answer.
 - **Two upstream regressions updated** for earlier fork changes: the agent result list now ends with
   the tracker's result, and the weather repaint test knows the field is built by one shared helper.
 
+### Your feedback, built: smaller, linked up, and between the characters
+
+- **Smaller everywhere**: the pill row's buttons and icons are smaller with less gap, panel rows are
+  tighter, and the long explanations moved behind a ? like the rest of Marinara. Text fields keep
+  their size on a phone (`styles/fork.css`) instead of jumping to 16px.
+- **Scene Spark can be put away**: choices are compact cards that open with a chevron, and a ✕ puts
+  them away for good (Re-roll still gets new ones).
+- **The weather panel and the world state are one weather**: the panel shows what the story says
+  now, its chips write the world state, and "Keep it this way" locks the weather and time so the
+  tracker leaves them alone. The tracker's weather tile opens the panel.
+- **Theme effect switches**: a theme can name its effects in CSS comments
+  (`/* @fork-effect id | label | roleplay|everywhere | on|off */`); the weather panel lists them as
+  switches and `<html data-fork-fx-off>` turns the ones you switch off off.
+- **The board knows who wears what**: a wearing pin says who (you, a character, or nobody in the
+  scene), which slot (full outfit, top, shoes, hair, makeup, nails, bag…) and whether the picture is
+  on a model or just the clothes. A new outfit takes the old one out of the scene; shoes replace
+  shoes. Describe it writes the caption from the picture.
+- **A message that mentions a pin sends its picture** with that reply ("the blue sundress she
+  likes"), replacing what it conflicts with for that reply only. The model is told to keep each
+  person's own body and only take the clothes from a picture.
+- **Outfits follow the board**: changing who wears what updates the tracker's outfit line, and when
+  the tracker's outfit changes the app asks whether to take the pin out of the scene.
+- **The persona card**: who you are today, what you are wearing (from the board), where you are,
+  who you are closest to, your stats as rings with a word, and what you are holding. Each line opens
+  where it comes from. It is in the Tracker Panel and the phone's Player & Tracker popup, with an
+  Edit stats button for Marinara's own editor.
+- **Between the characters**: People keeps how two characters stand with each other: a kind, a rung
+  on its ladder, and a line for each side. The tracker agent reports these too, one rung per scene;
+  swipes undo them; the writer and the Director read them.
+- **Relationships in the tracker**: a compact list of bonds and pairs in the Tracker Panel and the
+  Player & Tracker popup, in place of the downloadable Relationship Tracker. People shows a banner to
+  switch that one off when it is still on.
+
+### Final check
+
+- **Fixed after review**: a caption with a small word in it ("dress with lace") is found when typed
+  out; a chat outfit covers your always-on persona-board outfit, so the model is never told two;
+  undoing a pair's change of kind brings back its rung; a pair that changes kind takes the named
+  rung; removing a pair that is gone says so; Relationships and Closest refresh after every reply;
+  the tracker panel keeps Marinara's persona block when no persona is attached; love statuses show
+  as words; outfit sync no longer overwrites one character with another or a stale list; putting
+  choices away cannot bring them back; the weather tile button gets out of the way in lock mode;
+  and the ? buttons and Open People are easier to tap.
+- **`fork` is a reserved chat-metadata namespace** (`forkPersonaToday`), so a package cannot take it;
+  the upstream check for this now passes.
+- **Regressions**: 538 of 540 passed in the full run. The capability check failed on the metadata
+  namespace and now passes. `ruleset-combat-director` passes its checks but sits about 23 seconds
+  before exiting, the same on untouched upstream code, so it can hit the 30-second limit on a slow
+  machine.
+
 ## Upstream files touched
 
 Fork-only code lives in `packages/client/src/lib/fork/`, `Fork*` components, `packages/shared/src/features/fork-bond-shapes.ts`, `packages/server/src/services/import/fork/`
@@ -535,6 +585,18 @@ Edits to upstream files are marked with a `Fork:` comment.
 | `scripts/regressions/weather-effects-suspended-repaint.regression.ts`                      | Knows the shared field helper                                                                     |
 | `packages/client/src/stores/agent.store.ts`                                                | Remembers which choice agent made the choices on screen                                           |
 | `packages/server/src/routes/generate/retry-agents-route.ts`                                | Passes the reply to the tracker update, so a re-roll replaces its move                            |
+| `packages/client/src/components/chat/RoleplayHUDPanels.tsx`                                | Persona card, Edit stats and Relationships in the Player & Tracker popup                          |
+| `packages/client/src/features/tracker-panel/components/TrackerSectionList.tsx`             | Persona card and the Relationships section                                                        |
+| `packages/client/src/features/tracker-panel/components/sections/PersonaInventoryPanel.tsx` | Shows the persona card, with Edit stats for the stat editor                                       |
+| `packages/client/src/features/tracker-panel/components/sections/WorldForecastTile.tsx`     | Opens the weather panel                                                                           |
+| `packages/client/src/components/layout/CustomThemeInjector.tsx`                            | Mounts the theme effect switches                                                                  |
+| `packages/client/src/main.tsx`                                                             | Loads `styles/fork.css`                                                                           |
+| `packages/client/src/components/chat/ChatArea.tsx`                                         | Opens fork panels from the tracker; passes the persona and cast to the board                      |
+| `packages/client/src/components/chat/CyoaChoices.tsx`                                      | Compact choices that open, and a ✕ to put them away                                               |
+| `packages/client/src/hooks/use-generate.ts`                                                | Re-reads People after each reply                                                                  |
+| `packages/server/src/services/generation/lorebook-image-prompt.ts`                         | Optional heading for the board's pictures                                                         |
+| `packages/server/src/routes/generate.routes.ts`                                            | Mentioned pins, names, the persona's today line and the pairs note                                |
+| `packages/shared/src/schemas/gm-verb-table.schema.ts`                                      | Reserves the `fork` chat-metadata namespace                                                       |
 
 ## Known upstream issue kept as is
 

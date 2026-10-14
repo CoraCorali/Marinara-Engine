@@ -5831,6 +5831,7 @@
   "ui.chat.forkboard.whoScene": "The scene",
   "ui.chat.forkboard.whoWears": "Who wears it",
   "ui.chat.forkboard.whoYou": "{{name}} (you)",
+  "ui.chat.forkbonds.afterName": "· {{value}}",
   "ui.chat.forkbonds.agentName": "Relationship Tracker (Fork)",
   "ui.chat.forkbonds.autoUpdate": "Keep this updated automatically",
   "ui.chat.forkbonds.autoUpdateFailed": "Could not switch on automatic updates.",

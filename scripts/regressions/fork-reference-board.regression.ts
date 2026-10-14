@@ -173,6 +173,19 @@ assert.ok(wornNote.includes("- Kyli is wearing (Full outfit): pink zip hoodie"),
 assert.ok(wornNote.includes("- Kyli's hair: blonde spiral curls"));
 assert.ok(wornNote.includes("- Vee is wearing (Full outfit): black tee, jeans"));
 assert.ok(!wornNote.includes("navy pinstripe"), "an outfit out of the scene is not mentioned");
+// A chat outfit covers the persona board's always-on one, so the writer never hears of two.
+const alwaysOn = (await pins.create({
+  scopeType: "persona",
+  scopeId: "persona-wear",
+  imagePath: "/always.png",
+  caption: "grey sweats",
+  category: "wearing",
+  who: "persona",
+  slot: "outfit",
+}))!;
+const withPersona = await pins.listForPrompt("chat-wear", "persona-wear");
+assert.ok(!withPersona.some((pin) => pin.id === alwaysOn.id), "the chat's outfit covers the always-on one");
+assert.equal((await pins.getById(alwaysOn.id))!.inScene, true, "and the persona board is left as it was");
 const flatLay = boardPinsAsImageEntries([{ ...navy, inScene: true }], names);
 assert.ok(flatLay[0]!.name.includes("just the clothes, no one wearing them"), "a flat-lay says there is no model");
 
@@ -185,6 +198,11 @@ assert.equal(
   "one shared word is not enough",
 );
 assert.equal(forkMessageMentionsPin("Mira waves.", "Mira"), true, "a one-word caption matches as a whole word");
+assert.equal(
+  forkMessageMentionsPin("She's in the dress with lace tonight.", "dress with lace"),
+  true,
+  "a caption with a small word in the middle still matches when typed out",
+);
 assert.equal(forkMessageMentionsPin("Admiral waves.", "Mira"), false);
 const mentioned = await pins.listMentioned("chat-wear", null, "She changes into the navy pinstripe shirt for work.");
 assert.deepEqual(

@@ -198,6 +198,8 @@ export const ENGINE_OWNED_METADATA_KEY_PREFIXES = Object.freeze([
   "expression",
   "extended",
   "force",
+  // Fork: forkPersonaToday and the fork's other chat metadata (see FORK.md).
+  "fork",
   "full",
   "game",
   "generation",

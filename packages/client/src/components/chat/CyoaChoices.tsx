@@ -160,14 +160,21 @@ export function CyoaChoices({ messages }: Props) {
   useEffect(() => setExpandedChoice(null), [choices]);
   const handleDismiss = useCallback(async () => {
     if (!activeChatId || isStreaming || isEditing) return;
+    // Saved first, then cleared (as a pick does), so the saved choices cannot be read back in
+    // between. If the save fails they stay, rather than coming back on the next visit.
+    if (persistedChoiceState?.messageId) {
+      try {
+        await updateMessageExtra.mutateAsync({
+          messageId: persistedChoiceState.messageId,
+          extra: { cyoaChoices: [] },
+        });
+      } catch (error) {
+        console.error("Could not put the choices away", error);
+        return;
+      }
+    }
     clearChoicesForActiveChat();
     setExpandedChoice(null);
-    if (persistedChoiceState?.messageId) {
-      await updateMessageExtra.mutateAsync({
-        messageId: persistedChoiceState.messageId,
-        extra: { cyoaChoices: [] },
-      });
-    }
   }, [
     activeChatId,
     clearChoicesForActiveChat,

@@ -198,6 +198,7 @@ export function ForkReferenceBoard({ chatScope, personaScope, personaName = "", 
           </button>
         </div>
         <HelpTooltip
+          buttonClassName="-m-2 p-2"
           text={
             tab === "chat" ? localizeUi("ui.chat.forkboard.thisChatHelp") : localizeUi("ui.chat.forkboard.alwaysOnHelp")
           }

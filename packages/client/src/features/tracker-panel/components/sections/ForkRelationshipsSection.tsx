@@ -7,7 +7,8 @@
 import { useState } from "react";
 import { ArrowLeftRight, HeartHandshake } from "lucide-react";
 import { useTranslation as useUiTranslation } from "react-i18next";
-import type { PresentCharacter } from "@marinara-engine/shared";
+import type { ForkLoveStatus, PresentCharacter } from "@marinara-engine/shared";
+import { STATUS_LABEL_KEYS } from "../../../../components/chat/ForkBondsPanel";
 import { useBondPairs, useBonds, type Bond, type BondPair } from "../../../../hooks/use-fork-bonds";
 import { useCharacter } from "../../../../hooks/use-characters";
 import { openForkPanel } from "../../../../lib/fork/open-panel";
@@ -35,15 +36,20 @@ const ROW_CLASS =
 function BondRow({ bond, present }: { bond: Bond; present: readonly PresentCharacter[] }) {
   const { t: localizeUi } = useUiTranslation();
   const name = useName(bond.characterId, bond.label, present);
+  const status = bond.status ? STATUS_LABEL_KEYS[bond.status as ForkLoveStatus] : undefined;
+  const details = [bond.rung, status ? localizeUi(status) : bond.status].filter(Boolean).join(" · ");
   return (
     <button type="button" onClick={() => openForkPanel("people")} className={ROW_CLASS}>
       <span className="min-w-0 flex-1 truncate">
-        <span className="font-bold text-foreground">{name || "?"}</span>{" "}
-        <span className="text-[var(--muted-foreground)]">
-          {localizeUi("ui.characters.characterversionhistorypanel.value1", {
-            value1: [bond.rung, bond.status].filter(Boolean).join(" · "),
-          })}
-        </span>
+        <span className="font-bold text-foreground">{name || "?"}</span>
+        {details && (
+          <>
+            {" "}
+            <span className="text-[var(--muted-foreground)]">
+              {localizeUi("ui.chat.forkbonds.afterName", { value: details })}
+            </span>
+          </>
+        )}
       </span>
       {bond.drift && (
         <span className="shrink-0 rounded-full bg-foreground/10 px-1.5 py-px text-[0.6875rem] font-semibold">
@@ -123,7 +129,7 @@ export function ForkRelationshipsSection({
           <button
             type="button"
             onClick={() => openForkPanel("people")}
-            className="rounded-full px-2 py-1 text-[0.6875rem] font-semibold text-[var(--primary)] hover:bg-foreground/10"
+            className="flex min-h-8 items-center rounded-full px-2.5 text-[0.6875rem] font-semibold text-[var(--primary)] hover:bg-foreground/10"
           >
             {localizeUi("ui.trackerPanel.forkRelationships.openPeople")}
           </button>

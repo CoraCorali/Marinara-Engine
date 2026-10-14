@@ -313,7 +313,7 @@ function ForkHudRelationships({ chatId, characters }: { chatId: string; characte
         <button
           type="button"
           onClick={() => openForkPanel("people")}
-          className="rounded-full px-2 py-0.5 text-[0.625rem] font-semibold text-[var(--marinara-chat-chrome-accent)] hover:bg-foreground/10"
+          className="-my-1.5 flex min-h-8 items-center rounded-full px-2.5 text-[0.625rem] font-semibold text-[var(--marinara-chat-chrome-accent)] hover:bg-foreground/10"
         >
           {localizeUi("ui.trackerPanel.forkRelationships.openPeople")}
         </button>
