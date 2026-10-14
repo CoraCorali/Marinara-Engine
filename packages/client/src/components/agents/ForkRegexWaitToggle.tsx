@@ -22,7 +22,7 @@ export function ForkRegexWaitToggle({ scriptId }: { scriptId: string }) {
       />
       <span className="flex flex-col gap-0.5">
         <span className="text-xs font-medium">{localizeUi("ui.agents.forkregex.waitForFinish")}</span>
-        <span className="text-[0.625rem] text-[var(--muted-foreground)]">
+        <span className="text-[0.6875rem] text-[var(--muted-foreground)]">
           {localizeUi("ui.agents.forkregex.waitForFinishHelp")}
         </span>
       </span>

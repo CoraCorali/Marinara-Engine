@@ -975,7 +975,7 @@ const EditTextarea = memo(function EditTextarea({
             onClick={handleSaveAndResend}
             disabled={saving}
             aria-label={localizeUi("ui.chat.edittextarea.saveAndResend")}
-            className="pointer-events-auto relative z-30 flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-sky-400/70 hover:bg-sky-400/10 hover:text-sky-400 disabled:pointer-events-none disabled:opacity-50"
+            className="pointer-events-auto relative z-30 flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-[var(--primary)]/80 hover:bg-[var(--primary)]/10 hover:text-[var(--primary)] disabled:pointer-events-none disabled:opacity-50"
             title={localizeUi("ui.chat.edittextarea.saveAndResendTitle")}
           >
             <SendHorizontal size="0.8125rem" />

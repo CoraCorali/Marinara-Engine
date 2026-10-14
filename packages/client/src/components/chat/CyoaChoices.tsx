@@ -407,10 +407,11 @@ export function CyoaChoices({ messages }: Props) {
                 {parsed.kind !== "plain" && (
                   <span
                     className={cn(
-                      "mb-1.5 inline-block rounded-full px-2 py-0.5 text-[0.625rem] font-bold uppercase tracking-wide",
+                      "mb-1.5 inline-block rounded-full px-2 py-0.5 text-[0.6875rem] font-bold uppercase tracking-wide",
+                      // Theme colours: lavender on pale sky was about 2.5:1 and hard to read.
                       parsed.kind === "direction"
-                        ? "bg-[var(--pastel-sky)] text-[var(--rgb-blue)]"
-                        : "bg-[var(--pastel-rose)] text-[var(--rgb-violet)]",
+                        ? "bg-[color-mix(in_srgb,var(--primary)_18%,transparent)] text-[var(--primary)]"
+                        : "bg-[var(--secondary)] text-foreground/85",
                     )}
                   >
                     {localizeUi(

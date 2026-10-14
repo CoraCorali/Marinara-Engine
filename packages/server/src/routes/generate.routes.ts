@@ -229,9 +229,12 @@ import { createCharactersStorage } from "../services/storage/characters.storage.
 import { resolveChatUserIdentity } from "../services/chat-user-identity.js";
 import { createBoardPinsStorage } from "../services/board/fork-board-pins.js";
 import { boardPinsAsImageEntries, boardPinsNoteLine } from "../services/generation/fork-board-prompt.js";
-import { createBondsStorage } from "../services/bonds/fork-bonds.js";
 import { bondsPromptBlock } from "../services/generation/fork-bonds-prompt.js";
-import { applyBondsAgentResult, loadBondsAgentState } from "../services/bonds/fork-bond-updates.js";
+import {
+  applyBondsAgentResult,
+  listBondsBeforeTurn,
+  loadBondsAgentState,
+} from "../services/bonds/fork-bond-updates.js";
 import { createAgentsStorage } from "../services/storage/agents.storage.js";
 import { createGameStateStorage, parseStoredRulesetLive } from "../services/storage/game-state.storage.js";
 import {
@@ -5199,6 +5202,7 @@ export async function generateRoutes(app: FastifyInstance, options: GenerateRout
                     app.db,
                     input.chatId,
                     (characterId) => charInfo.find((character) => character.id === characterId)?.name ?? "",
+                    input.regenerateMessageId,
                   ),
                 }
               : {},
@@ -7727,18 +7731,24 @@ export async function generateRoutes(app: FastifyInstance, options: GenerateRout
           if (chatMode === "roleplay") {
             const forkNoteParts = [
               bondsPromptBlock(
-                await createBondsStorage(app.db).listForChat(input.chatId),
+                // A swipe is written against where things stood before the reply it replaces.
+                await listBondsBeforeTurn(app.db, input.chatId, input.regenerateMessageId),
                 (characterId) => charInfo.find((character) => character.id === characterId)?.name ?? "",
                 personaName,
               ),
               boardPinsNoteLine(forkBoardPins),
             ].filter(Boolean);
             if (forkNoteParts.length > 0) {
-              preparedMessagesForGen.push({
-                role: "system",
+              const forkNote = {
+                role: "system" as const,
                 content: forkNoteParts.join("\n\n"),
-                contextKind: "injection",
-              });
+                contextKind: "injection" as const,
+              };
+              // A preset's assistant prefill has to stay the last turn, or the model starts a fresh
+              // reply and the prefill is glued onto the front of it. The note goes just before it.
+              const last = preparedMessagesForGen[preparedMessagesForGen.length - 1];
+              if (last?.role === "assistant") preparedMessagesForGen.splice(-1, 0, forkNote);
+              else preparedMessagesForGen.push(forkNote);
             }
           }
           if (chatMode === "conversation" && conversationIsGroup && !input.impersonate) {

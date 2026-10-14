@@ -204,8 +204,8 @@ export function ForkReferenceBoard({ chatScope, personaScope }: Props) {
   const inSceneCount = (pins ?? []).filter((pin) => pin.inScene).length;
 
   return (
-    <div className="flex flex-col gap-3 p-3">
-      <div className="flex items-center gap-2">
+    <div className="flex flex-col gap-3">
+      <div className="flex flex-wrap items-center gap-2">
         <div className="flex gap-1 rounded-full bg-[var(--secondary)] p-1">
           <button
             type="button"
@@ -218,6 +218,7 @@ export function ForkReferenceBoard({ chatScope, personaScope }: Props) {
             type="button"
             onClick={() => setTab("persona")}
             disabled={!personaScope}
+            title={personaScope ? undefined : localizeUi("ui.chat.forkboard.pickAPersonaFirst")}
             className={`min-h-10 whitespace-nowrap rounded-full px-3 text-[0.8125rem] font-semibold disabled:opacity-40 ${tab === "persona" ? "bg-[var(--primary)] text-[var(--primary-foreground)]" : "text-foreground/70"}`}
           >
             {localizeUi("ui.chat.forkboard.alwaysOn")}
@@ -371,7 +372,7 @@ export function ForkReferenceBoard({ chatScope, personaScope }: Props) {
                     type="button"
                     onClick={() => void handleDelete(pin.id)}
                     aria-label={localizeUi("ui.chat.forkboard.removePin")}
-                    className="flex h-11 w-9 shrink-0 items-center justify-center rounded text-[#b04a3f]"
+                    className="flex h-11 w-9 shrink-0 items-center justify-center rounded text-[var(--destructive)]"
                   >
                     <Trash2 size="0.875rem" />
                   </button>

@@ -424,6 +424,50 @@ export async function loadBondsAgentState(
   db: DB,
   chatId: string,
   nameFor: (characterId: string) => string,
+  /** A reply being swiped or re-read: the agent sees the bonds as they were before it. */
+  messageId?: string | null,
 ): Promise<string> {
-  return bondsAgentStateBlock(await createBondsStorage(db).listForChat(chatId), nameFor);
+  return bondsAgentStateBlock(await listBondsBeforeTurn(db, chatId, messageId), nameFor);
+}
+
+/**
+ * The chat's bonds as they stood before one reply's tracker run, without writing anything.
+ *
+ * A swipe or re-roll is told where things stood before the reply it replaces. Otherwise the agent
+ * saw the old swipe's "Confidant", reported no change, and the undo that runs before its result is
+ * applied quietly put the bond back to "Close"; the writer, likewise, was told about a move from a
+ * reply that is being thrown away. Same rule as the undo itself: a value is only shown as it was
+ * while it still holds what that run left.
+ */
+export async function listBondsBeforeTurn(db: DB, chatId: string, messageId?: string | null): Promise<Bond[]> {
+  const current = await createBondsStorage(db).listForChat(chatId);
+  if (!messageId) return current;
+  const rows = (await db
+    .select()
+    .from(bondTurns)
+    .where(and(eq(bondTurns.chatId, chatId), eq(bondTurns.messageId, messageId)))) as unknown as {
+    changes: string;
+  }[];
+  const changes: TurnChange[] = rows.flatMap((row) => {
+    try {
+      const parsed = JSON.parse(row.changes) as unknown;
+      return Array.isArray(parsed) ? (parsed as TurnChange[]) : [];
+    } catch {
+      return [];
+    }
+  });
+  if (changes.length === 0) return current;
+  return current.map((bond) => {
+    const change = changes.find((entry) => entry.bondId === bond.id);
+    if (!change) return bond;
+    const view: Bond = { ...bond };
+    for (const key of TURN_KEYS) {
+      if (change.after?.[key] === undefined || turnValue(bond, key) !== change.after[key]) continue;
+      const before = change.before?.[key] ?? "";
+      if (key === "status") view.status = (before || null) as Bond["status"];
+      else if (key === "kind") view.kind = before as Bond["kind"];
+      else view[key] = before;
+    }
+    return view;
+  });
 }

@@ -1,7 +1,7 @@
 // ──────────────────────────────────────────────
 // Fork: the relationship tracker — Pura-style dating-sim cards, shaped by what kind of bond it is
 // ──────────────────────────────────────────────
-import { useEffect, useId, useState, type InputHTMLAttributes, type TextareaHTMLAttributes } from "react";
+import { useEffect, useId, useRef, useState, type InputHTMLAttributes, type TextareaHTMLAttributes } from "react";
 import { ChevronDown, Loader2, Plus, Trash2, Wand2, Check, X } from "lucide-react";
 import { toast } from "sonner";
 import { useTranslation as useUiTranslation } from "react-i18next";
@@ -244,7 +244,7 @@ function MomentRow({
 }: {
   moment: BondMoment;
   onSave: (text: string) => void;
-  onDelete: () => void;
+  onDelete: () => void | Promise<void>;
 }) {
   const { t: localizeUi } = useUiTranslation();
   const when = new Date(moment.createdAt);
@@ -266,7 +266,7 @@ function MomentRow({
         )}
         <button
           type="button"
-          onClick={onDelete}
+          onClick={() => void onDelete()}
           aria-label={localizeUi("ui.chat.forkbonds.removeMoment")}
           title={localizeUi("ui.chat.forkbonds.removeMoment")}
           className="ml-auto flex h-9 w-9 items-center justify-center rounded-full text-[var(--muted-foreground)] hover:bg-foreground/10"
@@ -292,19 +292,26 @@ function BondCard({
   avatarUrl,
   moments,
   chatId,
+  justAdded = false,
 }: {
   bond: Bond;
   name: string;
   avatarUrl?: string | null;
   moments: BondMoment[];
   chatId: string | null;
+  /** Someone just added: open, and brought into view, so the tap visibly did something. */
+  justAdded?: boolean;
 }) {
   const { t: localizeUi } = useUiTranslation();
   const updateBond = useUpdateBond(chatId);
   const deleteBond = useDeleteBond(chatId);
   const updateMoment = useUpdateMoment(chatId);
   const deleteMoment = useDeleteMoment(chatId);
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(justAdded);
+  const cardRef = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (justAdded) cardRef.current?.scrollIntoView({ block: "nearest" });
+  }, [justAdded]);
   const shape = FORK_BOND_SHAPES[bond.kind];
   const { below, above } = forkBondNeighbours(bond.kind, bond.rung);
   const patch = (data: BondPatch) => updateBond.mutate({ id: bond.id, ...data });
@@ -314,7 +321,10 @@ function BondCard({
   const summary = [bond.rung, bond.condition].filter(Boolean).join(" · ");
 
   return (
-    <article className="shrink-0 overflow-hidden rounded-2xl border border-[color-mix(in_srgb,var(--primary)_45%,var(--border))] bg-[var(--card)] shadow-[0_10px_24px_rgba(0,0,0,0.25)]">
+    <article
+      ref={cardRef}
+      className="shrink-0 overflow-hidden rounded-2xl border border-[color-mix(in_srgb,var(--primary)_45%,var(--border))] bg-[var(--card)] shadow-[0_10px_24px_rgba(0,0,0,0.25)]"
+    >
       <button
         type="button"
         onClick={() => setOpen((value) => !value)}
@@ -346,7 +356,7 @@ function BondCard({
         <div className="flex flex-col gap-3 p-3">
           {bond.kind === "love" && (
             <div className="-mx-3 -mt-3 flex items-center gap-2 border-b border-[color-mix(in_srgb,var(--primary)_30%,transparent)] bg-[linear-gradient(90deg,color-mix(in_srgb,var(--primary)_26%,transparent),transparent)] px-3 py-1.5">
-              <span className="shrink-0 text-[0.625rem] font-bold uppercase tracking-[0.14em] text-[var(--primary)]">
+              <span className="shrink-0 text-[0.6875rem] font-bold uppercase tracking-[0.14em] text-[var(--primary)]">
                 {localizeUi("ui.chat.forkbonds.route")}
               </span>
               <DraftInput
@@ -451,7 +461,7 @@ function BondCard({
 
           {bond.kind === "love" && (
             <div>
-              <div className="mb-1 text-[0.625rem] font-bold uppercase tracking-wide text-[var(--muted-foreground)]">
+              <div className="mb-1 text-[0.6875rem] font-bold uppercase tracking-wide text-[var(--primary)]">
                 {localizeUi("ui.chat.forkbonds.status")}
               </div>
               <div className="flex flex-wrap gap-1.5">
@@ -476,7 +486,7 @@ function BondCard({
           )}
 
           <div>
-            <div className="mb-1 text-[0.625rem] font-bold uppercase tracking-wide text-[var(--muted-foreground)]">
+            <div className="mb-1 text-[0.6875rem] font-bold uppercase tracking-wide text-[var(--primary)]">
               {localizeUi("ui.chat.forkbonds.progress")}
             </div>
             {/* Rung names wrap rather than cut off: "Annoya…" and "Inti…" said nothing. */}
@@ -535,7 +545,21 @@ function BondCard({
                     key={moment.id}
                     moment={moment}
                     onSave={(text) => updateMoment.mutate({ id: moment.id, text })}
-                    onDelete={() => deleteMoment.mutate(moment.id)}
+                    onDelete={async () => {
+                      // A moment you wrote up is asked about first; an empty one just goes.
+                      if (
+                        moment.text.trim() &&
+                        !(await showConfirmDialog({
+                          title: localizeUi("ui.chat.forkbonds.removeMoment"),
+                          message: localizeUi("ui.chat.forkbonds.removeMomentBody"),
+                          confirmLabel: localizeUi("ui.chat.forkbonds.removeMomentConfirm"),
+                          chatStyle: true,
+                        }))
+                      ) {
+                        return;
+                      }
+                      deleteMoment.mutate(moment.id);
+                    }}
                   />
                 ))}
               </ol>
@@ -580,6 +604,7 @@ export function ForkBondsPanel({ chatId, cast }: Props) {
   const updateAgent = useUpdateAgent();
   const updateMeta = useUpdateChatMetadata({ serialize: true });
   const [adding, setAdding] = useState("");
+  const [justAddedId, setJustAddedId] = useState<string | null>(null);
   const [connecting, setConnecting] = useState(false);
 
   // Whether an agent already keeps this chat's tracker up to date.
@@ -681,6 +706,7 @@ export function ForkBondsPanel({ chatId, cast }: Props) {
               avatarUrl={member?.avatarUrl}
               moments={(moments ?? []).filter((moment) => moment.bondId === bond.id)}
               chatId={chatId}
+              justAdded={bond.id === justAddedId}
             />
           );
         })}
@@ -711,10 +737,16 @@ export function ForkBondsPanel({ chatId, cast }: Props) {
             if (!adding) return;
             if (adding === OUTSIDER) {
               // Its own id, so it never collides with a card that appears later.
-              addBond.mutate({ characterId: `outsider-${Date.now()}`, label: "", kind: "other" });
+              addBond.mutate(
+                { characterId: `outsider-${Date.now()}`, label: "", kind: "other" },
+                { onSuccess: (bond) => setJustAddedId(bond.id) },
+              );
             } else {
               const member = untracked.find((entry) => entry.id === adding);
-              addBond.mutate({ characterId: adding, label: member?.name ?? "", kind: "other" });
+              addBond.mutate(
+                { characterId: adding, label: member?.name ?? "", kind: "other" },
+                { onSuccess: (bond) => setJustAddedId(bond.id) },
+              );
             }
             setAdding("");
           }}

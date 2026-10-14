@@ -1227,6 +1227,7 @@ async function buildRetryAgentContext(args: {
               db,
               chatId,
               (characterId) => charInfo.find((character) => character.id === characterId)?.name ?? "",
+              retryVisibleAnchor?.messageId,
             ),
           }
         : {},

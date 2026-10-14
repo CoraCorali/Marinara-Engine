@@ -1962,7 +1962,8 @@ export const ChatInput = memo(function ChatInput({
                   className={cn(
                     ROLEPLAY_AGENT_ACTION_BUTTON_CLASS,
                     pushStoryMode
-                      ? "bg-foreground/10 text-foreground ring-1 ring-foreground/25"
+                      ? // Fork: armed reads as armed, in the theme's colour.
+                        "bg-[color-mix(in_srgb,var(--primary)_18%,transparent)] text-[var(--primary)] ring-1 ring-[var(--primary)]"
                       : FORK_BAR_PILL_IDLE_CLASS,
                   )}
                   title={

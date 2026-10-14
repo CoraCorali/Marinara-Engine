@@ -3,7 +3,20 @@
 // ──────────────────────────────────────────────
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ForkBondKind, ForkLoveStatus } from "@marinara-engine/shared";
+import { toast } from "sonner";
 import { api } from "../lib/api-client";
+import { translate } from "../localization/i18n";
+
+/**
+ * A failed save says so. Without this an edit that did not reach the server just snapped back on
+ * the next read, and looked like the panel ignoring the tap. One toast id, so a burst of failures
+ * (the server is down) shows once.
+ */
+function saveFailed(error: unknown) {
+  toast.error(error instanceof Error && error.message ? error.message : translate("ui.chat.forkbonds.couldNotSave"), {
+    id: "fork-bonds-save",
+  });
+}
 
 export interface Bond {
   id: string;
@@ -80,6 +93,7 @@ export function useAddBond(chatId: string | null) {
     mutationFn: (input: { characterId: string; label?: string; kind?: ForkBondKind }) =>
       api.post<Bond>("/fork-bonds/bonds", { chatId, ...input }),
     onSuccess: invalidate,
+    onError: saveFailed,
   });
 }
 
@@ -88,6 +102,7 @@ export function useUpdateBond(chatId: string | null) {
   return useMutation({
     mutationFn: ({ id, ...data }: { id: string } & BondPatch) => api.patch<Bond>(`/fork-bonds/bonds/${id}`, data),
     onSuccess: invalidate,
+    onError: saveFailed,
   });
 }
 
@@ -96,6 +111,7 @@ export function useDeleteBond(chatId: string | null) {
   return useMutation({
     mutationFn: (id: string) => api.delete<{ success: boolean }>(`/fork-bonds/bonds/${id}`),
     onSuccess: invalidate,
+    onError: saveFailed,
   });
 }
 
@@ -105,6 +121,7 @@ export function useUpdateMoment(chatId: string | null) {
     mutationFn: ({ id, text }: { id: string; text: string }) =>
       api.patch<BondMoment>(`/fork-bonds/moments/${id}`, { text }),
     onSuccess: invalidate,
+    onError: saveFailed,
   });
 }
 
@@ -113,5 +130,6 @@ export function useDeleteMoment(chatId: string | null) {
   return useMutation({
     mutationFn: (id: string) => api.delete<{ success: boolean }>(`/fork-bonds/moments/${id}`),
     onSuccess: invalidate,
+    onError: saveFailed,
   });
 }

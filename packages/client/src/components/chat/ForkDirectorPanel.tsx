@@ -6,6 +6,7 @@ import { Clapperboard, Loader2, RotateCcw, SendHorizontal } from "lucide-react";
 import { useTranslation as useUiTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { api } from "../../lib/api-client";
+import { showConfirmDialog } from "../../lib/app-dialogs";
 import { useUIStore } from "../../stores/ui.store";
 
 export interface DirectorTurn {
@@ -76,6 +77,8 @@ export function ForkDirectorPanel({
         const data = await api.post<{ say: string; note: string }>("/fork-director/talk", {
           chatId,
           messages: nextTurns,
+          // So the Director builds on the note as it stands, edits included.
+          note,
           debugMode,
         });
         onChange([...nextTurns, { role: "assistant", content: data.say }], data.note || note);
@@ -96,15 +99,25 @@ export function ForkDirectorPanel({
   const takeNumber = Math.max(1, turns.filter((turn) => turn.role === "assistant").length);
 
   return (
-    <div className="flex max-h-[72vh] min-h-[24rem] flex-col">
+    // On a phone the dialog is full screen and the panel fills it, so the note sits at the bottom
+    // instead of leaving a dead band under it; on a wider screen it keeps to its old height.
+    <div className="flex min-h-[24rem] flex-1 flex-col sm:max-h-[72vh]">
       <div className="flex items-start justify-between gap-2 pb-2">
         <p className="text-xs text-[var(--muted-foreground)]">{localizeUi("ui.chat.forkdirector.offTheRecord")}</p>
         {turns.length > 0 && (
           <button
             type="button"
-            onClick={() => onChange([], "")}
+            onClick={async () => {
+              const ok = await showConfirmDialog({
+                title: localizeUi("ui.chat.forkdirector.startOver"),
+                message: localizeUi("ui.chat.forkdirector.startOverBody"),
+                confirmLabel: localizeUi("ui.chat.forkdirector.startOverConfirm"),
+                chatStyle: true,
+              });
+              if (ok) onChange([], "");
+            }}
             disabled={sending}
-            className="flex min-h-8 shrink-0 items-center gap-1 rounded-full px-2 text-[0.6875rem] font-semibold text-[var(--muted-foreground)] hover:text-foreground disabled:opacity-50"
+            className="flex min-h-10 shrink-0 items-center gap-1 rounded-full px-2 text-[0.6875rem] font-semibold text-[var(--muted-foreground)] hover:text-foreground disabled:opacity-50"
           >
             <RotateCcw size="0.6875rem" />
             {localizeUi("ui.chat.forkdirector.startOver")}
@@ -213,14 +226,15 @@ export function ForkDirectorPanel({
       {/* The note and the two buttons are what you came for, so they are pinned under the
           conversation rather than scrolling away inside it. The note is editable: the model's
           wording is a starting point, not a verdict. */}
-      {/* The note is a film slate: a striped clapper bar, then the board you chalk the direction on. */}
+      {/* The note is a film slate: a striped clapper bar, then the board you chalk the direction on.
+          The board is always dark, as a slate is, but tinted with the theme's colour. */}
       <div className="mt-3 overflow-hidden rounded-xl shadow-[0_8px_22px_rgba(0,0,0,0.35)]">
         <div
           aria-hidden="true"
-          className="h-4 origin-bottom-left -rotate-[2deg] bg-[repeating-linear-gradient(-45deg,#f5f2ea_0_12px,#1c1b1f_12px_24px)]"
+          className="h-4 origin-bottom-left -rotate-[2deg] bg-[repeating-linear-gradient(-45deg,#f5f2ea_0_12px,color-mix(in_srgb,var(--primary)_14%,#121218)_12px_24px)]"
         />
-        <div className="bg-[#1c1b1f] p-3 text-[#f5f2ea]">
-          <div className="mb-1.5 flex items-center justify-between border-b border-[#f5f2ea]/25 pb-1.5 font-mono text-[0.625rem] font-bold uppercase tracking-[0.18em]">
+        <div className="bg-[color-mix(in_srgb,var(--primary)_14%,#121218)] p-3 text-[#f5f2ea]">
+          <div className="mb-1.5 flex items-center justify-between border-b border-[#f5f2ea]/25 pb-1.5 font-mono text-[0.6875rem] font-bold uppercase tracking-[0.18em]">
             <label htmlFor="fork-director-note">{localizeUi("ui.chat.forkdirector.theNoteIllUse")}</label>
             <span className="text-[#f5f2ea]/70">{localizeUi("ui.chat.forkdirector.take", { take: takeNumber })}</span>
           </div>
@@ -266,7 +280,7 @@ function DirectorAvatar() {
   return (
     <span
       aria-hidden="true"
-      className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[#1c1b1f] text-[#f5f2ea] ring-2 ring-[color-mix(in_srgb,var(--primary)_60%,transparent)]"
+      className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-[color-mix(in_srgb,var(--primary)_14%,#121218)] text-[#f5f2ea] ring-2 ring-[color-mix(in_srgb,var(--primary)_60%,transparent)]"
     >
       <Clapperboard size="0.875rem" />
     </span>

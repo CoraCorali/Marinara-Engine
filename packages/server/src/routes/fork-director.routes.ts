@@ -95,6 +95,8 @@ export async function forkDirectorRoutes(app: FastifyInstance) {
       messages?: unknown;
       connectionId?: unknown;
       debugMode?: unknown;
+      /** The note as it stands in the panel, which the writer may have edited by hand. */
+      note?: unknown;
     };
     const chatId = typeof body.chatId === "string" ? body.chatId : "";
     if (!chatId) return reply.status(400).send({ error: "chatId is required" });
@@ -217,10 +219,14 @@ export async function forkDirectorRoutes(app: FastifyInstance) {
       standing,
     });
 
-    const promptMessages = [
-      { role: "system" as const, content: context ? `${SYSTEM_PROMPT}\n\n${context}` : SYSTEM_PROMPT },
-      ...turns,
-    ];
+    // The Director answers in JSON but its past answers come back as plain words, so without this it
+    // never saw its own earlier notes, and a note the writer had edited was overwritten next time.
+    const currentNote = typeof body.note === "string" ? body.note.trim().slice(0, MAX_MESSAGE_CHARS) : "";
+    const noteBlock = currentNote
+      ? `<current_note>\n${currentNote}\n</current_note>\nThis is the note as it stands now. The writer may have edited it by hand: keep their wording unless this conversation changes what should happen, and return it unchanged in "note" when nothing new is decided.`
+      : "";
+    const system = [SYSTEM_PROMPT, context, noteBlock].filter(Boolean).join("\n\n");
+    const promptMessages = [{ role: "system" as const, content: system }, ...turns];
     logDebugOverride(
       body.debugMode === true || isDebugAgentsEnabled(),
       "[debug/fork-director] prompt for chat %s:\n%s",
@@ -243,8 +249,10 @@ export async function forkDirectorRoutes(app: FastifyInstance) {
     if (start >= 0 && end > start) {
       try {
         const parsed = JSON.parse(raw.slice(start, end + 1)) as { say?: unknown; note?: unknown };
-        if (typeof parsed.say === "string" && parsed.say.trim()) say = parsed.say.trim();
         if (typeof parsed.note === "string") note = parsed.note.trim();
+        if (typeof parsed.say === "string" && parsed.say.trim()) say = parsed.say.trim();
+        // Valid JSON with only a note: show the note rather than a block of raw JSON.
+        else if (note) say = note;
       } catch {
         // Keep the raw text.
       }

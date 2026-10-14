@@ -18,7 +18,7 @@ const { getDB, closeDB, registerForkTables } = await import("../../packages/serv
 const { bonds, bondMoments, bondTurns, createBondsStorage, describeMoves, toBond, MAX_BONDS_PER_CHAT } =
   await import("../../packages/server/src/services/bonds/fork-bonds.js");
 const { bondsPromptBlock } = await import("../../packages/server/src/services/generation/fork-bonds-prompt.js");
-const { planBondUpdates, bondsAgentStateBlock, outsiderId, applyBondsAgentResult } =
+const { planBondUpdates, bondsAgentStateBlock, outsiderId, applyBondsAgentResult, listBondsBeforeTurn } =
   await import("../../packages/server/src/services/bonds/fork-bond-updates.js");
 
 // ── The shapes ──
@@ -294,6 +294,10 @@ const solResolve = (name: string) => (name === "Sol" ? "char-sol" : null);
 const reading = { bonds: [{ who: "Sol", rung: "Devoted", status: "dating", turn: "The kiss." }] };
 await applyBondsAgentResult(db, "chat-swipe", reading, solResolve, "msg-1");
 assert.equal((await store.getById(swipeBond.id))!.rung, "Confidant");
+const beforeReply = (await listBondsBeforeTurn(db, "chat-swipe", "msg-1")).find((bond) => bond.id === swipeBond.id)!;
+assert.equal(beforeReply.rung, "Close", "a swipe is shown the bond as it was before the reply it replaces");
+assert.equal(beforeReply.status, "talking");
+assert.equal((await store.getById(swipeBond.id))!.rung, "Confidant", "and nothing was written to show it");
 await applyBondsAgentResult(db, "chat-swipe", reading, solResolve, "msg-1");
 await applyBondsAgentResult(db, "chat-swipe", reading, solResolve, "msg-1");
 const swiped = (await store.getById(swipeBond.id))!;

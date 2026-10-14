@@ -7,6 +7,7 @@ import { Loader2, Plus, RotateCcw, WandSparkles, X } from "lucide-react";
 import { useTranslation as useUiTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { api } from "../../lib/api-client";
+import { showConfirmDialog } from "../../lib/app-dialogs";
 import { Modal } from "../ui/Modal";
 import { cn } from "../../lib/utils";
 import { useUIStore } from "../../stores/ui.store";
@@ -153,6 +154,8 @@ export function ForkFixPart({ chatId, messages, onEdit, busy }: Props) {
   const [instruction, setInstruction] = useState("");
   const [replacement, setReplacement] = useState<string | null>(null);
   const [rewriting, setRewriting] = useState(false);
+  const holdTargetRef = useRef(false);
+  holdTargetRef.current = replacement !== null || rewriting;
   const [saving, setSaving] = useState(false);
   const [showBefore, setShowBefore] = useState(false);
   const messagesRef = useRef(messages);
@@ -264,7 +267,8 @@ export function ForkFixPart({ chatId, messages, onEdit, busy }: Props) {
   // ── Tapping a mark opens the fixer on its sentence ──
   useEffect(() => {
     const onClick = (event: MouseEvent) => {
-      if (busy || marksRef.current.length === 0) return;
+      // A rewrite waiting to be used is not thrown away by tapping another mark.
+      if (busy || holdTargetRef.current || marksRef.current.length === 0) return;
       const selection = document.getSelection();
       if (selection && !selection.isCollapsed) return;
       const caret = caretAt(event.clientX, event.clientY);
@@ -297,7 +301,8 @@ export function ForkFixPart({ chatId, messages, onEdit, busy }: Props) {
     if (!glow) return;
     const HighlightCtor = (globalThis as unknown as { Highlight?: new (...ranges: Range[]) => unknown }).Highlight;
     if (registry && HighlightCtor) registry.set(TARGET_HIGHLIGHT_NAME, new HighlightCtor(glow));
-    elementOf(glow.startContainer)?.scrollIntoView({ block: "start", behavior: "smooth" });
+    const still = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    elementOf(glow.startContainer)?.scrollIntoView({ block: "start", behavior: still ? "auto" : "smooth" });
     return () => registry?.delete(TARGET_HIGHLIGHT_NAME);
   }, [glow]);
 
@@ -416,7 +421,7 @@ export function ForkFixPart({ chatId, messages, onEdit, busy }: Props) {
               </button>
             </div>
 
-            <div className="flex min-h-0 flex-col gap-3 overflow-y-auto px-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
+            <div className="flex min-h-0 flex-col gap-3 overflow-y-auto px-4 pb-[max(1rem,var(--mari-safe-area-inset-bottom,env(safe-area-inset-bottom)))]">
               {replacement !== null && (
                 <div
                   role="group"
@@ -638,7 +643,7 @@ function SlopListEditor({ latestReply }: { latestReply: string }) {
           <li
             key={`${index}-${phrase}`}
             className={cn(
-              "flex min-h-9 items-center gap-1 rounded-full border pl-3 pr-1 text-xs font-semibold",
+              "flex min-h-10 items-center gap-0.5 rounded-full border pl-3 pr-0.5 text-xs font-semibold",
               inLatest(phrase)
                 ? "border-[rgba(255,150,30,0.7)] bg-[rgba(255,160,40,0.16)] text-foreground"
                 : "border-[var(--border)] bg-[var(--secondary)] text-foreground/85",
@@ -649,7 +654,7 @@ function SlopListEditor({ latestReply }: { latestReply: string }) {
               type="button"
               onClick={() => setPhrases(phrases.filter((entry) => entry !== phrase))}
               aria-label={localizeUi("ui.chat.forkfix.removePhrase", { phrase })}
-              className="flex h-7 w-7 items-center justify-center rounded-full text-[var(--muted-foreground)] hover:bg-foreground/10"
+              className="flex h-9 w-9 items-center justify-center rounded-full text-[var(--muted-foreground)] hover:bg-foreground/10"
             >
               <X size="0.75rem" />
             </button>
@@ -659,7 +664,16 @@ function SlopListEditor({ latestReply }: { latestReply: string }) {
 
       <button
         type="button"
-        onClick={resetPhrases}
+        onClick={async () => {
+          // One tap would otherwise throw away every phrase you added.
+          const ok = await showConfirmDialog({
+            title: localizeUi("ui.chat.forkfix.resetList"),
+            message: localizeUi("ui.chat.forkfix.resetListBody"),
+            confirmLabel: localizeUi("ui.chat.forkfix.resetListConfirm"),
+            chatStyle: true,
+          });
+          if (ok) resetPhrases();
+        }}
         className="flex min-h-11 items-center justify-center gap-2 rounded-xl border-2 border-[var(--border)] text-sm font-semibold text-foreground"
       >
         <RotateCcw size="0.875rem" />

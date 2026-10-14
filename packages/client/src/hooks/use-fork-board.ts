@@ -2,7 +2,9 @@
 // Fork: Reference board pins (React Query)
 // ──────────────────────────────────────────────
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 import { api } from "../lib/api-client";
+import { translate } from "../localization/i18n";
 
 export const BOARD_PIN_CATEGORIES = ["wearing", "place", "person", "thing", "vibe"] as const;
 export type BoardPinCategory = (typeof BOARD_PIN_CATEGORIES)[number];
@@ -66,6 +68,13 @@ export function useUpdateBoardPin(scope: BoardScope) {
       inScene?: boolean;
       order?: number;
     }) => api.patch<BoardPin>(`/fork-board/pins/${id}`, data),
+    // Captions, categories, in-scene and order all save through here; a failure says so once,
+    // instead of the change quietly snapping back on the next read.
+    onError: (error: unknown) =>
+      toast.error(
+        error instanceof Error && error.message ? error.message : translate("ui.chat.forkboard.couldNotSave"),
+        { id: "fork-board-save" },
+      ),
     onSuccess: () => qc.invalidateQueries({ queryKey: boardKeys.pins(scope) }),
   });
 }

@@ -3697,6 +3697,7 @@ const LocalChatArea = memo(function LocalChatArea({
         title={localizeUi("ui.chat.forkdirector.title")}
         width="max-w-md"
         mobileFullscreen
+        contentClassName="flex flex-col"
       >
         {activeChatId && (
           <ForkDirectorPanel
