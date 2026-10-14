@@ -105,6 +105,8 @@ const CHAT_HTML_ALLOWED_ATTR = [
   "href",
   "id",
   "loading",
+  // A <details open> block (from a regex or a card) starts open, as it was written.
+  "open",
   "rel",
   "rowspan",
   "src",

@@ -213,6 +213,13 @@ assert.equal((await regex.list()).filter((script) => isPackScript(script, preset
 const orphan = await importMarinara({ ...file("My Preset", "x", "BOLT"), replacePresetId: "no-such-id" } as never, db);
 assert.equal(orphan.success, false);
 
+// A damaged file is refused before the preset is touched.
+const damaged = file("My Preset", "Broken", "BOLT") as { data: Record<string, unknown> };
+damaged.data.sections = [null];
+const refused = await importMarinara({ ...damaged, replacePresetId: presetId } as never, db);
+assert.equal(refused.success, false);
+assert.equal((await prompts.listSections(presetId))[0]!.name, "Fourth section", "the preset keeps its sections");
+
 // ── Export carries the pack ──
 const exported = buildPresetRegexPack(await regex.list(), presetId);
 assert.deepEqual(exported.map((script) => script.name).sort(), ["My own script", "Pack script"]);

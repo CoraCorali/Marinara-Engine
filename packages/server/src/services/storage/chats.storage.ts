@@ -40,7 +40,7 @@ import {
   conversationCallMessages,
   lorebookEntries,
 } from "../../db/schema/index.js";
-import { removeForkChatData } from "../fork-chat-data.js";
+import { forgetForkReplies, removeForkChatData } from "../fork-chat-data.js";
 import { newId, now } from "../../utils/id-generator.js";
 import { parseSourceMessageRefs } from "./lorebook-provenance.js";
 import { existsSync, rmSync } from "fs";
@@ -3230,6 +3230,8 @@ export function createChatsStorage(db: DB) {
         const variableChanges = existing ? await readVariableChanges([existing]) : [];
         await db.delete(messages).where(eq(messages.id, id));
         if (existing) {
+          // Fork: a deleted reply takes back what the relationship tracker moved for it.
+          await forgetForkReplies(db, [existing]);
           const removed = await cascadeAgentLorebookEntriesForMessages([id]);
           await invalidateMemoryChunksFrom(db, existing.chatId, existing.createdAt);
           await refreshChatLastMessageAt(existing.chatId);
@@ -3327,6 +3329,8 @@ export function createChatsStorage(db: DB) {
           });
           // Forget a deleted kept message now, so saves made while later chunks run are not compared against it.
           forgetDeletedLorebookScanKeep(removed.rows.map((row) => row.id));
+          // Fork: deleted replies take back what the relationship tracker moved for them.
+          await forgetForkReplies(db, removed.rows);
           removedEntryIds.push(...removed.entryIds);
           variableChanges.push(...removed.variableChanges);
           for (const row of removed.rows) {

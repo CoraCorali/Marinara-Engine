@@ -15,6 +15,7 @@ import {
   lorebookCharacterLinks,
 } from "../../db/schema/index.js";
 import { removeForkBoardScope } from "../board/fork-board-cleanup.js";
+import { removeForkCharacterData } from "../fork-chat-data.js";
 import { newId, now } from "../../utils/id-generator.js";
 import {
   PROFESSOR_MARI_ID,
@@ -847,6 +848,8 @@ export function createCharactersStorage(db: DB) {
             .where(eq(characterGroups.id, group.id));
         }
       });
+      // Fork: its bonds and pairs in People go too (registered storage, outside the cascade).
+      await removeForkCharacterData(db, id);
     },
 
     async duplicateCharacter(id: string) {
@@ -1034,8 +1037,6 @@ export function createCharactersStorage(db: DB) {
     },
 
     async removePersona(id: string) {
-      // Fork: the board is registered storage, so it is not part of the cascade below.
-      await removeForkBoardScope(db, "persona", id);
       await db.transaction(async (tx) => {
         await tx.delete(personas).where(eq(personas.id, id));
         const groups = await tx.select().from(personaGroups);
@@ -1053,6 +1054,8 @@ export function createCharactersStorage(db: DB) {
             .where(eq(personaGroups.id, group.id));
         }
       });
+      // Fork: the board is registered storage, outside the cascade; it goes once the persona has.
+      await removeForkBoardScope(db, "persona", id);
     },
 
     async duplicatePersona(id: string) {

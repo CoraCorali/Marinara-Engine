@@ -1,5 +1,6 @@
 // Fork feature: the closet API, saved outfits for any chat (see FORK.md).
 import type { FastifyInstance } from "fastify";
+import { createChatsStorage } from "../services/storage/chats.storage.js";
 import { createClosetStorage, MAX_CLOSET_OUTFITS } from "../services/board/fork-closet.js";
 
 export async function forkClosetRoutes(app: FastifyInstance) {
@@ -37,6 +38,7 @@ export async function forkClosetRoutes(app: FastifyInstance) {
     const who = typeof body.who === "string" ? body.who.trim() : "";
     if (!chatId || !who) return reply.status(400).send({ error: "chatId and who are required" });
     if (!(await closet.exists(req.params.id))) return reply.status(404).send({ error: "Outfit not found" });
+    if (!(await createChatsStorage(app.db).getById(chatId))) return reply.status(404).send({ error: "Chat not found" });
     const worn = await closet.wear(req.params.id, chatId, who);
     if (worn.length === 0) return reply.status(400).send({ error: "Nothing from that outfit could be put on" });
     return worn;

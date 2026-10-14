@@ -90,21 +90,27 @@ export function createClosetStorage(db: DB) {
         updatedAt: timestamp,
       };
       await db.insert(closetOutfits).values(row as never);
-      for (const pinId of fromPinIds) {
-        const pin = await pins.getById(pinId);
-        if (!pin) continue;
-        const imagePath = await copyPicture(pin.imagePath);
-        if (!imagePath) continue;
-        await pins.create({
-          scopeType: "outfit",
-          scopeId: row.id,
-          imagePath,
-          caption: pin.caption,
-          category: "wearing",
-          slot: pin.slot,
-          shows: pin.shows,
-          inScene: false,
-        });
+      // A copy that fails part-way (a full disk) takes the half-made outfit with it.
+      try {
+        for (const pinId of fromPinIds) {
+          const pin = await pins.getById(pinId);
+          if (!pin) continue;
+          const imagePath = await copyPicture(pin.imagePath);
+          if (!imagePath) continue;
+          await pins.create({
+            scopeType: "outfit",
+            scopeId: row.id,
+            imagePath,
+            caption: pin.caption,
+            category: "wearing",
+            slot: pin.slot,
+            shows: pin.shows,
+            inScene: false,
+          });
+        }
+      } catch (error) {
+        await this.remove(row.id);
+        throw error;
       }
       return withPieces(row);
     },

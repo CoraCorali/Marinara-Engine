@@ -251,7 +251,7 @@ function isMessageQuickEditIgnoredTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
   return Boolean(
     target.closest(
-      'button, a, input, textarea, select, option, [contenteditable="true"], [role="button"], [data-no-message-quick-edit]',
+      'button, a, input, textarea, select, option, summary, label, [contenteditable="true"], [role="button"], [data-no-message-quick-edit]',
     ),
   );
 }
@@ -2307,7 +2307,7 @@ export const ChatMessage = memo(function ChatMessage({
       const target = e.target as HTMLElement;
       if (
         target.closest(
-          'button, a, textarea, [role="dialog"], [role="alertdialog"], [role="menu"], [data-chat-floating-panel]',
+          'button, a, textarea, summary, label, [role="dialog"], [role="alertdialog"], [role="menu"], [data-chat-floating-panel]',
         )
       )
         return;

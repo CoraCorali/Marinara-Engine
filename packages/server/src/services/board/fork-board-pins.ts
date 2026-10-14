@@ -103,7 +103,7 @@ export function normalizeCategory(value: unknown): BoardPinCategory {
 export function toBoardPin(row: BoardPinRow): BoardPin {
   return {
     id: row.id,
-    scopeType: row.scopeType === "persona" ? "persona" : "chat",
+    scopeType: row.scopeType === "persona" || row.scopeType === "outfit" ? row.scopeType : "chat",
     scopeId: row.scopeId,
     imagePath: row.imagePath,
     caption: row.caption ?? "",

@@ -926,17 +926,21 @@ async function importPreset(data: unknown, db: DB, options?: { replacePresetId?:
     return { success: false, type: "marinara_preset" as const, error: "The preset to update no longer exists" };
   }
   const previousDefaultChoices = replaceTarget ? safeParseJson<unknown>(replaceTarget.defaultChoices, {}) : {};
-  if (replaceTarget) {
-    for (const block of await storage.listChoiceBlocksForPreset(replaceTarget.id)) {
-      await storage.removeChoiceBlock(block.id);
-    }
-    for (const section of await storage.listSections(replaceTarget.id)) {
-      await storage.removeSection(section.id);
-    }
-    for (const group of await storage.listGroups(replaceTarget.id)) {
-      await storage.removeGroup(group.id);
-    }
+  // Fork: a file whose lists hold anything but objects is refused before anything is touched, and
+  // an update only removes the old rows once the new ones are all written (see removeReplaced).
+  const isRowList = (value: unknown) =>
+    value === undefined ||
+    (Array.isArray(value) && value.every((row) => row !== null && typeof row === "object" && !Array.isArray(row)));
+  if (!isRowList(d.groups) || !isRowList(d.sections) || !isRowList(d.choiceBlocks)) {
+    return { success: false, type: "marinara_preset" as const, error: "This preset file is damaged" };
   }
+  const replaced = replaceTarget
+    ? {
+        choiceBlocks: (await storage.listChoiceBlocksForPreset(replaceTarget.id)).map((row) => row.id),
+        sections: (await storage.listSections(replaceTarget.id)).map((row) => row.id),
+        groups: (await storage.listGroups(replaceTarget.id)).map((row) => row.id),
+      }
+    : null;
 
   const newPreset = replaceTarget
     ? await storage.update(replaceTarget.id, {
@@ -969,74 +973,95 @@ async function importPreset(data: unknown, db: DB, options?: { replacePresetId?:
     return { success: false, type: "marinara_preset" as const, error: "Failed to create preset" };
   }
 
-  // Re-create groups with old→new ID mapping
   const groupMap = new Map<string, string>();
-  if (Array.isArray(d.groups)) {
-    for (const g of d.groups) {
-      const newGroup = await storage.createGroup({
-        presetId: newPreset.id,
-        name: String(g.name ?? ""),
-        parentGroupId: null, // fixed below
-        order: Number(g.order ?? 100),
-        enabled: g.enabled === true || g.enabled === "true",
-      });
-      if (newGroup) groupMap.set(String(g.id), newGroup.id);
+  const sectionMap = new Map<string, string>();
+  const choiceVariableNames: string[] = [];
+  // Fork: on an update, a failure part-way removes only what this import added; the preset keeps
+  // its old rows, and its section order still points at them.
+  const removeAddedRows = async () => {
+    if (!replaced) return;
+    for (const row of await storage.listChoiceBlocksForPreset(newPreset.id)) {
+      if (!replaced.choiceBlocks.includes(row.id)) await storage.removeChoiceBlock(row.id);
     }
-    // Fix parent references
-    for (const g of d.groups) {
-      if (g.parentGroupId && groupMap.has(String(g.parentGroupId))) {
-        const newGId = groupMap.get(String(g.id));
-        if (newGId) {
-          await storage.updateGroup(newGId, {
-            parentGroupId: groupMap.get(String(g.parentGroupId))!,
-          });
+    for (const row of await storage.listSections(newPreset.id)) {
+      if (!replaced.sections.includes(row.id)) await storage.removeSection(row.id);
+    }
+    for (const row of await storage.listGroups(newPreset.id)) {
+      if (!replaced.groups.includes(row.id)) await storage.removeGroup(row.id);
+    }
+  };
+  try {
+    // Re-create groups with old→new ID mapping
+    if (Array.isArray(d.groups)) {
+      for (const g of d.groups) {
+        const newGroup = await storage.createGroup({
+          presetId: newPreset.id,
+          name: String(g.name ?? ""),
+          parentGroupId: null, // fixed below
+          order: Number(g.order ?? 100),
+          enabled: g.enabled === true || g.enabled === "true",
+        });
+        if (newGroup) groupMap.set(String(g.id), newGroup.id);
+      }
+      // Fix parent references
+      for (const g of d.groups) {
+        if (g.parentGroupId && groupMap.has(String(g.parentGroupId))) {
+          const newGId = groupMap.get(String(g.id));
+          if (newGId) {
+            await storage.updateGroup(newGId, {
+              parentGroupId: groupMap.get(String(g.parentGroupId))!,
+            });
+          }
         }
       }
     }
-  }
 
-  // Re-create sections with old→new ID mapping
-  const sectionMap = new Map<string, string>();
-  if (Array.isArray(d.sections)) {
-    for (const s of d.sections) {
-      const groupId = s.groupId ? (groupMap.get(String(s.groupId)) ?? null) : null;
-      const newSection = await storage.createSection({
-        presetId: newPreset.id,
-        identifier: String(s.identifier ?? ""),
-        name: String(s.name ?? ""),
-        content: String(s.content ?? ""),
-        role: (s.role as any) ?? "system",
-        enabled: s.enabled === true || s.enabled === "true",
-        isMarker: s.isMarker === true || s.isMarker === "true",
-        groupId,
-        markerConfig: s.markerConfig ? safeParseJson(s.markerConfig, null) : null,
-        injectionPosition: (s.injectionPosition as any) ?? "ordered",
-        injectionDepth: Number(s.injectionDepth ?? 0),
-        injectionOrder: Number(s.injectionOrder ?? 100),
-        forbidOverrides: s.forbidOverrides === true || s.forbidOverrides === "true",
-        skipWrap: s.skipWrap === true || s.skipWrap === "true",
-      });
-      if (newSection) sectionMap.set(String(s.id), newSection.id);
+    // Re-create sections with old→new ID mapping
+    if (Array.isArray(d.sections)) {
+      for (const s of d.sections) {
+        const groupId = s.groupId ? (groupMap.get(String(s.groupId)) ?? null) : null;
+        const newSection = await storage.createSection({
+          presetId: newPreset.id,
+          identifier: String(s.identifier ?? ""),
+          name: String(s.name ?? ""),
+          content: String(s.content ?? ""),
+          role: (s.role as any) ?? "system",
+          enabled: s.enabled === true || s.enabled === "true",
+          isMarker: s.isMarker === true || s.isMarker === "true",
+          groupId,
+          markerConfig: s.markerConfig ? safeParseJson(s.markerConfig, null) : null,
+          injectionPosition: (s.injectionPosition as any) ?? "ordered",
+          injectionDepth: Number(s.injectionDepth ?? 0),
+          injectionOrder: Number(s.injectionOrder ?? 100),
+          forbidOverrides: s.forbidOverrides === true || s.forbidOverrides === "true",
+          skipWrap: s.skipWrap === true || s.skipWrap === "true",
+        });
+        if (newSection) sectionMap.set(String(s.id), newSection.id);
+      }
     }
-  }
 
-  // Re-create choice blocks
-  const choiceVariableNames: string[] = [];
-  if (Array.isArray(d.choiceBlocks)) {
-    for (const v of d.choiceBlocks) {
-      choiceVariableNames.push(String(v.variableName ?? ""));
-      await storage.createChoiceBlock({
-        presetId: newPreset.id,
-        variableName: String(v.variableName ?? ""),
-        question: String(v.question ?? ""),
-        options: safeParseJson(v.options, []),
-        multiSelect: v.multiSelect === true || v.multiSelect === "true",
-        separator: String(v.separator ?? ", "),
-        randomPick: v.randomPick === true || v.randomPick === "true",
-        displayMode: v.displayMode === "buttons" || v.displayMode === "listbox" ? v.displayMode : "auto",
-        optionSort: v.optionSort === "alphabetical" ? "alphabetical" : "manual",
-      });
+    // Re-create choice blocks
+    if (Array.isArray(d.choiceBlocks)) {
+      for (const v of d.choiceBlocks) {
+        choiceVariableNames.push(String(v.variableName ?? ""));
+        await storage.createChoiceBlock({
+          presetId: newPreset.id,
+          variableName: String(v.variableName ?? ""),
+          question: String(v.question ?? ""),
+          options: safeParseJson(v.options, []),
+          multiSelect: v.multiSelect === true || v.multiSelect === "true",
+          separator: String(v.separator ?? ", "),
+          randomPick: v.randomPick === true || v.randomPick === "true",
+          displayMode: v.displayMode === "buttons" || v.displayMode === "listbox" ? v.displayMode : "auto",
+          optionSort: v.optionSort === "alphabetical" ? "alphabetical" : "manual",
+        });
+      }
     }
+  } catch (error) {
+    await removeAddedRows().catch((cleanupError) =>
+      logger.warn(cleanupError, "[import] Could not tidy up a failed preset update"),
+    );
+    throw error;
   }
 
   // Remap section/group order arrays
@@ -1053,6 +1078,12 @@ async function importPreset(data: unknown, db: DB, options?: { replacePresetId?:
       replaceTarget ? mergeDefaultChoices(previousDefaultChoices, defaultChoices, choiceVariableNames) : defaultChoices,
     ),
   });
+  // Fork: the new rows are all in and the order points at them, so the old ones can go.
+  if (replaced) {
+    for (const id of replaced.choiceBlocks) await storage.removeChoiceBlock(id);
+    for (const id of replaced.sections) await storage.removeSection(id);
+    for (const id of replaced.groups) await storage.removeGroup(id);
+  }
 
   // Fork: install the preset's own regex pack. A script of the same name the previous import left
   // is replaced, so updating never stacks copies; anything else on this preset (a script the user
