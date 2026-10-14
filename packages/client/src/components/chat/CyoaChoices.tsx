@@ -256,7 +256,8 @@ export function CyoaChoices({ messages }: Props) {
   if (choices.length === 0) return null;
 
   return (
-    <div className="flex flex-col items-center gap-2 px-4 py-3 animate-message-in">
+    // Fork: a stable hook so a theme can style the choice bar; everything else here is utilities.
+    <div className="mari-cyoa-choices flex flex-col items-center gap-2 px-4 py-3 animate-message-in">
       <div
         className="flex flex-wrap items-center justify-center gap-2 text-[0.625rem] text-[var(--muted-foreground)]/60"
         style={{ maxWidth: TRACKER_SAFE_MAX_WIDTH }}

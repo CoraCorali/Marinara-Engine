@@ -3971,6 +3971,9 @@ export const ChatMessage = memo(function ChatMessage({
             {/* Message bubble */}
             <div
               data-roleplay-bubble-transparent={roleplayBubbleBg === "transparent" ? "true" : undefined}
+              // Fork: whose turn this is, so a theme can tell the two speakers apart by more than
+              // which side they sit on. The existing classes only differ by a rounded corner.
+              data-fork-role={isUser ? "user" : "ai"}
               className={cn(
                 "mari-message-bubble mari-rp-bubble mari-chat-style-surface relative overflow-hidden rounded-2xl shadow-lg shadow-black/20",
                 roleplayAvatarsScrollable && showRoleplayAvatarPanel && "mari-rp-bubble--scrollable-avatar-panel",

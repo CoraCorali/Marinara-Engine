@@ -96,6 +96,13 @@ Markup is stripped and every part is length-capped before it is sent.
   Photo frames carry the measured position of their own cutout window, so a picture sits behind
   the frame and shows through the hole instead of being guessed into place.
   Glow effects and the weather layers stay off under this theme; weather was what dropped frames.
+- **The Roleplay screen under Board.** Cork backs the story and nothing else, because cork is a
+  surface to pin things to and not one to read on; the composer and the bars stay paper, split off
+  by a dashed seam. Message cards keep whatever colour their character card gave them and take
+  square corners, a lift and a strip of tape; your own turns take a different tape, so the two
+  speakers differ by material and not only by which side they sit on. Narration reads as a slip
+  taped across the board. Scene Spark's choices are paper cards rather than outlined buttons.
+  Cards sit very slightly crooked on a four-row cycle, since CSS cannot place each one by hand.
 
 ## Upstream files touched
 
@@ -126,6 +133,8 @@ Edits to upstream files are marked with a `Fork:` comment.
 | `packages/client/src/styles/globals.css` | Imports the Board theme |
 | `packages/client/src/stores/ui.store.ts` | `board` added to the visual-theme union |
 | `packages/client/src/components/panels/SettingsPanel.tsx` | Board card in Visual style |
+| `packages/client/src/components/chat/ChatMessage.tsx` | `data-fork-role` on the roleplay bubble |
+| `packages/client/src/components/chat/CyoaChoices.tsx` | A class hook on the choice bar |
 | `packages/shared/src/schemas/lorebook.schema.ts` | Whole-word default |
 | `packages/server/src/services/storage/lorebooks.storage.ts` | Whole-word default |
 

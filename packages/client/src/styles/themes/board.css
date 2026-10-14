@@ -169,10 +169,9 @@
 }
 
 /* ─── The board itself ───
-   Cork is a surface to pin things to, never a surface to read on, so it backs
-   the story and nothing else. Chrome stays paper-coloured. */
-[data-visual-theme="board"] .mari-rp-surface,
-[data-visual-theme="board"] [data-marinara-rp-scroll] {
+   Cork is a surface to pin things to, never a surface to read on, so it backs the story and
+   nothing else. Chrome stays paper-coloured. */
+[data-visual-theme="board"] .mari-chat-area[data-chat-mode="roleplay"] {
   background-color: #c49a6c;
   background-image: var(--board-cork);
   background-size: var(--board-cork-size);
@@ -181,47 +180,103 @@
     inset 0 0 0 1px rgba(96, 58, 22, 0.18);
 }
 
-[data-visual-theme="board"][data-theme="dark"] .mari-rp-surface,
-[data-visual-theme="board"][data-theme="dark"] [data-marinara-rp-scroll] {
+[data-visual-theme="board"][data-theme="dark"] .mari-chat-area[data-chat-mode="roleplay"] {
   background-color: #8a6440;
   background-blend-mode: multiply;
 }
 
-/* ─── Message bubbles become paper ───
-   The bubble keeps whatever colour the card gave it, so a character's own
-   palette still shows; the theme supplies the paper, the lift and the square
-   corners that make it read as something pinned up rather than a chat bubble. */
+/* ─── Message cards ───
+   The bubble keeps whatever colour its character card gave it, so the theme supplies the paper,
+   the lift and the square corners that make it read as something pinned up.
+
+   The tape is a background rather than a pseudo-element: the bubble is `overflow-hidden` so it can
+   clip its avatar panel, and anything overhanging the edge would be cut off. Tape lying ON the
+   paper is the version that survives that honestly. */
 [data-visual-theme="board"] .mari-rp-bubble {
   background-color: var(--mari-rp-bubble-bg, var(--board-paper));
   border-radius: 2px;
   box-shadow: var(--board-lift);
-  border: none;
 }
 
-/* A strip of tape over the top edge. Decorative only, so it is hidden from
-   assistive tech and never intercepts a tap. */
-[data-visual-theme="board"] .mari-rp-bubble::before {
-  content: "";
-  position: absolute;
-  top: -0.6rem;
-  left: 1.1rem;
-  width: 5.5rem;
-  height: 1.3rem;
+[data-visual-theme="board"] .mari-rp-bubble[data-fork-role="ai"] {
   background-image: var(--board-tape-dots);
-  background-size: 100% 100%;
   background-repeat: no-repeat;
-  transform: rotate(-4deg);
-  pointer-events: none;
-  z-index: 1;
+  background-position: 1rem -0.35rem;
+  background-size: 5.5rem auto;
 }
 
-/* The writer's own turns get the other tape, so the two speakers are told
-   apart by material and not by alignment alone. */
-[data-visual-theme="board"] .mari-rp-bubble[data-role="user"]::before {
-  left: auto;
-  right: 1.1rem;
+[data-visual-theme="board"] .mari-rp-bubble[data-fork-role="user"] {
   background-image: var(--board-tape-sage);
-  transform: rotate(3deg);
+  background-repeat: no-repeat;
+  background-position: right 1rem top -0.35rem;
+  background-size: 5rem auto;
+}
+
+/* Nothing is pinned up perfectly straight. CSS cannot place each card by hand the way a mockup
+   does, so the tilt cycles over four rows: enough to read as hand-placed, never enough to make a
+   column of text feel crooked. The cycle counts rows in the transcript, so a hidden or system row
+   can shift which card gets which angle. That only changes the pattern, never the look. */
+[data-visual-theme="board"] .mari-rp-bubble {
+  transform: rotate(-0.35deg);
+}
+[data-visual-theme="board"] .mari-roleplay-message-row:nth-child(4n + 2) .mari-rp-bubble {
+  transform: rotate(0.4deg);
+}
+[data-visual-theme="board"] .mari-roleplay-message-row:nth-child(4n + 3) .mari-rp-bubble {
+  transform: rotate(-0.55deg);
+}
+[data-visual-theme="board"] .mari-roleplay-message-row:nth-child(4n) .mari-rp-bubble {
+  transform: rotate(0.25deg);
+}
+
+/* While a reply is streaming the card should not wobble under the text. */
+[data-visual-theme="board"] .mari-rp-bubble.rpg-streaming {
+  transform: none;
+}
+
+/* ─── Narration and scene strips ───
+   A narrator turn is not someone speaking, so it reads as a slip of paper taped across the board
+   rather than a card from a character. */
+[data-visual-theme="board"] .mari-message-narrator .mari-rp-bubble,
+[data-visual-theme="board"] .mari-message-narrator .mari-chat-style-surface {
+  background-color: var(--board-paper-dim);
+  border-radius: 2px;
+  box-shadow: var(--board-lift-sm);
+  transform: rotate(-1deg);
+}
+
+/* ─── Scene Spark choices ───
+   Each idea is its own card on the board, so they are paper with a lift, not outlined buttons. */
+[data-visual-theme="board"] .mari-cyoa-choices button {
+  border-radius: 2px;
+}
+
+[data-visual-theme="board"] .mari-cyoa-choices > div > button {
+  background-color: var(--board-paper);
+  border-color: var(--board-edge);
+  box-shadow: var(--board-lift-sm);
+}
+
+[data-visual-theme="board"] .mari-cyoa-choices > div > button:hover {
+  background-color: #fff8e9;
+  box-shadow: var(--board-lift);
+}
+
+/* ─── The composer ───
+   Chrome comes back to paper, with the dashed seam the mockups used to separate it from the
+   board above it. */
+[data-visual-theme="board"] .mari-chat-input {
+  background-color: var(--board-paper);
+  border-top: 2px dashed var(--board-edge);
+}
+
+[data-visual-theme="board"] .mari-chat-input-textarea {
+  color: var(--board-ink);
+}
+
+[data-visual-theme="board"] .mari-chat-input-textarea::placeholder {
+  color: var(--board-ink-soft);
+  opacity: 0.75;
 }
 
 /* ─── Photo frames ───
