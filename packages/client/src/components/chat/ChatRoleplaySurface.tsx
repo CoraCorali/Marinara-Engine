@@ -3,6 +3,7 @@ import { useTranslation, useTranslation as useUiTranslation } from "react-i18nex
 import { normalizeSemanticSummaryRetrievalSettings } from "@marinara-engine/shared";
 import { toast } from "sonner";
 import {
+  Fragment,
   Suspense,
   lazy,
   useCallback,
@@ -71,6 +72,20 @@ import { ChatMessage } from "./ChatMessage";
 import { ChatInput } from "./ChatInput";
 import { CyoaChoices } from "./CyoaChoices";
 import { ForkBoardStrip } from "./ForkBoardStrip";
+import {
+  ForkChapterFold,
+  ForkChapterMarker,
+  ForkChapterPill,
+  ForkChapterSplitBar,
+  ForkChapterSplitButton,
+} from "./ForkChapters";
+import {
+  chapterForMessage,
+  chapterKeys,
+  useEndForkChapter,
+  useForkChapters,
+  type ForkChapter,
+} from "../../hooks/use-fork-chapters";
 import { ForkFixPart } from "./ForkFixPart";
 import { useChatWeatherPrefs } from "../../stores/fork-weather.store";
 import { effectiveWeatherInput } from "../../lib/fork/weather-prefs";
@@ -1493,21 +1508,124 @@ export function ChatRoleplaySurface({
 
   // Keep an unsaved editor alive if its history is temporarily collapsed.
   const showHistory = !visualNovel || vnHistoryOpen;
+  // Fork: chapters. Finished chapters fold into one row each; split mode puts a cut under every
+  // message of the current chapter, so an old chat can be divided into chapters after the fact.
+  const forkChaptersChatId = chatMode === "roleplay" ? activeChatId : null;
+  const { data: forkChaptersData } = useForkChapters(forkChaptersChatId);
+  const forkChapters = useMemo(() => forkChaptersData?.chapters ?? [], [forkChaptersData]);
+  const forkEndChapter = useEndForkChapter(forkChaptersChatId);
+  const [forkOpenChapterIds, setForkOpenChapterIds] = useState<ReadonlySet<string>>(() => new Set());
+  const [forkChapterSplitting, setForkChapterSplitting] = useState(false);
+  useLayoutEffect(() => {
+    setForkOpenChapterIds(new Set());
+    setForkChapterSplitting(false);
+  }, [activeChatId]);
+  const toggleForkChapter = useCallback((id: string) => {
+    setForkOpenChapterIds((current) => {
+      const next = new Set(current);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+  // The chapter list counts messages and marks recaps out of date, so it follows the transcript.
+  const forkChapterSignature = useMemo(
+    () =>
+      (messages ?? [])
+        .map((message) => `${message.id}:${message.activeSwipeIndex ?? 0}:${message.content.length}`)
+        .join("|"),
+    [messages],
+  );
+  useEffect(() => {
+    if (!forkChaptersChatId || isStreaming) return;
+    void queryClient.invalidateQueries({ queryKey: chapterKeys.chat(forkChaptersChatId) });
+  }, [forkChapterSignature, forkChaptersChatId, isStreaming, queryClient]);
+
   // Fork: memoised so the memoised ChatInput does not re-render on every streamed chunk.
   const forkBarLeading = useMemo(
     () =>
       onOpenForkBoard ? (
-        <ForkBoardStrip
-          chatScope={forkBoardChatScope}
-          personaScope={forkBoardPersonaScope}
-          onOpenBoard={onOpenForkBoard}
-          onOpenBonds={onOpenForkBonds ?? NOOP}
-        />
+        <>
+          <ForkBoardStrip
+            chatScope={forkBoardChatScope}
+            personaScope={forkBoardPersonaScope}
+            onOpenBoard={onOpenForkBoard}
+            onOpenBonds={onOpenForkBonds ?? NOOP}
+          />
+          {forkChaptersChatId && (
+            <ForkChapterPill
+              chatId={forkChaptersChatId}
+              busy={isStreaming}
+              onPickSplit={() => setForkChapterSplitting(true)}
+            />
+          )}
+        </>
       ) : undefined,
-    [forkBoardChatScope, forkBoardPersonaScope, onOpenForkBoard, onOpenForkBonds],
+    [forkBoardChatScope, forkBoardPersonaScope, forkChaptersChatId, isStreaming, onOpenForkBoard, onOpenForkBonds],
   );
   const showTranscript = showHistory || vnHistoryHasDraft;
   const visibleMessages = showTranscript ? transcriptWindow.messages : [];
+  // Fork: where each chapter row, the current chapter's marker and the folded messages fall among
+  // the messages on screen. A chapter none of whose messages are on screen still gets its row, at
+  // the place it belongs, so the chat reads as a list of chapters even before older pages load.
+  const forkChapterLayout = useMemo(() => {
+    const onScreen = showTranscript ? transcriptWindow.messages : undefined;
+    if (forkChapters.length === 0 || !onScreen?.length) return null;
+    const rowsBefore = new Map<string, ForkChapter[]>();
+    const chapterOf = new Map<string, ForkChapter | null>();
+    const visibleChapterIds = new Set<string>();
+    let next = 0;
+    let markerAt: string | null = null;
+    for (const message of onScreen) {
+      const chapter = chapterForMessage(message, forkChapters);
+      chapterOf.set(message.id, chapter);
+      const index = chapter ? forkChapters.indexOf(chapter) : forkChapters.length;
+      const rows: ForkChapter[] = [];
+      while (next <= index && next < forkChapters.length) rows.push(forkChapters[next++]!);
+      if (rows.length) rowsBefore.set(message.id, rows);
+      if (chapter) visibleChapterIds.add(chapter.id);
+      else markerAt ??= message.id;
+    }
+    return { rowsBefore, chapterOf, visibleChapterIds, markerAt, trailing: forkChapters.slice(next) };
+  }, [forkChapters, showTranscript, transcriptWindow.messages]);
+  const forkCurrentChapterNumber = forkChaptersData?.current.number ?? 1;
+  const renderForkChapterRows = (rows: readonly ForkChapter[]) =>
+    rows.map((chapter) => (
+      <ForkChapterFold
+        key={`fork-chapter-${chapter.id}`}
+        chatId={activeChatId}
+        chapter={chapter}
+        open={forkOpenChapterIds.has(chapter.id)}
+        onToggle={() => toggleForkChapter(chapter.id)}
+        messagesLoaded={forkChapterLayout?.visibleChapterIds.has(chapter.id) ?? false}
+      />
+    ));
+  const wrapForkChapterMessage = (msg: MessageWithSwipes, body: ReactNode): ReactNode => {
+    if (!forkChapterLayout && !forkChapterSplitting) return body;
+    const chapter = forkChapterLayout?.chapterOf.get(msg.id) ?? null;
+    const rows = forkChapterLayout?.rowsBefore.get(msg.id);
+    const folded = chapter !== null && !forkOpenChapterIds.has(chapter.id);
+    return (
+      <Fragment key={msg.id}>
+        {rows && renderForkChapterRows(rows)}
+        {forkChapterLayout?.markerAt === msg.id && <ForkChapterMarker number={forkCurrentChapterNumber} />}
+        {folded ? null : chapter ? (
+          <div className="border-l-2 border-[color-mix(in_srgb,var(--primary)_35%,transparent)] pl-1.5">{body}</div>
+        ) : (
+          body
+        )}
+        {forkChapterSplitting && !chapter && msg.role !== "system" && !isMessageHiddenFromUser(msg) && (
+          <ForkChapterSplitButton
+            disabled={isStreaming || forkEndChapter.isPending}
+            onPick={() => {
+              setForkChapterSplitting(false);
+              forkEndChapter.mutate({ upToMessageId: msg.id, debugMode: useUIStore.getState().debugMode });
+            }}
+          />
+        )}
+      </Fragment>
+    );
+  };
   const activeChatCharacterIds = useMemo(() => {
     const inactiveIds = new Set(readStringArray(chatMeta.inactiveCharacterIds));
     const activeIds = chatCharIds.filter((id) => !inactiveIds.has(id));
@@ -1931,8 +2049,10 @@ export function ChatRoleplaySurface({
                   </div>
                 )}
 
+                {forkChapterSplitting && <ForkChapterSplitBar onDone={() => setForkChapterSplitting(false)} />}
+
                 {visibleMessages?.map((msg, i) => {
-                  if (isMessageHiddenFromUser(msg)) return null;
+                  if (isMessageHiddenFromUser(msg)) return wrapForkChapterMessage(msg, null);
                   if (
                     isMessageShadowedByLiveStream({
                       hasLiveStream,
@@ -1941,7 +2061,7 @@ export function ChatRoleplaySurface({
                       messageId: msg.id,
                     })
                   ) {
-                    return null;
+                    return wrapForkChapterMessage(msg, null);
                   }
                   const sourceIndex = transcriptWindow.startIndex + i;
                   const messageDepth = (messages?.length ?? 0) - 1 - sourceIndex;
@@ -1955,7 +2075,7 @@ export function ChatRoleplaySurface({
                     (generateRoleplayStoryboard.variables?.automatic !== true ||
                       roleplayStoryboardAutoMode === "illustration" ||
                       roleplayStoryboardAutoMode === "animation");
-                  return (
+                  const forkMessageBody = (
                     <div
                       key={msg.id}
                       className={shouldAnimateMessages ? "animate-message-in" : undefined}
@@ -2035,7 +2155,17 @@ export function ChatRoleplaySurface({
                       )}
                     </div>
                   );
+                  return wrapForkChapterMessage(msg, forkMessageBody);
                 })}
+
+                {/* Fork: chapters after the last message on screen, then the current chapter's
+                    marker when it has no message yet (a chapter that just ended). */}
+                {forkChapterLayout && transcriptWindow.hiddenAfterCount === 0 && (
+                  <>
+                    {renderForkChapterRows(forkChapterLayout.trailing)}
+                    {forkChapterLayout.markerAt === null && <ForkChapterMarker number={forkCurrentChapterNumber} />}
+                  </>
+                )}
 
                 <TranscriptWindowControls
                   hiddenBeforeCount={transcriptWindow.hiddenBeforeCount}

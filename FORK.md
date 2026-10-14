@@ -587,6 +587,42 @@ Left as they are, with the reason:
   copies relationships as they are now rather than as of the branch point; a preset's regex pack
   replaces a same-named script of yours that targets only that preset.
 
+### Chapters and chapter memory
+
+- **📖 Ch. pill** (in the row above the message box): shows the chapter you are in. Its sheet ends
+  the chapter here, marks where an older chapter ends (split mode puts "✂ End a chapter here" under
+  each message of the current chapter, so an old chat can be cut into chapters afterwards), or
+  continues the last chapter (its recap is deleted and its messages go back into the history). A dot
+  on the pill and a note in the sheet suggest ending a chapter after about 150 messages.
+- **The recap** is written in a fixed shape: a title, What happened (about one sentence per three
+  or four messages, never under about 200 words), Where people stand (told to agree with People),
+  Open threads, Keep in mind, and Lines to remember. A chapter over 40 messages is noted in even
+  slices of at most 40 (each part sees the notes on the part before), then merged, so its middle is
+  not lost. It uses the chat summary's connection (Chat Settings →
+  summary model, else the agents' default, else the chat's own), and a recap whose stream broke
+  part-way is refused rather than saved. Recap calls stream, since LinkAPI drops a non-streamed
+  request that runs past about 30 seconds. Recaps can be edited or rewritten; an edit, swipe or delete
+  inside a finished chapter marks its recap "may be out of date" instead of rewriting it.
+- **In the chat**: a finished chapter is one row ("Ch. 2 · The county fair · 112 msgs"). Tap it to
+  read its recap and messages (indented under a thin line), tap again to fold it. "✦ Chapter 3 ✦"
+  marks where the current chapter starts. Folded messages are not mounted, and a chapter whose
+  messages are not loaded yet still shows its row and recap.
+- **What the model gets**: the history starts at the current chapter's first message (like
+  Marinara's "new start" marker; whichever is later wins). Every recap goes in the chat summary slot,
+  oldest first, before the rolling summary, which then only covers the current chapter. With
+  Advanced Memory on (it owns the summary slot) the recaps ride in the fork note instead. A swipe or
+  continue inside a finished chapter counts only the chapters before it. Once the whole recaps pass
+  about 3,000 tokens, the older ones (all but the two newest) are merged into one "Earlier" recap for
+  the prompt, kept in chat metadata (`forkChaptersEarlier`); the original recaps stay saved, and an
+  edit to a merged chapter drops the merge until the next chapter ends.
+- **The Director** reads the recaps too and can offer a button: "End the chapter here" at a natural
+  break, or "Skip to the next morning" (which puts a time-skip direction in the note) with "End this
+  chapter first".
+- **Branches** keep the chapters whose every message they copied, pointing at their own copies; a
+  branch from inside a finished chapter keeps that chapter open. Deleting a chat deletes its chapters.
+- **Storage**: one new registered table, `fork_chapters` (no storage-format bump). Regression:
+  `fork-chapters`.
+
 ## Upstream files touched
 
 Fork-only code lives in `packages/client/src/lib/fork/`, `Fork*` components, `packages/shared/src/features/fork-bond-shapes.ts`, `packages/server/src/services/import/fork/`
@@ -682,6 +718,11 @@ Edits to upstream files are marked with a `Fork:` comment.
 | `packages/client/src/components/agents/RegexScriptEditor.tsx`                              | Saves before leaving                                                                              |
 | `packages/client/src/components/presets/PresetEditor.tsx`                                  | Option and section edits are not lost                                                             |
 | `packages/client/src/features/tracker-panel/components/controls/SectionControls.tsx`       | Bigger buttons on touch                                                                           |
+| `packages/server/src/routes/generate.routes.ts`                                            | Starts the history at the current chapter; recaps in the summary slot (or the fork note)          |
+| `packages/server/src/services/storage/chats.storage.ts`                                    | An edit or swipe inside a finished chapter marks its recap out of date                            |
+| `packages/server/src/routes/chats.routes.ts`                                               | A branch copies the chapters it fully contains                                                    |
+| `packages/server/src/routes/index.ts`                                                      | Registers the chapters routes                                                                     |
+| `packages/client/src/components/chat/ChatRoleplaySurface.tsx`                              | Chapter rows, the chapter marker, split mode and the Chapter pill                                 |
 
 ## Known upstream issue kept as is
 

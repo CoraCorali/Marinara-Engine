@@ -242,6 +242,13 @@ import {
   loadBondsAgentState,
 } from "../services/bonds/fork-bond-updates.js";
 import { pairsPromptBlock } from "../services/bonds/fork-bond-pairs.js";
+import {
+  chaptersBefore,
+  combineWithRollingSummary,
+  createChaptersStorage,
+  readEarlierRecap,
+  storySoFarBlock,
+} from "../services/chapters/fork-chapters.js";
 import { listRecentBondChanges, recentChangesPromptBlock } from "../services/bonds/fork-bond-recent.js";
 import { createAgentsStorage } from "../services/storage/agents.storage.js";
 import { createGameStateStorage, parseStoredRulesetLive } from "../services/storage/game-state.storage.js";
@@ -1817,6 +1824,26 @@ export async function generateRoutes(app: FastifyInstance, options: GenerateRout
           break;
         }
       }
+      // Fork: finished chapters leave the history the same way; their recaps go in the summary
+      // slot instead. A swipe or continue inside a finished chapter only counts the chapters before it.
+      const forkChapterTargetId = input.regenerateMessageId ?? input.continueMessageId;
+      const forkChapterTargetIndex = forkChapterTargetId
+        ? operationMessages.findIndex((message) => message.id === forkChapterTargetId)
+        : -1;
+      const forkChapterCut =
+        chatMode === "roleplay"
+          ? chaptersBefore(
+              await createChaptersStorage(app.db).listForChat(input.chatId),
+              operationMessages,
+              forkChapterTargetIndex >= 0 ? forkChapterTargetIndex : operationMessages.length,
+            )
+          : { finished: [], startIndex: 0 };
+      if (forkChapterCut.startIndex > startIdx) startIdx = forkChapterCut.startIndex;
+      const forkStorySoFar = storySoFarBlock(
+        forkChapterCut.finished,
+        readEarlierRecap(chatMeta),
+        (forkChapterCut.finished[forkChapterCut.finished.length - 1]?.number ?? 0) + 1,
+      );
       const scopedMessages = startIdx > 0 ? operationMessages.slice(startIdx) : operationMessages;
       let chatMessages = supportsHiddenFromAI
         ? scopedMessages.filter((message: any) => !isMessageHiddenFromAI(message))
@@ -2718,19 +2745,31 @@ export async function generateRoutes(app: FastifyInstance, options: GenerateRout
         const { suppressModelParameters, connectionMaxContext } = modelAccessPolicy;
         let effectiveMaxContext = modelAccessPolicy.effectiveMaxContext;
 
+        // Fork: with chapters, the rolling summary only covers the current chapter, after the
+        // finished chapters' recaps.
+        const forkChapterMessageIds = operationMessages
+          .slice(0, forkChapterCut.startIndex)
+          .map((message) => message.id);
+        const forkSummaryExcludedIds = [
+          ...(input.regenerateMessageId ? [input.regenerateMessageId] : []),
+          ...forkChapterMessageIds,
+        ];
         const activeChatSummary = advancedMemoryEnabled
           ? null
-          : await resolveRoleplayChatSummaryForPrompt({
-              chatMode,
-              chatMetadata: chatMeta,
-              messages: currentInputMessages(),
-              excludeMessageIds: input.regenerateMessageId ? [input.regenerateMessageId] : undefined,
-              vectorizerAvailable: memoryRecallVectorizerAvailable,
-              embeddingOptions: {
-                embeddingSource: memoryRecallEmbeddingSource,
-                signal: generationSignal,
-              },
-            });
+          : combineWithRollingSummary(
+              forkStorySoFar,
+              await resolveRoleplayChatSummaryForPrompt({
+                chatMode,
+                chatMetadata: chatMeta,
+                messages: currentInputMessages(),
+                excludeMessageIds: forkSummaryExcludedIds.length ? forkSummaryExcludedIds : undefined,
+                vectorizerAvailable: memoryRecallVectorizerAvailable,
+                embeddingOptions: {
+                  embeddingSource: memoryRecallEmbeddingSource,
+                  signal: generationSignal,
+                },
+              }),
+            );
         const runtimeSectionEligibleAgentTypes = buildRuntimeAgentSectionEligibleTypes({
           enableAgents: chatEnableAgents,
           activeAgentIds: chatActiveAgentIds,
@@ -7801,6 +7840,8 @@ export async function generateRoutes(app: FastifyInstance, options: GenerateRout
                 .map((message: { id: string }) => message.id),
             );
             const forkNoteParts = [
+              // Advanced Memory owns the summary slot, so the chapter recaps ride here instead.
+              advancedMemoryEnabled ? forkStorySoFar : "",
               bondsPromptBlock(forkBonds, forkNameFor, personaName),
               pairsPromptBlock(forkPairs, forkNameFor),
               recentChangesPromptBlock(forkRecent, forkBonds, forkPairs, forkNameFor),

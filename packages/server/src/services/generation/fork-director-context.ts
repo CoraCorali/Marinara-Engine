@@ -17,7 +17,8 @@ const LATEST_MESSAGES = 2;
 const MAX_STANDING_CHARS = 3000;
 const MAX_LORE_ENTRIES = 12;
 const MAX_LORE_CHARS = 600;
-const MAX_SUMMARY_CHARS = 2500;
+// Fork: room for the chapter recaps, which come before the rolling summary.
+const MAX_SUMMARY_CHARS = 12000;
 
 /** Plain text only: a card, a lore entry or a reply can carry markup the Director has no use for. */
 export function clampPlainText(value: unknown, limit: number): string {
@@ -93,7 +94,9 @@ export function buildDirectorContext(sources: DirectorContextSources): string {
     })
     .filter(Boolean)
     .join("\n");
-  const summary = clampPlainText(sources.summary, MAX_SUMMARY_CHARS);
+  // The newest part of the story matters most here, so a long one keeps its end.
+  const fullSummary = clampPlainText(sources.summary, Number.MAX_SAFE_INTEGER);
+  const summary = fullSummary.length > MAX_SUMMARY_CHARS ? `…${fullSummary.slice(-MAX_SUMMARY_CHARS)}` : fullSummary;
   // Kept as lines rather than flattened: it is a list.
   const standing = typeof sources.standing === "string" ? sources.standing.trim().slice(0, MAX_STANDING_CHARS) : "";
   const latestFrom = sources.scene.length - LATEST_MESSAGES;

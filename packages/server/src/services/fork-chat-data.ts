@@ -7,6 +7,7 @@ import { removeForkBoardScope } from "./board/fork-board-cleanup.js";
 import { bondMoments, bondTurns, bonds, createBondsStorage } from "./bonds/fork-bonds.js";
 import { bondPairs, createBondPairsStorage } from "./bonds/fork-bond-pairs.js";
 import { undoBondTurn } from "./bonds/fork-bond-updates.js";
+import { createChaptersStorage } from "./chapters/fork-chapters.js";
 import { eq } from "../db/file-query.js";
 import { readLorebookImageDataUrl, saveLorebookImage } from "./lorebook/lorebook-images.js";
 import { logger } from "../lib/logger.js";
@@ -14,6 +15,9 @@ import { logger } from "../lib/logger.js";
 /** Clears a chat's board and relationships. Never throws: losing either must not block a delete. */
 export async function removeForkChatData(db: DB, chatId: string): Promise<void> {
   await removeForkBoardScope(db, "chat", chatId);
+  await createChaptersStorage(db)
+    .removeChat(chatId)
+    .catch((error) => logger.warn(error, "[fork-chapters] Could not clear the chapters for chat %s", chatId));
   await createBondsStorage(db)
     .removeChat(chatId)
     .catch((error) => logger.warn(error, "[fork-bonds] Could not clear the relationships for chat %s", chatId));
@@ -27,7 +31,33 @@ export async function removeForkChatData(db: DB, chatId: string): Promise<void> 
  * where the story was rather than with an empty tracker. Pictures are copied, not shared, because
  * removing a pin deletes its picture. Never throws: a branch without its board is still a branch.
  */
-export async function copyForkChatData(db: DB, fromChatId: string, toChatId: string): Promise<void> {
+export async function copyForkChatData(
+  db: DB,
+  fromChatId: string,
+  toChatId: string,
+  messageIdMap: ReadonlyMap<string, string> = new Map(),
+): Promise<void> {
+  // Chapters come along while every message of theirs did: a branch from inside a finished chapter
+  // keeps that chapter open, and the ones after it are not part of the branch's story.
+  try {
+    const store = createChaptersStorage(db);
+    for (const chapter of await store.listForChat(fromChatId)) {
+      const first = messageIdMap.get(chapter.firstMessageId);
+      const last = messageIdMap.get(chapter.lastMessageId);
+      if (!first || !last) break;
+      await store.create({
+        chatId: toChatId,
+        title: chapter.title,
+        first: { id: first, createdAt: chapter.firstMessageAt },
+        last: { id: last, createdAt: chapter.lastMessageAt },
+        messageCount: chapter.messageCount,
+        recap: chapter.recap,
+      });
+      if (chapter.stale) await store.markStale(toChatId, [{ id: last, createdAt: chapter.lastMessageAt }]);
+    }
+  } catch (error) {
+    logger.warn(error, "[fork-chapters] Could not copy the chapters from chat %s to %s", fromChatId, toChatId);
+  }
   try {
     const pins = createBoardPinsStorage(db);
     for (const pin of await pins.listForScope("chat", fromChatId)) {
@@ -110,6 +140,7 @@ export async function forgetForkReplies(
   db: DB,
   removed: readonly { id: string; chatId: string; createdAt: string }[],
 ): Promise<void> {
+  await markForkChaptersStale(db, removed);
   // Two reads per chat find the replies that left a tracker run or a moment; only those are undone,
   // so deleting many ordinary messages costs the same as deleting one.
   const tracked = new Set<string>();
@@ -133,5 +164,24 @@ export async function forgetForkReplies(
     await undoBondTurn(db, message.chatId, message.id).catch((error) =>
       logger.warn(error, "[fork-bonds] Could not take back the tracker run of message %s", message.id),
     );
+  }
+}
+
+/**
+ * A message edited, swiped or deleted inside a finished chapter leaves its recap out of date. The
+ * recap is only marked, never rewritten behind the writer's back. Never throws.
+ */
+export async function markForkChaptersStale(
+  db: DB,
+  changed: readonly { id: string; chatId: string; createdAt: string }[],
+): Promise<void> {
+  const store = createChaptersStorage(db);
+  for (const chatId of new Set(changed.map((message) => message.chatId))) {
+    await store
+      .markStale(
+        chatId,
+        changed.filter((message) => message.chatId === chatId),
+      )
+      .catch((error) => logger.warn(error, "[fork-chapters] Could not mark the recaps of chat %s", chatId));
   }
 }

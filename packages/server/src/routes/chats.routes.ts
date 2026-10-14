@@ -4912,8 +4912,8 @@ export async function chatsRoutes(app: FastifyInstance) {
       if (branchedId) sourceToBranchedMessageId.set(msg.id, branchedId);
     });
     await storage.remapRoleplayInterruptionTargets(newChat.id, sourceToBranchedMessageId);
-    // Fork: the branch starts with the source's board and relationships.
-    await copyForkChatData(app.db, sourceChat.id, newChat.id);
+    // Fork: the branch starts with the source's board, relationships and finished chapters.
+    await copyForkChatData(app.db, sourceChat.id, newChat.id, sourceToBranchedMessageId);
     const forkSourceMessage = copiedSourceMessages.at(-1);
 
     if (sourceChat.mode === "game" && settingsToKeep.gameJournal) {

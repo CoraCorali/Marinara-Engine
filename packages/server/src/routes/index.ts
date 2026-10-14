@@ -9,6 +9,7 @@ import { charactersRoutes } from "./characters.routes.js";
 import { lorebooksRoutes } from "./lorebooks.routes.js";
 import { forkBoardRoutes } from "./fork-board.routes.js";
 import { forkClosetRoutes } from "./fork-closet.routes.js";
+import { forkChaptersRoutes } from "./fork-chapters.routes.js";
 import { forkDirectorRoutes } from "./fork-director.routes.js";
 import { forkBondsRoutes } from "./fork-bonds.routes.js";
 import { forkFixRoutes } from "./fork-fix.routes.js";
@@ -107,6 +108,7 @@ export async function registerRoutes(app: FastifyInstance) {
   await app.register(forkBoardRoutes, { prefix: "/api/fork-board" });
   // Fork: the closet of saved outfits.
   await app.register(forkClosetRoutes, { prefix: "/api/fork-closet" });
+  await app.register(forkChaptersRoutes, { prefix: "/api/fork-chapters" });
   await app.register(forkDirectorRoutes, { prefix: "/api/fork-director" });
   await app.register(forkBondsRoutes, { prefix: "/api/fork-bonds" });
   await app.register(forkFixRoutes, { prefix: "/api/fork-fix" });

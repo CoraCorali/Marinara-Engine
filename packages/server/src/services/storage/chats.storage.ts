@@ -40,7 +40,7 @@ import {
   conversationCallMessages,
   lorebookEntries,
 } from "../../db/schema/index.js";
-import { forgetForkReplies, removeForkChatData } from "../fork-chat-data.js";
+import { forgetForkReplies, markForkChaptersStale, removeForkChatData } from "../fork-chat-data.js";
 import { newId, now } from "../../utils/id-generator.js";
 import { parseSourceMessageRefs } from "./lorebook-provenance.js";
 import { existsSync, rmSync } from "fs";
@@ -2676,6 +2676,8 @@ export function createChatsStorage(db: DB) {
           await db.update(messages).set(messagePatch).where(eq(messages.id, id));
           if (existing) {
             await invalidateMemoryChunksFrom(db, existing.chatId, existing.createdAt);
+            // Fork: an edit inside a finished chapter leaves its recap out of date.
+            if (content !== existing.content) await markForkChaptersStale(db, [existing]);
           }
           // Also sync the edit to the active swipe row so it persists across swipe switches.
           const msg = await this.getMessage(id);
@@ -3445,6 +3447,8 @@ export function createChatsStorage(db: DB) {
           .where(eq(messages.id, messageId));
         if (msg) {
           await invalidateMemoryChunksFrom(db, msg.chatId, msg.createdAt);
+          // Fork: so does showing another swipe there.
+          if (msg.activeSwipeIndex !== index) await markForkChaptersStale(db, [msg]);
         }
         await reconcileEffects(await readMessage(messageId), false, locked);
         // The chat variables follow the swipe that is shown.

@@ -2,13 +2,14 @@
 // Fork: the Director's chair — talk out the next reply off the record
 // ──────────────────────────────────────────────
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Clapperboard, Loader2, RotateCcw, SendHorizontal } from "lucide-react";
+import { BookOpen, Clapperboard, FastForward, Loader2, RotateCcw, SendHorizontal } from "lucide-react";
 import { useTranslation as useUiTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { api } from "../../lib/api-client";
 import { showConfirmDialog } from "../../lib/app-dialogs";
 import { useUIStore } from "../../stores/ui.store";
 import { useBondPairs, useBonds, useRecentBondChanges } from "../../hooks/use-fork-bonds";
+import { useEndForkChapter } from "../../hooks/use-fork-chapters";
 
 export interface DirectorTurn {
   role: "user" | "assistant";
@@ -53,6 +54,14 @@ export function ForkDirectorPanel({
   const { t: localizeUi } = useUiTranslation();
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
+  // Fork: chapters. The Director may offer to end the chapter or skip ahead, as a button.
+  const [suggestion, setSuggestion] = useState<{
+    kind: "end_chapter" | "time_skip";
+    skipTo: string;
+    /** The chapter was ended from here already, so only the skip is left. */
+    ended?: boolean;
+  } | null>(null);
+  const endChapter = useEndForkChapter(chatId);
   const endRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -78,14 +87,21 @@ export function ForkDirectorPanel({
       setDraft("");
       setSending(true);
       try {
-        const data = await api.post<{ say: string; note: string }>("/fork-director/talk", {
-          chatId,
-          messages: nextTurns,
-          // So the Director builds on the note as it stands, edits included.
-          note,
-          debugMode,
-        });
+        setSuggestion(null);
+        const data = await api.post<{ say: string; note: string; suggest?: string; skipTo?: string }>(
+          "/fork-director/talk",
+          {
+            chatId,
+            messages: nextTurns,
+            // So the Director builds on the note as it stands, edits included.
+            note,
+            debugMode,
+          },
+        );
         onChange([...nextTurns, { role: "assistant", content: data.say }], data.note || note);
+        if (data.suggest === "end_chapter" || (data.suggest === "time_skip" && data.skipTo)) {
+          setSuggestion({ kind: data.suggest, skipTo: data.skipTo ?? "" });
+        }
       } catch (error) {
         // Put the message back so nothing typed is lost.
         onChange(turns, note);
@@ -213,6 +229,49 @@ export function ForkDirectorPanel({
               <Loader2 size="0.875rem" className="animate-spin" />
               {localizeUi("ui.chat.forkdirector.thinking")}
             </div>
+          </div>
+        )}
+        {suggestion && !sending && turns[turns.length - 1]?.role === "assistant" && (
+          <div className="ml-10 flex flex-wrap gap-1.5">
+            {suggestion.kind === "time_skip" && (
+              <button
+                type="button"
+                onClick={() => {
+                  // The skip is a direction for the next reply, kept in the note like any other.
+                  // Model instructions stay in English, whatever language the interface is in.
+                  onChange(
+                    turns,
+                    `Time skip: ${suggestion.skipTo}. Open the next reply with a short transition that moves the story there, showing what changed and where everyone is now, and keep the date and time consistent with the jump.`,
+                  );
+                  setSuggestion(null);
+                }}
+                className="flex min-h-9 items-center gap-1.5 rounded-full bg-[color-mix(in_srgb,var(--primary)_18%,transparent)] px-3 text-xs font-semibold text-[var(--primary)]"
+              >
+                <FastForward size="0.8125rem" />
+                {localizeUi("ui.chat.forkchapters.skipTo", { when: suggestion.skipTo })}
+              </button>
+            )}
+            {!suggestion.ended && (
+              <button
+                type="button"
+                disabled={busy || endChapter.isPending}
+                onClick={() => {
+                  endChapter.mutate({ debugMode });
+                  if (suggestion.kind === "end_chapter") setSuggestion(null);
+                  else setSuggestion({ ...suggestion, ended: true });
+                }}
+                className="flex min-h-9 items-center gap-1.5 rounded-full bg-[color-mix(in_srgb,var(--primary)_18%,transparent)] px-3 text-xs font-semibold text-[var(--primary)] disabled:opacity-50"
+              >
+                {endChapter.isPending ? (
+                  <Loader2 size="0.8125rem" className="animate-spin" />
+                ) : (
+                  <BookOpen size="0.8125rem" />
+                )}
+                {suggestion.kind === "time_skip"
+                  ? localizeUi("ui.chat.forkchapters.endFirst")
+                  : localizeUi("ui.chat.forkchapters.endSuggested")}
+              </button>
+            )}
           </div>
         )}
         <div ref={endRef} />

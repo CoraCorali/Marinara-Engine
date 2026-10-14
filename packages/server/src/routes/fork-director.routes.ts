@@ -33,6 +33,12 @@ import {
 import { createBoardPinsStorage } from "../services/board/fork-board-pins.js";
 import { bondsPromptBlock } from "../services/generation/fork-bonds-prompt.js";
 import { boardPinsNoteLine, pinNameResolver } from "../services/generation/fork-board-prompt.js";
+import {
+  combineWithRollingSummary,
+  createChaptersStorage,
+  readEarlierRecap,
+  storySoFarBlock,
+} from "../services/chapters/fork-chapters.js";
 import { isDebugAgentsEnabled } from "../config/runtime-config.js";
 import { logDebugOverride, logger } from "../lib/logger.js";
 
@@ -48,7 +54,9 @@ Your job is to help the writer work out what the next reply should do. Be brief,
 - Never write the roleplay reply itself, and never write dialogue or actions for anyone. You describe what should happen, you do not perform it.
 
 Return only valid JSON in this exact shape, with nothing before or after it:
-{"say": "what you are telling the writer", "note": "the direction for the next reply, or an empty string"}
+{"say": "what you are telling the writer", "note": "the direction for the next reply, or an empty string", "suggest": "", "skipTo": ""}
+
+"suggest" offers the writer a button, and is usually empty. Set it to "end_chapter" when the story has reached a natural break (a new day, a change of place, a big moment that just closed) and the chapter would end well here. Set it to "time_skip" when the writer wants to jump ahead or the scene has nothing left to give, and put where to skip to in "skipTo", in a few words ("the next morning", "a week later"). Mention the suggestion in "say". Never suggest either just because you can.
 
 The "note" is what the story's writer model will be told to do on the next reply. Keep it one or two plain sentences describing what happens and how it is played, with no names for the writer and no meta talk. Build it from everything agreed so far in this conversation, not just the last message. Leave it empty only while nothing has been decided yet.`;
 
@@ -224,11 +232,23 @@ export async function forkDirectorRoutes(app: FastifyInstance) {
       .filter(Boolean)
       .join("\n\n");
 
+    // Fork: the finished chapters' recaps come first, the same as the writer gets them.
+    const chapterList = await createChaptersStorage(app.db).listForChat(chatId);
+    const currentChapter = (chapterList[chapterList.length - 1]?.number ?? 0) + 1;
+    const chapterSummary = combineWithRollingSummary(
+      storySoFarBlock(chapterList, readEarlierRecap(chatMeta), currentChapter),
+      resolveRoleplayChatSummary(String(chat.mode ?? ""), chatMeta),
+    );
+    const chapterLine =
+      chat.mode === "roleplay"
+        ? `The story is in Chapter ${currentChapter}${chapterList.length ? ` (${chapterList.length} finished before it)` : ""}.`
+        : "";
+
     const context = buildDirectorContext({
       cards,
       persona,
       lore,
-      summary: resolveRoleplayChatSummary(String(chat.mode ?? ""), chatMeta),
+      summary: chapterSummary,
       scene,
       standing,
     });
@@ -239,7 +259,7 @@ export async function forkDirectorRoutes(app: FastifyInstance) {
     const noteBlock = currentNote
       ? `<current_note>\n${currentNote}\n</current_note>\nThis is the note as it stands now. The writer may have edited it by hand: keep their wording unless this conversation changes what should happen, and return it unchanged in "note" when nothing new is decided.`
       : "";
-    const system = [SYSTEM_PROMPT, context, noteBlock].filter(Boolean).join("\n\n");
+    const system = [SYSTEM_PROMPT, context, chapterLine, noteBlock].filter(Boolean).join("\n\n");
     const promptMessages = [{ role: "system" as const, content: system }, ...turns];
     logDebugOverride(
       body.debugMode === true || isDebugAgentsEnabled(),
@@ -258,12 +278,23 @@ export async function forkDirectorRoutes(app: FastifyInstance) {
     // A model that ignores the JSON shape still has something useful to say, so keep its words.
     let say = raw;
     let note = "";
+    let suggest: "" | "end_chapter" | "time_skip" = "";
+    let skipTo = "";
     const start = raw.indexOf("{");
     const end = raw.lastIndexOf("}");
     if (start >= 0 && end > start) {
       try {
-        const parsed = JSON.parse(raw.slice(start, end + 1)) as { say?: unknown; note?: unknown };
+        const parsed = JSON.parse(raw.slice(start, end + 1)) as {
+          say?: unknown;
+          note?: unknown;
+          suggest?: unknown;
+          skipTo?: unknown;
+        };
         if (typeof parsed.note === "string") note = parsed.note.trim();
+        // Fork: chapters. A time skip needs somewhere to skip to.
+        if (typeof parsed.skipTo === "string") skipTo = parsed.skipTo.replace(/\s+/g, " ").trim().slice(0, 60);
+        if (chat.mode === "roleplay" && parsed.suggest === "end_chapter") suggest = "end_chapter";
+        if (chat.mode === "roleplay" && parsed.suggest === "time_skip" && skipTo) suggest = "time_skip";
         if (typeof parsed.say === "string" && parsed.say.trim()) say = parsed.say.trim();
         // Valid JSON with only a note: show the note rather than a block of raw JSON.
         else if (note) say = note;
@@ -272,6 +303,6 @@ export async function forkDirectorRoutes(app: FastifyInstance) {
       }
     }
     if (!say) return reply.status(502).send({ error: "The model returned an empty response" });
-    return { say, note };
+    return { say, note, suggest, skipTo: suggest === "time_skip" ? skipTo : "" };
   });
 }
