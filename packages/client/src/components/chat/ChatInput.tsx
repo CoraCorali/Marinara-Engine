@@ -1608,6 +1608,8 @@ export const ChatInput = memo(function ChatInput({
   }, [releaseHeldDeleteWork]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    // Fork: Enter that confirms an IME candidate (Japanese, Chinese, Korean…) is not a send.
+    if (e.nativeEvent.isComposing || e.keyCode === 229) return;
     if (mode === "roleplay" && (e.key === "Backspace" || e.key === "Delete") && !heldDeleteKeyRef.current) {
       heldDeleteKeyRef.current = true;
       heldDeleteDraftRef.current = null;
@@ -2265,6 +2267,8 @@ export const ChatInput = memo(function ChatInput({
 
         <button
           onClick={isStreaming ? () => useChatStore.getState().stopGeneration(activeChatId ?? undefined) : handleSend}
+          // Fork: the main button says what it does, for screen readers and long-press tooltips.
+          aria-label={localizeUi(isStreaming ? "ui.chat.chatinput.stopGenerating" : "ui.chat.chatinput.sendMessage")}
           disabled={
             (!isStreaming && (isInputBusy || isReadingAttachments)) ||
             (!hasInput && !attachments.length && !canSubmitSpatialMove && !isStreaming && !canRetry && !canContinue) ||

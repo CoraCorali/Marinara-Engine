@@ -343,13 +343,33 @@ export async function flushGameStatePatch(chatId?: string) {
   }
 }
 
-export function discardPendingGameStatePatch(chatId?: string) {
+/** Fork: what the user toggles (locks and hidden fields) is never dropped by an agent's update. */
+const USER_ONLY_PATCH_FIELDS: readonly GameStatePatchField[] = ["fieldLocks", "hiddenTrackerFields"];
+
+/**
+ * Drops queued tracker edits an agent's update has overtaken. Fork: given the update's fields, queued
+ * locks and hidden-field choices survive it (an agent never sets those), and so do queued edits to
+ * fields it does not touch. Without them, everything queued is dropped as before.
+ */
+export function discardPendingGameStatePatch(chatId?: string, incomingFields?: readonly string[]) {
+  // Without `incomingFields` (clearing the trackers) everything queued goes, as before.
+  const survives = (field: string) =>
+    incomingFields !== undefined &&
+    (USER_ONLY_PATCH_FIELDS.includes(field as GameStatePatchField) || !incomingFields.includes(field));
+  for (const map of [pendingPatches, durablePatches]) {
+    for (const queued of map.values()) {
+      if (chatId && queued.chatId !== chatId) continue;
+      for (const field of Object.keys(queued.fields)) {
+        if (!survives(field)) delete queued.fields[field as GameStatePatchField];
+      }
+    }
+  }
   const keys = new Set([
     ...Array.from(pendingPatches.entries())
-      .filter(([, queued]) => !chatId || queued.chatId === chatId)
+      .filter(([, queued]) => (!chatId || queued.chatId === chatId) && Object.keys(queued.fields).length === 0)
       .map(([key]) => key),
     ...Array.from(durablePatches.entries())
-      .filter(([, queued]) => !chatId || queued.chatId === chatId)
+      .filter(([, queued]) => (!chatId || queued.chatId === chatId) && Object.keys(queued.fields).length === 0)
       .map(([key]) => key),
   ]);
 

@@ -975,7 +975,12 @@ export async function executeAgent(
 
     // Parse the result based on agent type
     let parsed = parseAgentResponse(config, responseText);
-    let invalidJson = shouldFailInvalidJsonResult(config, parsed.data);
+    // Fork: a reply cut off at the token limit is not repaired into a "complete" result: closing its
+    // brackets would turn a half-written list of characters or fields into the whole list and
+    // delete the rest. It is retried like invalid JSON instead.
+    let invalidJson =
+      shouldFailInvalidJsonResult(config, parsed.data) ||
+      (agentResponseIsJson(config) && isTruncatedFinish(result.finishReason));
     let totalTokens = result.usage?.totalTokens ?? 0;
 
     if (invalidJson && shouldRetryInvalidJsonAgent(config) && !context.signal?.aborted) {
@@ -1655,8 +1660,11 @@ export async function executeAgentBatch(
       batchedAgentTypes: configs.map((config) => config.type),
     });
 
-    // Parse the batched response into individual results
-    const { parsed, failed } = parseBatchResponse(configs, responseText, durationMs, totalTokens);
+    // Parse the batched response into individual results. Fork: a batch cut off at the token
+    // limit runs every agent on its own instead, rather than trusting repaired JSON.
+    const { parsed, failed } = isTruncatedFinish(result.finishReason)
+      ? { parsed: [] as AgentResult[], failed: [...configs] }
+      : parseBatchResponse(configs, responseText, durationMs, totalTokens);
 
     logger.info(
       "[agent-batch] Batch parse: %d parsed, %d failed %s",
@@ -2013,6 +2021,11 @@ function resolveStructuredAgentResult(
   if (config.type !== "beholder") return { data, valid: true };
   const resolution = resolveBeholderStateResponse(data, context.memory._beholderState, context.persona?.name ?? "User");
   return { data: resolution.state, valid: resolution.valid, error: resolution.error };
+}
+
+/** Fork: whether a provider finish reason means the reply stopped at the token limit. */
+function isTruncatedFinish(finishReason: unknown): boolean {
+  return finishReason === "length" || finishReason === "max_tokens" || finishReason === "MAX_TOKENS";
 }
 
 function shouldRetryInvalidJsonAgent(config: Pick<AgentExecConfig, "type" | "settings">): boolean {

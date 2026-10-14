@@ -2547,8 +2547,13 @@ function VariableCard({
   const optsRef = useRef<VariableOptionDraft[]>(opts);
   const expandedOpt = expandedOptId ? (opts.find((opt) => opt.id === expandedOptId) ?? null) : null;
 
+  // Fork: take the saved options only when new ones arrive. Right after a save the old list is
+  // still showing until the refetch lands, and copying it then would undo the edit just made.
+  const syncedOptsRef = useRef(opts);
   useEffect(() => {
-    if (!onUpdateVariable.isPending) optsRef.current = opts;
+    if (onUpdateVariable.isPending || opts === syncedOptsRef.current) return;
+    syncedOptsRef.current = opts;
+    optsRef.current = opts;
   }, [onUpdateVariable.isPending, opts]);
 
   const update = (data: Record<string, unknown>) => {
@@ -3120,9 +3125,13 @@ function OptionFieldInput({
   useEffect(() => {
     if (!focusedRef.current) setLocal(value);
   }, [value]);
+  // Fork: a field that unmounts (a card collapsed, a tab switched) with an edit still waiting on
+  // its timer commits it, since no blur fires for a removed node.
+  const pendingRef = useRef<{ value: string; commit: (v: string) => void } | null>(null);
   useEffect(
     () => () => {
       if (timeoutRef.current) clearTimeout(timeoutRef.current);
+      if (pendingRef.current) pendingRef.current.commit(pendingRef.current.value);
     },
     [],
   );
@@ -3142,7 +3151,10 @@ function OptionFieldInput({
         const nextValue = formatQuotes(rawValue);
         setLocal(nextValue);
         if (timeoutRef.current) clearTimeout(timeoutRef.current);
+        pendingRef.current = { value: nextValue, commit: onCommit };
         timeoutRef.current = setTimeout(() => {
+          timeoutRef.current = null;
+          pendingRef.current = null;
           onCommit(nextValue);
         }, 600);
       }}
@@ -3152,6 +3164,7 @@ function OptionFieldInput({
           clearTimeout(timeoutRef.current);
           timeoutRef.current = null;
         }
+        pendingRef.current = null;
         if (local !== value) onCommit(local);
       }}
       onKeyDown={(e) => {
@@ -3230,7 +3243,9 @@ function SectionContentTextarea({
     if (!focusedRef.current) setLocal(value);
   }, [value]);
 
+  const pendingRef = useRef<{ value: string; commit: (v: string) => void } | null>(null);
   const commit = useCallback(() => {
+    pendingRef.current = null;
     if (timeoutRef.current) {
       clearTimeout(timeoutRef.current);
       timeoutRef.current = null;
@@ -3243,7 +3258,10 @@ function SectionContentTextarea({
     const nextValue = nextRawValue;
     setLocal(nextValue);
     if (timeoutRef.current) clearTimeout(timeoutRef.current);
+    pendingRef.current = nextValue !== value ? { value: nextValue, commit: onCommit } : null;
     timeoutRef.current = setTimeout(() => {
+      timeoutRef.current = null;
+      pendingRef.current = null;
       if (nextValue !== value) onCommit(nextValue);
     }, 800);
   };
@@ -3258,10 +3276,12 @@ function SectionContentTextarea({
     focusedRef.current = true;
   };
 
-  // Cleanup timer on unmount
+  // Cleanup timer on unmount. Fork: an edit still waiting on the timer is committed, since a
+  // removed textarea fires no blur.
   useEffect(
     () => () => {
       if (timeoutRef.current) clearTimeout(timeoutRef.current);
+      if (pendingRef.current) pendingRef.current.commit(pendingRef.current.value);
     },
     [],
   );
@@ -3363,6 +3383,8 @@ function ExpandedEditorModal({
       clearTimeout(timeoutRef.current);
       timeoutRef.current = null;
     }
+    // Fork: closing (Done, the backdrop) keeps what was typed, as Escape already does.
+    if (local !== value) onChange(local);
     onClose();
   };
 

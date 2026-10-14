@@ -1042,6 +1042,25 @@ export interface GenerateRouteOptions {
   onRunnerReady?: (runner: GenerationRunner) => void;
 }
 
+/** Fork: whether a backend URL points at this machine or the local network (where KoboldCpp runs). */
+function isLocalBackendUrl(url: string): boolean {
+  try {
+    const host = new URL(url).hostname.replace(/^\[|\]$/g, "").toLowerCase();
+    return (
+      host === "localhost" ||
+      host.endsWith(".local") ||
+      host === "::1" ||
+      /^127\./.test(host) ||
+      /^10\./.test(host) ||
+      /^192\.168\./.test(host) ||
+      /^172\.(1[6-9]|2\d|3[01])\./.test(host) ||
+      /^169\.254\./.test(host)
+    );
+  } catch {
+    return false;
+  }
+}
+
 export async function generateRoutes(app: FastifyInstance, options: GenerateRouteOptions = {}) {
   const pendingTranslations = new Map<string, number>();
   registerSequentialGameTasks(app, ["/", "/retry-agents"]);
@@ -1613,7 +1632,9 @@ export async function generateRoutes(app: FastifyInstance, options: GenerateRout
       }
       logger.info("[abort] Client disconnected — aborting generation");
       abortController.abort();
-      if (baseUrl) {
+      // Fork: the KoboldCpp abort endpoint only exists on a local backend; a hosted API (LinkAPI,
+      // OpenRouter) must not be sent a stray request on every disconnect.
+      if (baseUrl && isLocalBackendUrl(baseUrl)) {
         const backendRoot = baseUrl.replace(/\/v1\/?$/, "");
         fetch(backendRoot + "/api/extra/abort", {
           method: "POST",
@@ -6871,8 +6892,15 @@ export async function generateRoutes(app: FastifyInstance, options: GenerateRout
           finalMessages.push({ role: "user", content: impersonateInstruction });
         }
 
+        // Fork: macros in a preset's prefill ({{char}}) are resolved like the rest of the prompt, so
+        // neither the model nor the saved reply sees them raw.
+        if (assistantPrefill.includes("{{")) {
+          assistantPrefill = resolveMacros(assistantPrefill, promptMacroContext, { trimResult: false });
+        }
         const tailMessages = appendGenerationTailMessages(finalMessages, {
-          assistantPrefill,
+          // Fork: Continue appends to a reply that already began, so the prefill is not sent (or
+          // written into the middle of the saved message) again.
+          assistantPrefill: input.continueMessageId ? "" : assistantPrefill,
           assistantReasoningPrefill,
           supportsAssistantReasoningPrefill: providerSupportsAssistantReasoningPrefill,
           followUpIteration,
@@ -12199,7 +12227,13 @@ export async function generateRoutes(app: FastifyInstance, options: GenerateRout
                     temperature: newTemperature,
                     worldCustomFields: newWorldCustomFields,
                     presentCharacters: snapshotChars,
-                    recentEvents: (gs.recentEvents as string[]) ?? [],
+                    // Fork: only text entries, and only the newest, so a model that repeats the list
+                    // back each turn cannot grow it without end (or crash readers with a string).
+                    recentEvents: Array.isArray(gs.recentEvents)
+                      ? (gs.recentEvents as unknown[])
+                          .filter((event): event is string => typeof event === "string" && event.trim().length > 0)
+                          .slice(-20)
+                      : [],
                     playerStats: snapshotPlayerStats,
                     personaStats: snapshotPersonaStats,
                     fieldLocks: normalizeTrackerFieldLocksForState(
@@ -14315,16 +14349,14 @@ export async function generateRoutes(app: FastifyInstance, options: GenerateRout
 
     // An agent tail may overlap a newer reply on the same backend. Its scoped
     // AbortSignal is safe; a backend-wide abort endpoint is not.
-    if (body.agentsOnly !== true && activeGeneration?.backendUrl) {
+    // Fork: only a local backend (KoboldCpp) has this endpoint, and Stop does not wait on it.
+    if (body.agentsOnly !== true && activeGeneration?.backendUrl && isLocalBackendUrl(activeGeneration.backendUrl)) {
       const backendRoot = activeGeneration.backendUrl.replace(/\/v1\/?$/, "");
       const abortUrl = backendRoot + "/api/extra/abort";
       logger.info("[abort] Sending abort to backend: %s", abortUrl);
-      try {
-        await fetch(abortUrl, { method: "POST", signal: AbortSignal.timeout(5000) });
-        logger.info("[abort] Backend abort sent successfully");
-      } catch (err) {
-        logger.warn(err, "[abort] Backend abort failed");
-      }
+      void fetch(abortUrl, { method: "POST", signal: AbortSignal.timeout(5000) })
+        .then(() => logger.info("[abort] Backend abort sent successfully"))
+        .catch((err) => logger.warn(err, "[abort] Backend abort failed"));
     }
 
     // Keep the entry registered until the generation route reaches its

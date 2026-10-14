@@ -3158,7 +3158,13 @@ async function applyRetryResultEffects(args: {
           if (syncedGameMap && syncedGameMap !== existingGameMap) {
             Object.assign(chatMeta, syncedMeta);
             assertRetryActive();
-            await chats.updateMetadata(chatId, chatMeta);
+            // Fork: write only the map keys onto the metadata as it is now; the copy read before
+            // the agents ran may be stale, and writing it whole would undo changes made since.
+            await chats.patchMetadata(chatId, {
+              gameMap: syncedMeta.gameMap,
+              ...("gameMaps" in syncedMeta ? { gameMaps: syncedMeta.gameMaps } : {}),
+              ...("activeGameMapId" in syncedMeta ? { activeGameMapId: syncedMeta.activeGameMapId } : {}),
+            });
             assertRetryActive();
             sendSseEvent(reply, { type: "game_map_update", data: syncedGameMap });
           }

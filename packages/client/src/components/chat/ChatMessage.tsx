@@ -2336,7 +2336,13 @@ export const ChatMessage = memo(function ChatMessage({
   // Parse message extra for conversation start flag
   const extra = useMemo(() => {
     if (!message.extra) return {};
-    return typeof message.extra === "string" ? JSON.parse(message.extra) : message.extra;
+    if (typeof message.extra !== "string") return message.extra;
+    // Fork: damaged extra data must not take the whole message down with it.
+    try {
+      return JSON.parse(message.extra);
+    } catch {
+      return {};
+    }
   }, [message.extra]);
   const isConversationStart = !!extra.isConversationStart || memoryStartCharacterIds?.length === 0;
   const conversationStartForCharacterIds: string[] = extra.conversationStartForCharacterIds ?? [];

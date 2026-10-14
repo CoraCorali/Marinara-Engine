@@ -2246,7 +2246,15 @@ function QuestCardEditable({
               <div key={idx} className="group group/field flex items-center gap-1 text-[0.5625rem]">
                 <button
                   onClick={() => toggleObjective(idx)}
-                  className={cn("rounded-sm", completedLock.locked && HUD_LOCKED_FIELD_CLASS)}
+                  aria-label={localizeUi(
+                    objective.completed
+                      ? "ui.chat.questcardeditable.markIncomplete"
+                      : "ui.chat.questcardeditable.markComplete",
+                  )}
+                  className={cn(
+                    "rounded-sm max-md:-m-1.5 max-md:p-1.5",
+                    completedLock.locked && HUD_LOCKED_FIELD_CLASS,
+                  )}
                 >
                   {objective.completed ? (
                     <CheckCircle2 size="0.5rem" className="text-emerald-400/60 shrink-0" />
@@ -2266,9 +2274,12 @@ function QuestCardEditable({
                   locked={textLock.locked}
                 />
                 <HudFieldLockButton {...textLock} label={localizeUi("ui.chat.questcardeditable.objectiveText")} />
+                {/* Fork: visible on touch (no hover there) with a real hit area, so an objective is
+                    never removed by an invisible tap at the end of its row. */}
                 <button
                   onClick={() => removeObjective(idx)}
-                  className="opacity-0 group-hover:opacity-100 text-[var(--muted-foreground)]/40 hover:text-red-500 transition-all shrink-0"
+                  aria-label={localizeUi("ui.chat.questcardeditable.removeObjective")}
+                  className="opacity-0 group-hover:opacity-100 max-md:opacity-100 max-md:-m-1.5 max-md:p-1.5 text-[var(--muted-foreground)]/40 hover:text-red-500 transition-all shrink-0"
                 >
                   <X size="0.4375rem" />
                 </button>

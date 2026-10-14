@@ -2,6 +2,7 @@
 // Full-Page Regex Script Editor
 // ──────────────────────────────────────────────
 import { useState, useCallback, useEffect, useMemo, type ReactNode } from "react";
+import { useEditorLeaveSave } from "../../hooks/use-editor-leave-save";
 import { useUIStore } from "../../stores/ui.store";
 import { showConfirmDialog } from "../../lib/app-dialogs";
 import {
@@ -424,23 +425,23 @@ export function RegexScriptEditor() {
   }, [dirty, closeRegexDetail]);
 
   const handleSave = useCallback(async () => {
-    if (!regexDetailId) return;
+    if (!regexDetailId) return false;
     setSaveError(null);
     if (localCharacterScopeEnabled && localTargetCharacterIds.length === 0) {
       setSaveError(localizeUi("ui.agents.regexscripteditor.chooseAtLeastOneCharacter"));
-      return;
+      return false;
     }
     if (localPromptPresetScopeEnabled && localTargetPromptPresetIds.length === 0) {
       setSaveError(localizeUi("ui.agents.regexscripteditor.chooseAtLeastOnePromptPreset"));
-      return;
+      return false;
     }
     if (blockingRegexError) {
       setSaveError(blockingRegexError);
-      return;
+      return false;
     }
     if (depthRangeError) {
       setSaveError(depthRangeError);
-      return;
+      return false;
     }
 
     const payload: Record<string, unknown> = {
@@ -479,8 +480,10 @@ export function RegexScriptEditor() {
       setDirty(false);
       setSavedFlash(true);
       setTimeout(() => setSavedFlash(false), 1500);
+      return true;
     } catch (err) {
       setSaveError(describeRegexEditorError(err));
+      return false;
     }
   }, [
     regexDetailId,
@@ -508,6 +511,14 @@ export function RegexScriptEditor() {
     regexDetailReturn,
     localizeUi,
   ]);
+  // Fork: leaving the editor (another script, another panel) saves first, as the character and
+  // preset editors do, instead of quietly dropping the edit.
+  useEditorLeaveSave(
+    `regexDetailId:${regexDetailId}`,
+    dirty,
+    handleSave,
+    updateScript.isPending || createScript.isPending,
+  );
 
   const markDirty = useCallback(() => setDirty(true), []);
 

@@ -2449,7 +2449,7 @@ export function useGenerate() {
               const patch = event.data as Record<string, unknown>;
               if (debugMode) console.warn(`[Generate] ${event.type} received:`, patch);
               if (!isActiveChat()) break;
-              discardPendingGameStatePatch(params.chatId);
+              discardPendingGameStatePatch(params.chatId, Object.keys(patch));
               applyGameStatePatchToStore(params.chatId, patch, gameStatePatchAnchor);
               break;
             }
@@ -3962,7 +3962,7 @@ export function useGenerate() {
               if (retryDebugMode) console.warn(`[Retry] ${event.type} received:`, patch);
               if (patch && Object.keys(patch).length > 0) trackerPatchCount += 1;
               if (!isActiveChat()) break;
-              discardPendingGameStatePatch(chatId);
+              discardPendingGameStatePatch(chatId, patch ? Object.keys(patch) : undefined);
               applyGameStatePatchToStore(chatId, patch);
               break;
             }

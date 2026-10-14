@@ -300,6 +300,17 @@ export class OpenAIProvider extends BaseLLMProvider {
     return typeof message === "string" ? message : "";
   }
 
+  /** Fork: a stream chunk that reports an error (alongside choices or not), or a choice that finished with "error". */
+  private static throwOnStreamError(parsed: Record<string, unknown>, context: string): void {
+    const choices = Array.isArray(parsed.choices) ? (parsed.choices as { finish_reason?: unknown }[]) : [];
+    const finishedWithError = choices.some((choice) => choice?.finish_reason === "error");
+    if (parsed.error == null && !finishedWithError) return;
+    const providerMessage = parsed.error != null ? OpenAIProvider.extractProviderErrorMessage(parsed) : "";
+    throw new Error(
+      `OpenAI ${context} stream ended with an error${providerMessage ? `: ${sanitizeApiError(providerMessage)}` : ""}`,
+    );
+  }
+
   private static requireChatCompletionsChoices<T>(json: Record<string, unknown>, context: string): T[] {
     if (Array.isArray(json.choices)) return json.choices as T[];
     const providerMessage = OpenAIProvider.extractProviderErrorMessage(json);
@@ -1473,6 +1484,9 @@ export class OpenAIProvider extends BaseLLMProvider {
           if (parsed.usage) {
             streamUsage = OpenAIProvider.extractChatCompletionsUsage(parsed.usage as ChatCompletionsUsagePayload);
           }
+          // Fork: gateways (OpenRouter, LinkAPI-style proxies) report a failure mid-stream as a chunk
+          // that carries both an error and choices; a cut-off reply must not be saved as a success.
+          OpenAIProvider.throwOnStreamError(parsed, "chat()");
           if (!Array.isArray(parsed.choices)) {
             const providerMessage = OpenAIProvider.extractProviderErrorMessage(parsed);
             if (providerMessage) {
@@ -1783,6 +1797,7 @@ export class OpenAIProvider extends BaseLLMProvider {
             streamUsage = OpenAIProvider.extractChatCompletionsUsage(parsed.usage as ChatCompletionsUsagePayload);
           }
 
+          OpenAIProvider.throwOnStreamError(parsed, "chatComplete()");
           if (!Array.isArray(parsed.choices)) {
             const providerMessage = OpenAIProvider.extractProviderErrorMessage(parsed);
             if (providerMessage) {
