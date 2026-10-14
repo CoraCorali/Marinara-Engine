@@ -38,3 +38,32 @@ export function wornOutfitLine(worn: readonly ClosetItem[], personaName: string)
   const who = personaName.trim() || "She";
   return `${who} is wearing: ${pieces.join(", ")}.`;
 }
+
+/** Slot-specific wording, so "a red one" still produces the right kind of garment. */
+const SLOT_SUBJECTS: Record<ClosetSlot, string> = {
+  dress: "a single dress",
+  top: "a single top",
+  bottom: "a single pair of trousers, skirt or shorts",
+  outer: "a single jacket or coat",
+  shoes: "a single pair of shoes",
+  bag: "a single bag",
+  jewellery: "a single piece of jewellery",
+  extra: "a single clothing item",
+};
+
+/**
+ * What to ask the image model for. The reference picture carries the drawing style, so the words
+ * carry the garment and the framing: one item, laid flat, nobody wearing it, on plain white, with
+ * room around it. That last part matters more than it looks — a piece drawn touching its
+ * neighbours cannot be cut out cleanly afterwards.
+ */
+export function buildGarmentPrompt(slot: ClosetSlot, description: string): string {
+  const wanted = description.trim();
+  return [
+    `${SLOT_SUBJECTS[slot]}: ${wanted || "a simple everyday piece"}.`,
+    "Drawn in exactly the same illustration style, line weight and colouring as the reference image.",
+    "The garment only, laid flat, with nobody wearing it and no body parts visible.",
+    "Centred on a plain white background with clear empty space around every edge.",
+    "No text, no labels, no watermark, no second item.",
+  ].join(" ");
+}

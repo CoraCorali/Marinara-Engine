@@ -73,3 +73,16 @@ export function useDeleteClosetItem(personaId: string | null) {
     onSuccess: () => qc.invalidateQueries({ queryKey: closetKeys.items(personaId) }),
   });
 }
+
+/**
+ * Draw a new piece from a description. `referencePath` is a picture she already owns: it carries
+ * the drawing style, so a new skirt looks like it belongs beside the ones already in the closet.
+ */
+export function useGenerateClosetItem(personaId: string | null) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { description: string; slot: ClosetSlot; referencePath?: string }) =>
+      api.post<{ item: ClosetItem; prompt: string }>("/fork-closet/generate", { personaId, ...input }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: closetKeys.items(personaId) }),
+  });
+}

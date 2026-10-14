@@ -2,7 +2,7 @@
 // Fork: the Closet — a persona's wardrobe, and what she has on
 // ──────────────────────────────────────────────
 import { useMemo, useRef, useState, type ChangeEvent } from "react";
-import { Plus, Trash2, Loader2, Shirt } from "lucide-react";
+import { Plus, Trash2, Loader2, Shirt, Sparkles } from "lucide-react";
 import { useTranslation as useUiTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { showConfirmDialog } from "../../lib/app-dialogs";
@@ -12,6 +12,7 @@ import {
   useClosetItems,
   useDeleteClosetItem,
   useUpdateClosetItem,
+  useGenerateClosetItem,
   useWearClosetItem,
   type ClosetItem,
   type ClosetSlot,
@@ -45,8 +46,10 @@ export function ForkClosetPanel({ personaId, personaName }: Props) {
   const updateItem = useUpdateClosetItem(personaId);
   const wearItem = useWearClosetItem(personaId);
   const deleteItem = useDeleteClosetItem(personaId);
+  const drawItem = useGenerateClosetItem(personaId);
   const fileRef = useRef<HTMLInputElement>(null);
   const [pendingSlot, setPendingSlot] = useState<ClosetSlot>("top");
+  const [wanted, setWanted] = useState("");
 
   const bySlot = useMemo(() => {
     const map = new Map<ClosetSlot, ClosetItem[]>();
@@ -56,6 +59,9 @@ export function ForkClosetPanel({ personaId, personaName }: Props) {
   }, [items]);
 
   const worn = useMemo(() => (items ?? []).filter((item) => item.worn), [items]);
+  // The first piece she added is the style reference: a new skirt should look like it belongs
+  // beside the ones already hanging up.
+  const styleReference = (items ?? [])[0] ?? null;
 
   if (!personaId) {
     return (
@@ -158,6 +164,47 @@ export function ForkClosetPanel({ personaId, personaName }: Props) {
           </p>
         )}
       </div>
+
+      <div className="flex items-center gap-2">
+        <label className="sr-only" htmlFor="fork-closet-draw">
+          {localizeUi("ui.chat.forkcloset.describeAPiece")}
+        </label>
+        <input
+          id="fork-closet-draw"
+          value={wanted}
+          onChange={(event) => setWanted(event.target.value)}
+          placeholder={localizeUi("ui.chat.forkcloset.describeAPiece")}
+          className="min-h-11 flex-1 rounded-lg bg-[var(--secondary)] px-3 text-sm text-foreground outline-none"
+        />
+        <button
+          type="button"
+          onClick={async () => {
+            const description = wanted.trim();
+            if (!description) return;
+            try {
+              await drawItem.mutateAsync({
+                description,
+                slot: pendingSlot,
+                ...(styleReference ? { referencePath: styleReference.imagePath } : {}),
+              });
+              setWanted("");
+            } catch (error) {
+              toast.error(error instanceof Error ? error.message : localizeUi("ui.chat.forkcloset.couldNotDrawThat"));
+            }
+          }}
+          disabled={drawItem.isPending || wanted.trim().length === 0}
+          aria-label={localizeUi("ui.chat.forkcloset.drawIt")}
+          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg bg-[var(--accent)] text-[var(--accent-foreground)] disabled:opacity-50"
+        >
+          {drawItem.isPending ? <Loader2 size="0.875rem" className="animate-spin" /> : <Sparkles size="0.875rem" />}
+        </button>
+      </div>
+
+      <p className="text-[0.625rem] text-[var(--muted-foreground)]">
+        {styleReference
+          ? localizeUi("ui.chat.forkcloset.drawnToMatchValue1", { value1: styleReference.label || "the first piece" })
+          : localizeUi("ui.chat.forkcloset.addOnePieceFirst")}
+      </p>
 
       <div className="flex items-center gap-2">
         <label className="sr-only" htmlFor="fork-closet-slot">

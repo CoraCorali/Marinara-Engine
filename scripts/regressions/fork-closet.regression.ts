@@ -119,6 +119,17 @@ assert.equal(
   "a full closet refuses another piece instead of growing without limit",
 );
 
+// ── What the image model is asked for ──
+const { buildGarmentPrompt } = await import("../../packages/server/src/services/generation/fork-closet-prompt.js");
+const skirt = buildGarmentPrompt("bottom", "a cream ruffle mini skirt");
+assert.ok(skirt.includes("a cream ruffle mini skirt"), "her words reach the model");
+assert.ok(skirt.includes("trousers, skirt or shorts"), "the slot says what kind of thing it is");
+assert.ok(skirt.includes("same illustration style"), "the reference carries the style");
+assert.ok(skirt.includes("nobody wearing it"), "a garment, not a figure");
+assert.ok(skirt.includes("empty space around every edge"), "so it can be cut out cleanly afterwards");
+assert.ok(buildGarmentPrompt("jewellery", "").includes("a single piece of jewellery"), "an empty ask still works");
+assert.ok(buildGarmentPrompt("shoes", "red flats").startsWith("a single pair of shoes"));
+
 // ── Deleting a persona leaves nothing behind ──
 const { removeForkCloset } = await import("../../packages/server/src/services/closet/fork-closet-cleanup.js");
 const cleared = await closet.removePersona("persona-rion");

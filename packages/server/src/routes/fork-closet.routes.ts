@@ -6,6 +6,11 @@ import {
   LOREBOOK_IMAGE_MAX_BYTES,
   saveLorebookImage,
 } from "../services/lorebook/lorebook-images.js";
+import { readLorebookImageDataUrl } from "../services/lorebook/lorebook-images.js";
+import { createConnectionsStorage } from "../services/storage/connections.storage.js";
+import { generateImage } from "../services/image/image-generation.js";
+import { buildGarmentPrompt } from "../services/generation/fork-closet-prompt.js";
+import { normalizeSlot } from "../services/closet/fork-closet-items.js";
 import { logger } from "../lib/logger.js";
 
 /**
@@ -105,5 +110,85 @@ export async function forkClosetRoutes(app: FastifyInstance) {
       logger.warn(error, "[fork-closet] Could not delete a garment image"),
     );
     return { success: true };
+  });
+
+  /**
+   * Draw a new piece from a description, in the style of a picture she already owns.
+   *
+   * The reference carries the drawing style, which is the whole point: a wardrobe only works if a
+   * new skirt looks like it belongs beside the ones already in it. Any picture already in the
+   * closet or on the board can be the reference, and the path pattern is enforced by the image
+   * store rather than trusted from the request.
+   */
+  app.post("/generate", async (req, reply) => {
+    const body = (req.body ?? {}) as {
+      personaId?: unknown;
+      description?: unknown;
+      slot?: unknown;
+      label?: unknown;
+      referencePath?: unknown;
+    };
+    const personaId = typeof body.personaId === "string" ? body.personaId.trim() : "";
+    const description = typeof body.description === "string" ? body.description.trim() : "";
+    if (!personaId) return reply.status(400).send({ error: "personaId is required" });
+    if (!description) return reply.status(400).send({ error: "Say what the piece should be" });
+
+    const slot = normalizeSlot(body.slot);
+    const connections = createConnectionsStorage(app.db);
+    const conn = await connections.getDefaultForImageGeneration();
+    if (!conn) return reply.status(400).send({ error: "No image generation connection is set up" });
+
+    // A reference is optional, but without one the piece will not match the rest of the closet.
+    let referenceImage: string | undefined;
+    if (typeof body.referencePath === "string" && body.referencePath) {
+      const dataUrl = await readLorebookImageDataUrl(body.referencePath);
+      // The providers want raw base64, not a data: URL.
+      if (dataUrl) referenceImage = dataUrl.slice(dataUrl.indexOf(",") + 1);
+    }
+
+    const prompt = buildGarmentPrompt(slot, description);
+    let result;
+    try {
+      result = await generateImage(
+        conn.imageGenerationSource || conn.model || "",
+        conn.baseUrl || "https://image.pollinations.ai",
+        conn.apiKey || "",
+        conn.imageService || conn.imageGenerationSource || conn.model || "",
+        {
+          prompt,
+          model: conn.model || undefined,
+          referenceImage,
+          imageEndpointId: conn.imageEndpointId || undefined,
+          comfyWorkflow: conn.comfyuiWorkflow || undefined,
+        },
+      );
+    } catch (error) {
+      logger.error(error, "[fork-closet] Could not draw a new piece");
+      return reply
+        .status(502)
+        .send({ error: error instanceof Error ? error.message : "The image model could not draw that" });
+    }
+
+    let image;
+    try {
+      image = await saveLorebookImage(Buffer.from(result.base64, "base64"));
+    } catch (error) {
+      return reply.status(400).send({ error: error instanceof Error ? error.message : "Could not save that image" });
+    }
+
+    const item = await storage.create({
+      personaId,
+      slot,
+      imagePath: image.path,
+      label: typeof body.label === "string" && body.label.trim() ? body.label.trim() : description,
+      source: "generated",
+    });
+    if (!item) {
+      await discardLorebookImage(image).catch((error) =>
+        logger.warn(error, "[fork-closet] Could not discard an unattached garment image"),
+      );
+      return reply.status(400).send({ error: `A closet holds at most ${MAX_CLOSET_ITEMS_PER_PERSONA} pieces` });
+    }
+    return { item, prompt };
   });
 }

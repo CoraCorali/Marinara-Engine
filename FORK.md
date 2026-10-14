@@ -98,6 +98,13 @@ Markup is stripped and every part is length-capped before it is sent.
   format bump and stock Marinara simply ignores the file.
   The in-scene strip above the message box no longer hides itself when a chat has no pins, since
   the Closet button lives there too.
+- **Drawing new pieces.** Describe a piece and it is drawn into the closet, using a picture she
+  already owns as the style reference, so a new skirt looks like it belongs beside the ones already
+  hanging up. The first piece in the closet is the reference; with an empty closet it draws without
+  one and says so. The slot shapes the request, so "a red one" still produces the right kind of
+  thing, and the wording asks for the garment alone, laid flat on plain white with clear space
+  around every edge, which is what makes a piece cuttable afterwards. It uses the default image
+  generation connection. A failed draw leaves nothing behind.
 
 ## Upstream files touched
 
