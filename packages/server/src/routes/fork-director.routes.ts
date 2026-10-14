@@ -25,7 +25,7 @@ import { cardPromptText } from "../services/prompt/card-text.js";
 import { createBondsStorage } from "../services/bonds/fork-bonds.js";
 import { createBoardPinsStorage } from "../services/board/fork-board-pins.js";
 import { bondsPromptBlock } from "../services/generation/fork-bonds-prompt.js";
-import { boardPinsNoteLine } from "../services/generation/fork-board-prompt.js";
+import { boardPinsNoteLine, pinNameResolver } from "../services/generation/fork-board-prompt.js";
 import { isDebugAgentsEnabled } from "../config/runtime-config.js";
 import { logDebugOverride, logger } from "../lib/logger.js";
 
@@ -205,6 +205,9 @@ export async function forkDirectorRoutes(app: FastifyInstance) {
       ),
       boardPinsNoteLine(
         await createBoardPinsStorage(app.db).listForPrompt(chatId, identity?.source === "persona" ? identity.id : null),
+        pinNameResolver(persona?.name ?? "", (characterId) =>
+          String(cards[cardRows.findIndex((row) => row.id === characterId)]?.name ?? ""),
+        ),
       ),
     ]
       .filter(Boolean)

@@ -10,6 +10,7 @@ import { cn } from "../../lib/utils";
 import { useForkSlopStore } from "../../stores/fork-slop.store";
 import { Modal } from "../ui/Modal";
 import { ForkWeatherPanel } from "./ForkWeatherPanel";
+import { ForkOutfitSync } from "./ForkOutfitSync";
 import { useForkWeatherStore } from "../../stores/fork-weather.store";
 
 interface Props {
@@ -88,6 +89,8 @@ export function ForkBoardStrip({ chatScope, personaScope, onOpenBoard, onOpenBon
         <CloudSun size="0.875rem" />
         <span>{localizeUi("ui.chat.forkweather.button")}</span>
       </button>
+      {/* The board's outfits and the tracker's Wearing lines agree. */}
+      <ForkOutfitSync chatId={chatScope?.scopeId ?? null} scope={chatScope} />
       <Modal
         open={weatherOpen}
         onClose={() => setWeatherOpen(false)}

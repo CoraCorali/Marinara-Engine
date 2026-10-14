@@ -2,6 +2,7 @@
 // Fork: Reference board pins (React Query)
 // ──────────────────────────────────────────────
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import type { ForkPinShows, ForkWearSlot } from "@marinara-engine/shared";
 import { toast } from "sonner";
 import { api } from "../lib/api-client";
 import { translate } from "../localization/i18n";
@@ -17,8 +18,21 @@ export interface BoardPin {
   caption: string;
   category: BoardPinCategory;
   inScene: boolean;
+  /** "persona", a character id, "scene", or "" when nobody said. */
+  who: string;
+  /** For a wearing pin, what it covers. */
+  slot: ForkWearSlot | "";
+  shows: ForkPinShows;
   order: number;
   createdAt?: string;
+}
+
+/** What "Describe it" suggests for a pin. Nothing is saved until the board keeps it. */
+export interface PinDescription {
+  caption: string;
+  category: BoardPinCategory;
+  slot: ForkWearSlot | "";
+  shows: ForkPinShows;
 }
 
 export type BoardScope = { scopeType: "chat" | "persona"; scopeId: string } | null;
@@ -67,6 +81,9 @@ export function useUpdateBoardPin(scope: BoardScope) {
       category?: BoardPinCategory;
       inScene?: boolean;
       order?: number;
+      who?: string;
+      slot?: ForkWearSlot | "";
+      shows?: ForkPinShows;
     }) => api.patch<BoardPin>(`/fork-board/pins/${id}`, data),
     // Captions, categories, in-scene and order all save through here; a failure says so once,
     // instead of the change quietly snapping back on the next read.
@@ -84,5 +101,13 @@ export function useDeleteBoardPin(scope: BoardScope) {
   return useMutation({
     mutationFn: (id: string) => api.delete<{ success: boolean }>(`/fork-board/pins/${id}`),
     onSuccess: () => qc.invalidateQueries({ queryKey: boardKeys.pins(scope) }),
+  });
+}
+
+/** "Describe it": the chat's model looks at the picture and suggests a caption and what it is. */
+export function useDescribeBoardPin() {
+  return useMutation({
+    mutationFn: ({ id, chatId, debugMode }: { id: string; chatId: string | null; debugMode?: boolean }) =>
+      api.post<PinDescription>(`/fork-board/pins/${id}/describe`, { chatId, debugMode }),
   });
 }

@@ -3719,7 +3719,12 @@ const LocalChatArea = memo(function LocalChatArea({
         width="max-w-lg"
         mobileFullscreen
       >
-        <ForkReferenceBoard chatScope={forkBoardChatScope} personaScope={forkBoardPersonaScope} />
+        <ForkReferenceBoard
+          chatScope={forkBoardChatScope}
+          personaScope={forkBoardPersonaScope}
+          personaName={personaInfo?.name ?? ""}
+          cast={forkBondsCast}
+        />
       </Modal>
       <Modal
         open={forkBondsOpen}

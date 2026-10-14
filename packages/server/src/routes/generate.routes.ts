@@ -228,7 +228,12 @@ import { createPromptsStorage } from "../services/storage/prompts.storage.js";
 import { createCharactersStorage } from "../services/storage/characters.storage.js";
 import { resolveChatUserIdentity } from "../services/chat-user-identity.js";
 import { createBoardPinsStorage } from "../services/board/fork-board-pins.js";
-import { boardPinsAsImageEntries, boardPinsNoteLine } from "../services/generation/fork-board-prompt.js";
+import {
+  boardPinsAsImageEntries,
+  boardPinsNoteLine,
+  pinNameResolver,
+  pinsForReply,
+} from "../services/generation/fork-board-prompt.js";
 import { bondsPromptBlock } from "../services/generation/fork-bonds-prompt.js";
 import {
   applyBondsAgentResult,
@@ -7685,11 +7690,32 @@ export async function generateRoutes(app: FastifyInstance, options: GenerateRout
           }
           // Fork: in-scene board pins ride along with lorebook reference images so both share one
           // image budget. Roleplay only.
+          // A pin the latest message mentions by caption rides along with this reply too, even when it
+          // is not in scene, so "she's wearing the blue sundress" sends the sundress's picture.
+          const forkBoardStorage = createBoardPinsStorage(app.db);
+          const forkLatestUserText =
+            typeof input.userMessage === "string" && input.userMessage.trim()
+              ? input.userMessage
+              : String([...chatMessages].reverse().find((message: any) => message.role === "user")?.content ?? "");
+          const forkMentionedPins =
+            chatMode === "roleplay"
+              ? await forkBoardStorage.listMentioned(input.chatId, personaId, forkLatestUserText)
+              : [];
           const forkBoardPins =
-            chatMode === "roleplay" ? await createBoardPinsStorage(app.db).listForPrompt(input.chatId, personaId) : [];
+            chatMode === "roleplay"
+              ? pinsForReply(await forkBoardStorage.listForPrompt(input.chatId, personaId), forkMentionedPins)
+              : [];
+          const forkMentionedPinIds = new Set(forkMentionedPins.map((pin) => pin.id));
+          const forkPinNameFor = pinNameResolver(
+            personaName,
+            (characterId) => charInfo.find((character) => character.id === characterId)?.name ?? "",
+          );
           await appendLorebookImageMessages(
             targetScopedMessagesForGen,
-            [...(responderLorebookScan?.imageEntries ?? []), ...boardPinsAsImageEntries(forkBoardPins)],
+            [
+              ...(responderLorebookScan?.imageEntries ?? []),
+              ...boardPinsAsImageEntries(forkBoardPins, forkPinNameFor, forkMentionedPinIds),
+            ],
             {
               onNotice: notifyLorebookImages,
               rememberImage: (dataUrl) => lorebookReferenceImages.add(dataUrl),
@@ -7736,7 +7762,7 @@ export async function generateRoutes(app: FastifyInstance, options: GenerateRout
                 (characterId) => charInfo.find((character) => character.id === characterId)?.name ?? "",
                 personaName,
               ),
-              boardPinsNoteLine(forkBoardPins),
+              boardPinsNoteLine(forkBoardPins, forkPinNameFor, forkMentionedPinIds),
             ].filter(Boolean);
             if (forkNoteParts.length > 0) {
               const forkNote = {

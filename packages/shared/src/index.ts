@@ -239,3 +239,4 @@ export * from "./utils/game-widget-update.js";
 
 // Fork: relationship tracker shapes (see FORK.md).
 export * from "./features/fork-bond-shapes.js";
+export * from "./features/fork-board-shapes.js";

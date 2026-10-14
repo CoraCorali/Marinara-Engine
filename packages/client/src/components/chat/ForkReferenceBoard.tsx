@@ -2,12 +2,11 @@
 // Fork: Reference Board — pinned pictures sent with every reply
 // ──────────────────────────────────────────────
 import { useRef, useState, type ChangeEvent, type KeyboardEvent, type PointerEvent } from "react";
-import { GripVertical, Plus, Trash2, Loader2, Pin, PinOff } from "lucide-react";
+import { GripVertical, Plus, Loader2, Pencil, Pin, PinOff } from "lucide-react";
 import { useTranslation as useUiTranslation } from "react-i18next";
 import { HelpTooltip } from "../ui/HelpTooltip";
 import { toast } from "sonner";
 import { showConfirmDialog } from "../../lib/app-dialogs";
-import { useForkDraftField } from "../../hooks/use-fork-draft-field";
 import {
   BOARD_PIN_CATEGORIES,
   useAddBoardPin,
@@ -15,45 +14,11 @@ import {
   useDeleteBoardPin,
   useUpdateBoardPin,
   type BoardPin,
-  type BoardPinCategory,
   type BoardScope,
 } from "../../hooks/use-fork-board";
 import { cn } from "../../lib/utils";
-
-const CATEGORY_LABEL_KEYS: Record<BoardPinCategory, string> = {
-  wearing: "ui.chat.forkboard.categoryWearing",
-  place: "ui.chat.forkboard.categoryPlace",
-  person: "ui.chat.forkboard.categoryPerson",
-  thing: "ui.chat.forkboard.categoryThing",
-  vibe: "ui.chat.forkboard.categoryVibe",
-};
-
-/** A caption that saves a moment after you stop typing, and on close, rather than only on blur. */
-function CaptionInput({
-  id,
-  value,
-  placeholder,
-  onCommit,
-}: {
-  id: string;
-  value: string;
-  placeholder: string;
-  onCommit: (caption: string) => void;
-}) {
-  const [draft, change, flush] = useForkDraftField(value, onCommit);
-  return (
-    <textarea
-      id={id}
-      rows={1}
-      value={draft}
-      placeholder={placeholder}
-      onChange={(event) => change(event.target.value)}
-      onBlur={flush}
-      // Written on the polaroid itself, so it keeps the paper's ink whatever the theme.
-      className="min-h-8 w-full resize-none bg-transparent px-1 py-2 text-center font-serif text-[0.8125rem] italic leading-snug text-[#3a3330] outline-none [field-sizing:content] placeholder:text-[#8d8580]"
-    />
-  );
-}
+import { Modal } from "../ui/Modal";
+import { ForkPinEditor, pinTag, type PinCastMember } from "./ForkPinEditor";
 
 type SortMode = "mine" | "inScene" | "category" | "newest";
 const SORT_LABEL_KEYS: Record<SortMode, string> = {
@@ -81,13 +46,16 @@ function sortPins(pins: readonly BoardPin[], mode: SortMode): BoardPin[] {
 interface Props {
   chatScope: BoardScope;
   personaScope: BoardScope;
+  /** Who a pin can be about: the persona by name, and the chat's characters. */
+  personaName?: string;
+  cast?: readonly PinCastMember[];
 }
 
 /**
  * Two boards in one panel: this chat's pins, and the persona's own pins that follow them into
  * every chat. A pin that is "in scene" is sent to the model with every reply.
  */
-export function ForkReferenceBoard({ chatScope, personaScope }: Props) {
+export function ForkReferenceBoard({ chatScope, personaScope, personaName = "", cast = [] }: Props) {
   const { t: localizeUi } = useUiTranslation();
   const [tab, setTab] = useState<"chat" | "persona">("chat");
   const scope = tab === "chat" ? chatScope : personaScope;
@@ -100,6 +68,8 @@ export function ForkReferenceBoard({ chatScope, personaScope }: Props) {
   // While a pin is dragged the board shows this local order; it is saved when the drag ends.
   const [dragOrder, setDragOrder] = useState<string[] | null>(null);
   const [draggingId, setDraggingId] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const editingPin = (pins ?? []).find((pin) => pin.id === editingId) ?? null;
 
   const sorted = sortPins(pins ?? [], sort);
   const shown = dragOrder
@@ -184,7 +154,7 @@ export function ForkReferenceBoard({ chatScope, personaScope }: Props) {
     }
   };
 
-  const handleDelete = async (id: string) => {
+  const handleDelete = async (id: string): Promise<boolean> => {
     if (
       !(await showConfirmDialog({
         title: localizeUi("ui.chat.forkboard.removePin"),
@@ -193,12 +163,14 @@ export function ForkReferenceBoard({ chatScope, personaScope }: Props) {
         chatStyle: true,
       }))
     ) {
-      return;
+      return false;
     }
     try {
       await deletePin.mutateAsync(id);
+      return true;
     } catch {
       toast.error(localizeUi("ui.chat.forkboard.couldNotRemoveThatPin"));
+      return false;
     }
   };
 
@@ -287,17 +259,17 @@ export function ForkReferenceBoard({ chatScope, personaScope }: Props) {
               ))}
             </select>
           </div>
-          <div className="grid grid-cols-2 gap-x-3 gap-y-4 px-1 pt-2">
+          <div className="grid grid-cols-3 gap-x-2 gap-y-3 px-0.5 pt-1.5">
             {shown.map((pin, index) => (
               <div
                 key={pin.id}
                 data-pin-id={pin.id}
                 // A little tilt either way, like photos pinned up by hand.
                 style={{
-                  transform: draggingId === pin.id ? "scale(1.04)" : `rotate(${index % 2 === 0 ? -1.4 : 1.2}deg)`,
+                  transform: draggingId === pin.id ? "scale(1.04)" : `rotate(${index % 2 === 0 ? -1.2 : 1}deg)`,
                 }}
                 className={cn(
-                  "relative flex flex-col gap-1 rounded-sm bg-[#fbf8f2] p-2 pb-1 shadow-[0_6px_16px_rgba(0,0,0,0.35)] transition-transform",
+                  "relative flex min-w-0 flex-col gap-1 rounded-sm bg-[#fbf8f2] p-1.5 pb-0.5 shadow-[0_5px_12px_rgba(0,0,0,0.35)] transition-transform",
                   !pin.inScene && "opacity-60 saturate-50",
                   draggingId === pin.id && "z-10 shadow-[0_14px_30px_rgba(0,0,0,0.5)]",
                 )}
@@ -305,43 +277,37 @@ export function ForkReferenceBoard({ chatScope, personaScope }: Props) {
                 {pin.inScene && (
                   <span
                     aria-hidden="true"
-                    className="absolute -top-2 left-1/2 h-4 w-14 -translate-x-1/2 rotate-[-3deg] rounded-[2px] bg-[color-mix(in_srgb,var(--primary)_55%,white)] opacity-80"
+                    className="absolute -top-1.5 left-1/2 h-3 w-10 -translate-x-1/2 rotate-[-3deg] rounded-[2px] bg-[color-mix(in_srgb,var(--primary)_55%,white)] opacity-80"
                   />
                 )}
-                <img
-                  src={pin.imagePath}
-                  alt={pin.caption || localizeUi("ui.chat.forkboard.referencePicture")}
-                  className="aspect-square w-full object-cover"
-                  draggable={false}
-                />
-                <label className="sr-only" htmlFor={`fork-pin-caption-${pin.id}`}>
-                  {localizeUi("ui.chat.forkboard.caption")}
-                </label>
-                <CaptionInput
-                  id={`fork-pin-caption-${pin.id}`}
-                  value={pin.caption}
-                  placeholder={localizeUi("ui.chat.forkboard.captionPlaceholder")}
-                  onCommit={(caption) => updatePin.mutate({ id: pin.id, caption })}
-                />
-                <label className="sr-only" htmlFor={`fork-pin-category-${pin.id}`}>
-                  {localizeUi("ui.chat.forkboard.category")}
-                </label>
-                <select
-                  id={`fork-pin-category-${pin.id}`}
-                  value={pin.category}
-                  onChange={(event) =>
-                    updatePin.mutate({ id: pin.id, category: event.target.value as BoardPinCategory })
-                  }
-                  className="min-h-9 w-full rounded-full bg-[#efe9df] px-2 text-center text-xs font-semibold text-[#3a3330] outline-none"
+                {/* Tapping the picture opens the pin: who it is for, what it is, Describe it. */}
+                <button
+                  type="button"
+                  onClick={() => setEditingId(pin.id)}
+                  aria-label={localizeUi("ui.chat.forkboard.editPin")}
+                  className="block"
                 >
-                  {BOARD_PIN_CATEGORIES.map((category) => (
-                    <option key={category} value={category}>
-                      {localizeUi(CATEGORY_LABEL_KEYS[category])}
-                    </option>
-                  ))}
-                </select>
-                <div className="flex items-center justify-between gap-0.5">
-                  {sort === "mine" && (
+                  <img
+                    src={pin.imagePath}
+                    alt={pin.caption || localizeUi("ui.chat.forkboard.referencePicture")}
+                    className="aspect-square w-full object-cover"
+                    draggable={false}
+                  />
+                </button>
+                <p
+                  className={cn(
+                    "line-clamp-2 min-h-[2lh] px-0.5 text-center font-serif text-[0.6875rem] italic leading-snug",
+                    // Written on the polaroid itself, so it keeps the paper's ink whatever the theme.
+                    pin.caption ? "text-[#3a3330]" : "text-[#8d8580]",
+                  )}
+                >
+                  {pin.caption || localizeUi("ui.chat.forkboard.tapToDescribe")}
+                </p>
+                <span className="mx-auto max-w-full truncate rounded-full bg-[#efe9df] px-1.5 py-px text-[0.625rem] font-semibold text-[#3a3330]">
+                  {pinTag(pin, personaName, cast, localizeUi)}
+                </span>
+                <div className="flex items-center justify-between">
+                  {sort === "mine" ? (
                     <button
                       type="button"
                       onPointerDown={(event) => onHandleDown(event, pin.id)}
@@ -351,10 +317,12 @@ export function ForkReferenceBoard({ chatScope, personaScope }: Props) {
                       onKeyDown={(event) => onHandleKey(event, pin.id)}
                       aria-label={localizeUi("ui.chat.forkboard.dragToReorder")}
                       title={localizeUi("ui.chat.forkboard.dragToReorder")}
-                      className="flex h-9 w-9 shrink-0 cursor-grab touch-none items-center justify-center rounded text-[#8d8580] active:cursor-grabbing"
+                      className="flex h-8 w-8 shrink-0 cursor-grab touch-none items-center justify-center rounded text-[#8d8580] active:cursor-grabbing"
                     >
-                      <GripVertical size="0.875rem" />
+                      <GripVertical size="0.75rem" />
                     </button>
+                  ) : (
+                    <span className="h-8 w-8" />
                   )}
                   <button
                     type="button"
@@ -367,24 +335,48 @@ export function ForkReferenceBoard({ chatScope, personaScope }: Props) {
                       pin.inScene ? localizeUi("ui.chat.forkboard.inScene") : localizeUi("ui.chat.forkboard.addToScene")
                     }
                     className={cn(
-                      "flex h-9 w-9 shrink-0 items-center justify-center rounded",
+                      "flex h-8 w-8 shrink-0 items-center justify-center rounded",
                       pin.inScene ? "text-[var(--primary)]" : "text-[#8d8580]",
                     )}
                   >
-                    {pin.inScene ? <Pin size="0.875rem" /> : <PinOff size="0.875rem" />}
+                    {pin.inScene ? <Pin size="0.75rem" /> : <PinOff size="0.75rem" />}
                   </button>
                   <button
                     type="button"
-                    onClick={() => void handleDelete(pin.id)}
-                    aria-label={localizeUi("ui.chat.forkboard.removePin")}
-                    className="flex h-9 w-9 shrink-0 items-center justify-center rounded text-[var(--destructive)]"
+                    onClick={() => setEditingId(pin.id)}
+                    aria-label={localizeUi("ui.chat.forkboard.editPin")}
+                    title={localizeUi("ui.chat.forkboard.editPin")}
+                    className="flex h-8 w-8 shrink-0 items-center justify-center rounded text-[#8d8580]"
                   >
-                    <Trash2 size="0.875rem" />
+                    <Pencil size="0.75rem" />
                   </button>
                 </div>
               </div>
             ))}
           </div>
+          <Modal
+            open={editingPin !== null}
+            onClose={() => setEditingId(null)}
+            title={localizeUi("ui.chat.forkboard.editPin")}
+            width="max-w-md"
+            mobileFullscreen
+          >
+            {editingPin && (
+              <ForkPinEditor
+                pin={editingPin}
+                scope={scope}
+                chatId={chatScope?.scopeId ?? null}
+                personaName={personaName}
+                cast={cast}
+                onDelete={() => {
+                  const id = editingPin.id;
+                  void handleDelete(id).then((removed) => {
+                    if (removed) setEditingId(null);
+                  });
+                }}
+              />
+            )}
+          </Modal>
         </>
       )}
     </div>

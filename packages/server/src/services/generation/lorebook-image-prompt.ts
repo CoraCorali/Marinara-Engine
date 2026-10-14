@@ -9,6 +9,8 @@ export interface LorebookImageEntry {
   outletName?: string;
   outletUsed?: boolean;
   images: Array<{ path: string; caption: string }>;
+  /** Fork: a heading of the entry's own, for pictures that are not a lorebook entry (board pins). */
+  heading?: string;
 }
 
 export type LorebookImageNotice = "unsupported" | "unavailable" | "limited";
@@ -59,7 +61,7 @@ export async function appendLorebookImageMessages<T extends ChatMLMessage>(
       references.push({
         role: "user",
         contextKind: "injection",
-        content: `Visual references for lorebook entry ${entry.name}:\n${captions.join("\n")}`,
+        content: `${entry.heading ?? `Visual references for lorebook entry ${entry.name}`}:\n${captions.join("\n")}`,
         ...(images.length ? { images } : {}),
       });
     }

@@ -35,6 +35,9 @@ export async function copyForkChatData(db: DB, fromChatId: string, toChatId: str
         caption: pin.caption,
         category: pin.category,
         inScene: pin.inScene,
+        who: pin.who,
+        slot: pin.slot,
+        shows: pin.shows,
       });
     }
   } catch (error) {

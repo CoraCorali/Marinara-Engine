@@ -94,7 +94,7 @@ assert.equal(updated!.category, "vibe");
 // ── Prompt entries ──
 const entries = boardPinsAsImageEntries(await pins.listForPrompt("chat-1", "persona-1"));
 assert.equal(entries.length, 3);
-assert.equal(entries[0]!.name, "This thing (always on): wedding ring", "persona pins say they always apply");
+assert.equal(entries[0]!.name, "Thing (always on): wedding ring", "persona pins say they always apply");
 assert.equal(entries[0]!.images[0]!.path, "/api/lorebooks/entry-images/e.png");
 assert.equal(entries[0]!.position, 2, "pins use the same position as AI-output lorebook images");
 assert.ok(
@@ -111,16 +111,140 @@ const captionless = boardPinsAsImageEntries([
     caption: "  ",
     category: "place",
     inScene: true,
+    who: "",
+    slot: "",
+    shows: "model",
     order: 0,
+    createdAt: "",
   },
 ]);
-assert.equal(captionless[0]!.name, "This place");
+assert.equal(captionless[0]!.name, "Place");
 
 // The captions also go as words, for providers that never see the pictures. No caption, no line.
 const noteLine = boardPinsNoteLine(await pins.listForPrompt("chat-1", "persona-1"));
-assert.ok(noteLine.startsWith("Pinned for reference in this scene:"));
+assert.ok(noteLine.startsWith("Pinned for reference in this scene"));
+assert.ok(noteLine.includes("Anyone modelling the clothes is not the character"), "the body rule goes with the pins");
 assert.ok(noteLine.includes("- The mood: red slip dress"));
 assert.equal(boardPinsNoteLine([{ ...captionless[0]!, caption: " " } as never]), "");
+
+// ── Who, slots, and one of each per person ──
+const { forkMessageMentionsPin } = await import("../../packages/shared/src/features/fork-board-shapes.js");
+const { pinNameResolver } = await import("../../packages/server/src/services/generation/fork-board-prompt.js");
+const wear = (caption: string, slot: string, extra: Record<string, unknown> = {}) =>
+  pins.create({
+    scopeType: "chat",
+    scopeId: "chat-wear",
+    imagePath: `/w-${slot}.png`,
+    caption,
+    category: "wearing",
+    who: "persona",
+    slot,
+    ...extra,
+  });
+const pinkSet = (await wear("pink zip hoodie, cream top, grey leggings, white fluffy boots", "outfit"))!;
+const boots = (await wear("white fluffy boots", "shoes"))!;
+const hair = (await wear("blonde spiral curls in a high updo", "hair"))!;
+assert.equal((await pins.getById(pinkSet.id))!.inScene, true, "pieces sit on top of an outfit");
+const navy = (await wear("navy pinstripe shirt, black pencil skirt, black Mary Janes", "outfit", {
+  shows: "clothes",
+}))!;
+assert.equal((await pins.getById(pinkSet.id))!.inScene, false, "a new outfit takes the old one out of the scene");
+assert.equal((await pins.getById(boots.id))!.inScene, true, "but not the shoes");
+assert.equal((await pins.getById(hair.id))!.inScene, true);
+await wear("black ballet flats", "shoes");
+assert.equal((await pins.getById(boots.id))!.inScene, false, "new shoes replace old shoes");
+const vee = (await pins.create({
+  scopeType: "chat",
+  scopeId: "chat-wear",
+  imagePath: "/v.png",
+  caption: "black tee, jeans",
+  category: "wearing",
+  who: "char-vee",
+  slot: "outfit",
+}))!;
+assert.equal((await pins.getById(navy.id))!.inScene, true, "someone else's outfit replaces nothing of yours");
+await pins.update(pinkSet.id, { inScene: true });
+assert.equal((await pins.getById(navy.id))!.inScene, false, "putting an outfit back in swaps it in");
+assert.equal((await pins.getById(vee.id))!.inScene, true);
+
+const names = pinNameResolver("Kyli", (id) => (id === "char-vee" ? "Vee" : ""));
+const wornNote = boardPinsNoteLine(await pins.listForPrompt("chat-wear", null), names);
+assert.ok(wornNote.includes("- Kyli is wearing (Full outfit): pink zip hoodie"), wornNote);
+assert.ok(wornNote.includes("- Kyli's hair: blonde spiral curls"));
+assert.ok(wornNote.includes("- Vee is wearing (Full outfit): black tee, jeans"));
+assert.ok(!wornNote.includes("navy pinstripe"), "an outfit out of the scene is not mentioned");
+const flatLay = boardPinsAsImageEntries([{ ...navy, inScene: true }], names);
+assert.ok(flatLay[0]!.name.includes("just the clothes, no one wearing them"), "a flat-lay says there is no model");
+
+// ── A message that mentions a pin sends it along ──
+assert.equal(forkMessageMentionsPin("She pulls on her fluffy boots and goes.", boots.caption), true);
+assert.equal(forkMessageMentionsPin("She's wearing the blue sundress she likes", "blue sundress"), true);
+assert.equal(
+  forkMessageMentionsPin("She grabs her dress.", "yellow halter maxi dress"),
+  false,
+  "one shared word is not enough",
+);
+assert.equal(forkMessageMentionsPin("Mira waves.", "Mira"), true, "a one-word caption matches as a whole word");
+assert.equal(forkMessageMentionsPin("Admiral waves.", "Mira"), false);
+const mentioned = await pins.listMentioned("chat-wear", null, "She changes into the navy pinstripe shirt for work.");
+assert.deepEqual(
+  mentioned.map((pin) => pin.id),
+  [navy.id],
+  "only pins out of the scene ride along on a mention",
+);
+assert.ok(
+  boardPinsAsImageEntries(mentioned, names, new Set([navy.id]))[0]!.heading!.includes(
+    "mentioned in the latest message",
+  ),
+);
+
+const { pinsForReply } = await import("../../packages/server/src/services/generation/fork-board-prompt.js");
+const forReply = pinsForReply(await pins.listForPrompt("chat-wear", null), mentioned);
+assert.ok(
+  forReply.some((pin) => pin.id === navy.id),
+  "the mentioned outfit goes",
+);
+assert.ok(!forReply.some((pin) => pin.id === pinkSet.id), "and stands in for the outfit it replaces, for this reply");
+assert.ok(
+  forReply.some((pin) => pin.id === hair.id),
+  "while the hair stays",
+);
+assert.equal((await pins.getById(pinkSet.id))!.inScene, true, "the board itself is unchanged");
+
+// ── Describe it, and the tracker's Wearing line ──
+const { readPinDescription, PIN_DESCRIBE_PROMPT } =
+  await import("../../packages/server/src/services/generation/fork-pin-describe.js");
+const { outfitLineFromPins, outfitStillMatches } = await import("../../packages/client/src/lib/fork/outfit.js");
+assert.ok(PIN_DESCRIBE_PROMPT.includes("Never describe the person's body"), "describing never reads the model's body");
+assert.deepEqual(
+  readPinDescription(
+    'Sure! {"caption": " navy pinstripe shirt,  black pencil skirt ", "category": "wearing", "slot": "outfit", "shows": "clothes"}',
+  ),
+  { caption: "navy pinstripe shirt, black pencil skirt", category: "wearing", slot: "outfit", shows: "clothes" },
+);
+assert.deepEqual(
+  readPinDescription('{"caption": "the bakery at night", "category": "place", "slot": "shoes"}'),
+  {
+    caption: "the bakery at night",
+    category: "place",
+    slot: "",
+    shows: "model",
+  },
+  "only wearing pins keep a slot",
+);
+assert.equal(readPinDescription("I can't see images."), null);
+assert.equal(readPinDescription('{"caption": ""}'), null);
+const worn = [
+  { ...boots, inScene: true, slot: "shoes" as const },
+  { ...pinkSet, inScene: true, slot: "outfit" as const },
+];
+assert.equal(
+  outfitLineFromPins(worn as never),
+  "pink zip hoodie, cream top, grey leggings, white fluffy boots; white fluffy boots",
+  "the outfit comes first, then the pieces",
+);
+assert.equal(outfitStillMatches("still in the pink zip hoodie and leggings", worn as never), true);
+assert.equal(outfitStillMatches("a black dress and heels", worn as never), false, "a different outfit is noticed");
 
 // ── Deleting ──
 await pins.remove(kitchen!.id);
