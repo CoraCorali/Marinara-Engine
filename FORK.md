@@ -154,9 +154,9 @@ Markup is stripped and every part is length-capped before it is sent.
   - A name it does not recognise becomes a new bond rather than overwriting the nearest one, and
     starts at the middle on both meters, because a first impression is not a measurement.
   - Naming the same person twice in one reading applies once.
-  It runs on a normal reply and on a re-roll, and it needs the agent to hold **Edit trackers**.
-  Nothing happens without such an agent, so the tracker still works entirely by hand if you prefer
-  that. The panel re-reads the bonds whenever you open it, so what an agent moved is there.
+    It runs on a normal reply and on a re-roll, and it needs the agent to hold **Edit trackers**.
+    Nothing happens without such an agent, so the tracker still works entirely by hand if you prefer
+    that. The panel re-reads the bonds whenever you open it, so what an agent moved is there.
 
 ### Back on track
 
@@ -442,63 +442,63 @@ Fork-only code lives in `packages/client/src/lib/fork/`, `Fork*` components, `pa
 and `scripts/regressions/fork-*.regression.ts`.
 Edits to upstream files are marked with a `Fork:` comment.
 
-| File | Why |
-| --- | --- |
-| `packages/client/src/components/chat/ChatArea.tsx` | Edit & resend handler and props |
-| `packages/client/src/components/chat/ChatRoleplaySurface.tsx` | Passes Edit & resend to the right message |
-| `packages/client/src/components/chat/ChatMessage.tsx` | Resend button in the message editor |
-| `packages/client/src/localization/locales/en.json` | Two strings for the resend button |
-| `packages/client/src/components/agents/AgentEditor.tsx` | Offers the fork tracker result to custom agents |
-| `packages/server/src/services/agents/agent-executor.ts` | Shows the tracker agent what the tracker holds |
-| `packages/client/src/lib/custom-agent-result-examples.ts` | The JSON example for that result |
-| `packages/client/src/components/chat/CyoaChoices.tsx` | Re-roll reruns the agent that made the choices |
-| `packages/client/src/components/chat/ChatInput.tsx` | Spark button |
-| `packages/client/src/hooks/use-generate.ts` | Choice results from any choice agent reach the choice bar |
-| `packages/client/src/components/modals/ImportPresetModal.tsx` | Update-or-copy prompt on preset import |
-| `packages/server/src/services/import/marinara.importer.ts` | Preset update in place, regex pack install |
-| `packages/server/src/routes/prompts.routes.ts` | Preset export carries its regex pack |
-| `packages/server/src/db/connection.ts` | Registers the fork's tables (`db/fork-tables.ts`) when storage opens; `registerForkTables` helper |
-| `packages/server/src/routes/index.ts` | Registers the board and Director routes |
-| `packages/server/src/routes/generate.routes.ts` | Sends in-scene pins, their captions and the bonds note with the reply |
-| `packages/client/src/components/chat/ForkBoardStrip.tsx` | Bonds button too |
-| `packages/client/src/components/chat/ChatRoleplaySurface.tsx` | Mounts Fix this part and the slop highlighter; passes the date to the weather |
-| `packages/server/src/routes/index.ts` | Registers the Fix this part route |
-| `packages/client/src/components/chat/CyoaChoices.tsx` | Readable controls and choices |
-| `packages/server/src/services/storage/chats.storage.ts` | Clears a chat's board and bonds when it, or its whole branch group, goes |
-| `packages/server/src/services/storage/characters.storage.ts` | Clears the persona's board when a persona goes |
-| `packages/client/src/lib/weather-renderer.ts` | Batched rain drawing |
-| `packages/client/src/workers/weather-effects.worker.ts` | Draws the field in one pass, no per-particle allocation |
-| `packages/client/src/components/chat/WeatherEffects.tsx` | Same, on the non-worker path; passes the date for seasons |
-| `packages/client/src/lib/weather-renderer.ts` | New weather kinds, the weather rules, seasons, shared particle step |
-| `packages/client/src/components/chat/ChatRoleplaySurface.tsx` | In-scene strip |
-| `packages/client/src/components/chat/ChatInput.tsx` | Director button (and the Spark button) |
-| `packages/server/src/routes/generate.routes.ts` | Saves which agent made the choices |
-| `packages/server/src/routes/generate/retry-agents-route.ts` | Same, for re-rolled choices |
-| `packages/shared/src/schemas/lorebook.schema.ts` | Whole-word default |
-| `packages/server/src/services/storage/lorebooks.storage.ts` | Whole-word default |
-| `packages/server/src/routes/chats.routes.ts` | A branch copies the board and the bonds |
-| `packages/client/src/components/chat/ChatInput.tsx` | The action row is one scrolling row of pills, led by the fork's own buttons |
-| `packages/client/src/components/chat/ChatArea.tsx` | Hides "Add to lorebook" when it is switched off |
-| `packages/client/src/components/chat/ChatRoleplaySurface.tsx` | Hands the board pills to the action row instead of its own strip |
-| `packages/client/src/features/tracker-panel/components/sections/CharacterTrackerPanel.tsx` | Option A cards, one per row |
-| `packages/client/src/features/tracker-panel/components/sections/PersonaInventoryPanel.tsx` | Persona stats always as rings |
-| `packages/client/src/features/tracker-panel/components/controls/StatGauge.tsx` | A word under each ring |
-| `packages/shared/src/index.ts` | Exports the relationship tracker's shapes |
-| `packages/client/src/components/chat/ChatImageLightbox.tsx` | Pin from chat button in the image viewer |
-| `packages/client/src/components/chat/WeatherEffects.tsx` | Weather panel tuning, tint and sounds |
-| `packages/client/src/workers/weather-effects.worker.ts` | Weather panel speed, size and sun position |
-| `packages/client/src/lib/weather-renderer.ts` | Shooting stars, size scaling, sun position override |
-| `packages/client/src/components/chat/ChatRoleplaySurface.tsx` | Feeds the weather panel's picks to the weather |
-| `packages/server/src/routes/generate.routes.ts` | Lifts a leaked Task plan into thinking; notices a reply cut short by thinking |
-| `packages/server/src/services/generation/empty-response-reason.ts` | Names a blocked reply as blocked |
-| `packages/client/src/hooks/use-generate.ts` | Try again on a failed reply; the cut-short warning |
-| `packages/client/src/hooks/use-apply-regex.ts` | Skips scripts that wait for a reply to finish |
-| `packages/client/src/components/chat/ChatMessage.tsx` | Passes those scripts while a reply streams |
-| `packages/client/src/components/agents/RegexScriptEditor.tsx` | The wait-until-finished checkbox |
-| `packages/client/src/components/chat/ChatArea.tsx` | Passes portraits to the People panel |
-| `packages/client/src/components/chat/ConversationMessage.tsx` | Wait-until-finished regex in Conversation mode |
-| `packages/client/src/stores/agent.store.ts` | Remembers which choice agent made the choices on screen |
-| `packages/server/src/routes/generate/retry-agents-route.ts` | Passes the reply to the tracker update, so a re-roll replaces its move |
+| File                                                                                       | Why                                                                                               |
+| ------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------- |
+| `packages/client/src/components/chat/ChatArea.tsx`                                         | Edit & resend handler and props                                                                   |
+| `packages/client/src/components/chat/ChatRoleplaySurface.tsx`                              | Passes Edit & resend to the right message                                                         |
+| `packages/client/src/components/chat/ChatMessage.tsx`                                      | Resend button in the message editor                                                               |
+| `packages/client/src/localization/locales/en.json`                                         | Two strings for the resend button                                                                 |
+| `packages/client/src/components/agents/AgentEditor.tsx`                                    | Offers the fork tracker result to custom agents                                                   |
+| `packages/server/src/services/agents/agent-executor.ts`                                    | Shows the tracker agent what the tracker holds                                                    |
+| `packages/client/src/lib/custom-agent-result-examples.ts`                                  | The JSON example for that result                                                                  |
+| `packages/client/src/components/chat/CyoaChoices.tsx`                                      | Re-roll reruns the agent that made the choices                                                    |
+| `packages/client/src/components/chat/ChatInput.tsx`                                        | Spark button                                                                                      |
+| `packages/client/src/hooks/use-generate.ts`                                                | Choice results from any choice agent reach the choice bar                                         |
+| `packages/client/src/components/modals/ImportPresetModal.tsx`                              | Update-or-copy prompt on preset import                                                            |
+| `packages/server/src/services/import/marinara.importer.ts`                                 | Preset update in place, regex pack install                                                        |
+| `packages/server/src/routes/prompts.routes.ts`                                             | Preset export carries its regex pack                                                              |
+| `packages/server/src/db/connection.ts`                                                     | Registers the fork's tables (`db/fork-tables.ts`) when storage opens; `registerForkTables` helper |
+| `packages/server/src/routes/index.ts`                                                      | Registers the board and Director routes                                                           |
+| `packages/server/src/routes/generate.routes.ts`                                            | Sends in-scene pins, their captions and the bonds note with the reply                             |
+| `packages/client/src/components/chat/ForkBoardStrip.tsx`                                   | Bonds button too                                                                                  |
+| `packages/client/src/components/chat/ChatRoleplaySurface.tsx`                              | Mounts Fix this part and the slop highlighter; passes the date to the weather                     |
+| `packages/server/src/routes/index.ts`                                                      | Registers the Fix this part route                                                                 |
+| `packages/client/src/components/chat/CyoaChoices.tsx`                                      | Readable controls and choices                                                                     |
+| `packages/server/src/services/storage/chats.storage.ts`                                    | Clears a chat's board and bonds when it, or its whole branch group, goes                          |
+| `packages/server/src/services/storage/characters.storage.ts`                               | Clears the persona's board when a persona goes                                                    |
+| `packages/client/src/lib/weather-renderer.ts`                                              | Batched rain drawing                                                                              |
+| `packages/client/src/workers/weather-effects.worker.ts`                                    | Draws the field in one pass, no per-particle allocation                                           |
+| `packages/client/src/components/chat/WeatherEffects.tsx`                                   | Same, on the non-worker path; passes the date for seasons                                         |
+| `packages/client/src/lib/weather-renderer.ts`                                              | New weather kinds, the weather rules, seasons, shared particle step                               |
+| `packages/client/src/components/chat/ChatRoleplaySurface.tsx`                              | In-scene strip                                                                                    |
+| `packages/client/src/components/chat/ChatInput.tsx`                                        | Director button (and the Spark button)                                                            |
+| `packages/server/src/routes/generate.routes.ts`                                            | Saves which agent made the choices                                                                |
+| `packages/server/src/routes/generate/retry-agents-route.ts`                                | Same, for re-rolled choices                                                                       |
+| `packages/shared/src/schemas/lorebook.schema.ts`                                           | Whole-word default                                                                                |
+| `packages/server/src/services/storage/lorebooks.storage.ts`                                | Whole-word default                                                                                |
+| `packages/server/src/routes/chats.routes.ts`                                               | A branch copies the board and the bonds                                                           |
+| `packages/client/src/components/chat/ChatInput.tsx`                                        | The action row is one scrolling row of pills, led by the fork's own buttons                       |
+| `packages/client/src/components/chat/ChatArea.tsx`                                         | Hides "Add to lorebook" when it is switched off                                                   |
+| `packages/client/src/components/chat/ChatRoleplaySurface.tsx`                              | Hands the board pills to the action row instead of its own strip                                  |
+| `packages/client/src/features/tracker-panel/components/sections/CharacterTrackerPanel.tsx` | Option A cards, one per row                                                                       |
+| `packages/client/src/features/tracker-panel/components/sections/PersonaInventoryPanel.tsx` | Persona stats always as rings                                                                     |
+| `packages/client/src/features/tracker-panel/components/controls/StatGauge.tsx`             | A word under each ring                                                                            |
+| `packages/shared/src/index.ts`                                                             | Exports the relationship tracker's shapes                                                         |
+| `packages/client/src/components/chat/ChatImageLightbox.tsx`                                | Pin from chat button in the image viewer                                                          |
+| `packages/client/src/components/chat/WeatherEffects.tsx`                                   | Weather panel tuning, tint and sounds                                                             |
+| `packages/client/src/workers/weather-effects.worker.ts`                                    | Weather panel speed, size and sun position                                                        |
+| `packages/client/src/lib/weather-renderer.ts`                                              | Shooting stars, size scaling, sun position override                                               |
+| `packages/client/src/components/chat/ChatRoleplaySurface.tsx`                              | Feeds the weather panel's picks to the weather                                                    |
+| `packages/server/src/routes/generate.routes.ts`                                            | Lifts a leaked Task plan into thinking; notices a reply cut short by thinking                     |
+| `packages/server/src/services/generation/empty-response-reason.ts`                         | Names a blocked reply as blocked                                                                  |
+| `packages/client/src/hooks/use-generate.ts`                                                | Try again on a failed reply; the cut-short warning                                                |
+| `packages/client/src/hooks/use-apply-regex.ts`                                             | Skips scripts that wait for a reply to finish                                                     |
+| `packages/client/src/components/chat/ChatMessage.tsx`                                      | Passes those scripts while a reply streams                                                        |
+| `packages/client/src/components/agents/RegexScriptEditor.tsx`                              | The wait-until-finished checkbox                                                                  |
+| `packages/client/src/components/chat/ChatArea.tsx`                                         | Passes portraits to the People panel                                                              |
+| `packages/client/src/components/chat/ConversationMessage.tsx`                              | Wait-until-finished regex in Conversation mode                                                    |
+| `packages/client/src/stores/agent.store.ts`                                                | Remembers which choice agent made the choices on screen                                           |
+| `packages/server/src/routes/generate/retry-agents-route.ts`                                | Passes the reply to the tracker update, so a re-roll replaces its move                            |
 
 ## Known upstream issue kept as is
 
