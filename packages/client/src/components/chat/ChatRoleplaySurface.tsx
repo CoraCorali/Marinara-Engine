@@ -70,6 +70,8 @@ import { CapabilityElement } from "../capabilities/CapabilityElement";
 import { ChatMessage } from "./ChatMessage";
 import { ChatInput } from "./ChatInput";
 import { CyoaChoices } from "./CyoaChoices";
+import { ForkBoardStrip } from "./ForkBoardStrip";
+import type { BoardScope } from "../../hooks/use-fork-board";
 import { CHAT_CONTROL_WINDOW_IDS, ChatConnectedChatWindow, ChatControlWindow } from "./ChatControlWindow";
 import { TrackerPanelBubble } from "./TrackerPanelBubble";
 import { PHONE_BUBBLE_SIZE_PX, WINDOW_BUBBLE_SIZE_PX, WINDOW_MARGIN_PX } from "../../lib/floating-window-layout";
@@ -761,6 +763,10 @@ type RoleplaySurfaceProps = {
   onEdit: (messageId: string, content: string) => void | Promise<void>;
   /** Fork: the one user message that offers Edit & resend, or null. */
   resendableUserMessageId?: string | null;
+  /** Fork: reference board scopes and the panel opener. */
+  forkBoardChatScope?: BoardScope;
+  forkBoardPersonaScope?: BoardScope;
+  onOpenForkBoard?: () => void;
   onEditAndResend?: (messageId: string, content: string) => Promise<void>;
   onSetActiveSwipe: (messageId: string, index: number) => void;
   onToggleConversationStart: (
@@ -881,6 +887,9 @@ export function ChatRoleplaySurface({
   onEdit,
   resendableUserMessageId = null,
   onEditAndResend,
+  forkBoardChatScope = null,
+  forkBoardPersonaScope = null,
+  onOpenForkBoard,
   onSetActiveSwipe,
   onToggleConversationStart,
   onToggleHiddenFromAI,
@@ -1998,6 +2007,13 @@ export function ChatRoleplaySurface({
                 />
 
                 {showHistory && !isStreaming && <CyoaChoices messages={messages} />}
+                {showHistory && onOpenForkBoard && (
+                  <ForkBoardStrip
+                    chatScope={forkBoardChatScope}
+                    personaScope={forkBoardPersonaScope}
+                    onOpenBoard={onOpenForkBoard}
+                  />
+                )}
 
                 {showHistory && hasLiveStream && !inlineStreamingMessageId && (
                   <StreamingIndicator
@@ -2153,6 +2169,13 @@ export function ChatRoleplaySurface({
                       </div>
                     )}
                     {!vnHistoryOpen && !isStreaming && <CyoaChoices messages={messages} />}
+                    {!vnHistoryOpen && onOpenForkBoard && (
+                      <ForkBoardStrip
+                        chatScope={forkBoardChatScope}
+                        personaScope={forkBoardPersonaScope}
+                        onOpenBoard={onOpenForkBoard}
+                      />
+                    )}
                   </div>
                 )}
                 {chatMeta.sceneStatus === "active" && (

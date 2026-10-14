@@ -36,6 +36,8 @@ import {
 import { getCurrentInputSnapshot, useChatStore } from "../../stores/chat.store";
 import { hasActiveTextSelection } from "../../lib/text-selection";
 import { getResendableUserMessageId } from "../../lib/fork/edit-and-resend";
+import { ForkReferenceBoard } from "./ForkReferenceBoard";
+import type { BoardScope } from "../../hooks/use-fork-board";
 import { readChatMetadata } from "../../lib/chat-wizard-defaults";
 import { useChatWindowLayout } from "../../hooks/use-chat-window-layout";
 import { ChatSettingsBubble } from "./ChatSettingsBubble";
@@ -2300,6 +2302,18 @@ const LocalChatArea = memo(function LocalChatArea({
     [updateMessage],
   );
 
+  // Fork: reference board. Chat pins belong to this roleplay; persona pins follow the persona.
+  const [forkBoardOpen, setForkBoardOpen] = useState(false);
+  const forkBoardChatScope = useMemo<BoardScope>(
+    () => (activeChatId ? { scopeType: "chat", scopeId: activeChatId } : null),
+    [activeChatId],
+  );
+  const forkBoardPersonaScope = useMemo<BoardScope>(
+    () => (chatPersonaId ? { scopeType: "persona", scopeId: chatPersonaId } : null),
+    [chatPersonaId],
+  );
+  const handleOpenForkBoard = useCallback(() => setForkBoardOpen(true), []);
+
   const handleRoleplayEdit = useCallback(
     async (messageId: string, content: string) => {
       await updateMessageAsync({ messageId, content });
@@ -3535,6 +3549,9 @@ const LocalChatArea = memo(function LocalChatArea({
           onEdit={handleRoleplayEdit}
           resendableUserMessageId={isStreaming ? null : resendableUserMessageId}
           onEditAndResend={handleEditAndResend}
+          forkBoardChatScope={forkBoardChatScope}
+          forkBoardPersonaScope={forkBoardPersonaScope}
+          onOpenForkBoard={handleOpenForkBoard}
           onSetActiveSwipe={handleSetActiveSwipe}
           onToggleConversationStart={handleToggleConversationStart}
           onToggleHiddenFromAI={handleToggleHiddenFromAI}
@@ -3594,6 +3611,15 @@ const LocalChatArea = memo(function LocalChatArea({
           onClose={handleCloseAgentInjectionReview}
         />
       )}
+      <Modal
+        open={forkBoardOpen}
+        onClose={() => setForkBoardOpen(false)}
+        title={localizeUi("ui.chat.forkboard.title")}
+        width="max-w-lg"
+        mobileFullscreen
+      >
+        <ForkReferenceBoard chatScope={forkBoardChatScope} personaScope={forkBoardPersonaScope} />
+      </Modal>
       {illustratorPromptReviewModal}
       <ImagePromptReviewModal
         open={roleplayVideoReviewItems.length > 0}

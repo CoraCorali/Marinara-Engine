@@ -32,6 +32,14 @@ export async function getDB() {
   return dbPromise;
 }
 
+/**
+ * Fork: register extra file-backed tables on the live store, the same path capability packages
+ * use. Keeps the reference board off the built-in table list, so no storage-format bump is needed.
+ */
+export function registerForkTables(tables: readonly unknown[]): void {
+  fileStore?.registerTables(tables);
+}
+
 /** Cheap in-memory counters for diagnostics; null before storage opens or after it closes. */
 export function getFileStoreStats(): FileStoreStats | null {
   return fileStore?.getStorageStats?.() ?? null;

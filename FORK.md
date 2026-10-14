@@ -32,6 +32,16 @@ upstream file it touches, so conflicts after a sync are quick to find.
   installs both. Updating a preset replaces its pack instead of leaving old copies behind. Scripts that are global,
   or shared with another preset, are never touched. Imported scripts accept this fork's shape and SillyTavern's;
   unsafe patterns are skipped the same way Marinara skips them elsewhere.
+- **Reference board.** A roleplay chat gets a board of pinned reference pictures with captions.
+  Pins marked "in scene" are sent to the AI with every reply, so an outfit or a room stays the same
+  instead of drifting. **This chat** pins belong to one roleplay; **Always on** pins belong to the
+  persona and follow them into every chat (hair, jewellery, a wedding ring). A strip above the
+  message box shows what the AI is currently seeing, with a Board button to open the full board.
+  Pins and lorebook reference images share one image budget per reply, so a board cannot crowd out
+  lore. A board holds at most 60 pins. Pin pictures reuse the lorebook reference-image store, so
+  they share its size and type limits, its validated paths and its serving route.
+  The board's table registers itself the way capability packages register theirs, so it needs no
+  storage-format bump and stock Marinara simply ignores the file.
 
 ## Upstream files touched
 
@@ -51,6 +61,11 @@ Edits to upstream files are marked with a `Fork:` comment.
 | `packages/client/src/components/modals/ImportPresetModal.tsx` | Update-or-copy prompt on preset import |
 | `packages/server/src/services/import/marinara.importer.ts` | Preset update in place, regex pack install |
 | `packages/server/src/routes/prompts.routes.ts` | Preset export carries its regex pack |
+| `packages/server/src/app.ts` | Registers the board table at startup |
+| `packages/server/src/db/connection.ts` | `registerForkTables` helper |
+| `packages/server/src/routes/index.ts` | Registers the board routes |
+| `packages/server/src/routes/generate.routes.ts` | Sends in-scene pins with the reply |
+| `packages/client/src/components/chat/ChatRoleplaySurface.tsx` | In-scene strip |
 | `packages/server/src/routes/generate.routes.ts` | Saves which agent made the choices |
 | `packages/server/src/routes/generate/retry-agents-route.ts` | Same, for re-rolled choices |
 | `packages/shared/src/schemas/lorebook.schema.ts` | Whole-word default |

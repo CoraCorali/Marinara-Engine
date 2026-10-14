@@ -227,6 +227,8 @@ import {
 import { createPromptsStorage } from "../services/storage/prompts.storage.js";
 import { createCharactersStorage } from "../services/storage/characters.storage.js";
 import { resolveChatUserIdentity } from "../services/chat-user-identity.js";
+import { createBoardPinsStorage } from "../services/board/fork-board-pins.js";
+import { boardPinsAsImageEntries } from "../services/generation/fork-board-prompt.js";
 import { createAgentsStorage } from "../services/storage/agents.storage.js";
 import { createGameStateStorage, parseStoredRulesetLive } from "../services/storage/game-state.storage.js";
 import {
@@ -7663,10 +7665,20 @@ export async function generateRoutes(app: FastifyInstance, options: GenerateRout
               wrapFormat,
             );
           }
-          await appendLorebookImageMessages(targetScopedMessagesForGen, responderLorebookScan?.imageEntries, {
-            onNotice: notifyLorebookImages,
-            rememberImage: (dataUrl) => lorebookReferenceImages.add(dataUrl),
-          });
+          // Fork: reference board pins ride along with lorebook reference images so both share
+          // one image budget. Roleplay only; the board is a roleplay feature.
+          const forkBoardImageEntries =
+            chatMode === "roleplay"
+              ? boardPinsAsImageEntries(await createBoardPinsStorage(app.db).listForPrompt(input.chatId, personaId))
+              : [];
+          await appendLorebookImageMessages(
+            targetScopedMessagesForGen,
+            [...(responderLorebookScan?.imageEntries ?? []), ...forkBoardImageEntries],
+            {
+              onNotice: notifyLorebookImages,
+              rememberImage: (dataUrl) => lorebookReferenceImages.add(dataUrl),
+            },
+          );
           const spatiallyScopedMessagesForGen = injectOwnerSpatialPrompt(
             targetScopedMessagesForGen,
             ownerSpatialProjection,

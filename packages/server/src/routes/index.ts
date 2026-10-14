@@ -7,6 +7,7 @@ import { chatInsightsRoutes } from "./chat-insights.routes.js";
 import { advancedMemoryRoutes } from "./advanced-memory.routes.js";
 import { charactersRoutes } from "./characters.routes.js";
 import { lorebooksRoutes } from "./lorebooks.routes.js";
+import { forkBoardRoutes } from "./fork-board.routes.js";
 import { promptsRoutes } from "./prompts.routes.js";
 import { connectionsRoutes } from "./connections.routes.js";
 import { agentsRoutes } from "./agents.routes.js";
@@ -98,6 +99,8 @@ export async function registerRoutes(app: FastifyInstance) {
   await app.register(chatPresetsRoutes, { prefix: "/api/chat-presets" });
   await app.register(charactersRoutes, { prefix: "/api/characters" });
   await app.register(lorebooksRoutes, { prefix: "/api/lorebooks" });
+  // Fork: reference board.
+  await app.register(forkBoardRoutes, { prefix: "/api/fork-board" });
   await app.register(promptsRoutes, { prefix: "/api/prompts" });
   await app.register(connectionsRoutes, { prefix: "/api/connections" });
   await app.register(decisionRoutes, { prefix: "/api/decision" });
