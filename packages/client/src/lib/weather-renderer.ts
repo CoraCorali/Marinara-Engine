@@ -27,7 +27,9 @@ export interface WeatherParticle {
     | "blizzard"
     | "gust"
     | "autumn-leaf"
-    | "pollen";
+    | "pollen"
+    // Fork: the weather panel's starry night.
+    | "shooting-star";
   wobble: number;
   life: number;
   maxLife: number;
@@ -61,6 +63,14 @@ export interface WeatherRenderConfig {
   sunRays: boolean;
   sunsetGlow: boolean;
   isClearSky: boolean;
+  /** Fork, weather panel: particle size multiplier (1 = as drawn). */
+  sizeScale?: number;
+  /** Fork, weather panel: simulation speed multiplier (1 = as drawn). */
+  speedScale?: number;
+  /** Fork, weather panel: a couple of shooting stars crossing the sky now and then. */
+  shootingStars?: boolean;
+  /** Fork, weather panel: the sun or moon's place across the sky, 0 to 1, instead of from the hour. */
+  celestialX?: number | null;
 }
 
 // ── Map weather string → effect config ──
@@ -384,6 +394,7 @@ export function createWeatherParticle(
   w: number,
   h: number,
   fromTop = false,
+  sizeScale = 1,
 ): WeatherParticle {
   const base: WeatherParticle = {
     x: Math.random() * w,
@@ -557,8 +568,21 @@ export function createWeatherParticle(
       base.maxLife = 1200 + Math.random() * 600;
       base.y = Math.random() * h * 0.35; // upper sky
       break;
+    // Fork: a streak across the upper sky. It waits a while (negative life) before each crossing, so
+    // two of them make an occasional event rather than a meteor shower.
+    case "shooting-star":
+      base.x = Math.random() * w * 0.6;
+      base.y = Math.random() * h * 0.3;
+      base.vx = 9 + Math.random() * 5;
+      base.vy = 3 + Math.random() * 2;
+      base.size = 60 + Math.random() * 60; // tail length
+      base.opacity = 0.8;
+      base.maxLife = 45 + Math.random() * 20;
+      base.life = -(240 + Math.random() * 900);
+      break;
   }
 
+  if (sizeScale !== 1) base.size *= sizeScale;
   return base;
 }
 
@@ -581,21 +605,31 @@ const DRIFTING_TYPES = new Set<WeatherParticle["type"]>([
 /** Every particle a config asks for: the weather, its extra layers, and the night's fireflies and stars. */
 export function createWeatherField(config: WeatherRenderConfig, w: number, h: number): WeatherParticle[] {
   const particles: WeatherParticle[] = [];
+  const sizeScale = config.sizeScale ?? 1;
   const add = (type: WeatherParticle["type"], count: number) => {
-    for (let index = 0; index < count; index += 1) particles.push(createWeatherParticle(type, w, h));
+    for (let index = 0; index < count; index += 1) particles.push(createWeatherParticle(type, w, h, false, sizeScale));
   };
   add(config.type, config.count);
   for (const layer of config.extras ?? []) add(layer.type, layer.count);
   if (config.addFireflies) add("firefly", FIREFLY_COUNT);
   if (config.addStars) add("star", STAR_COUNT);
+  if (config.shootingStars) add("shooting-star", 2);
   return particles;
 }
 
 /** Move every particle one step and respawn the ones that left the screen or ran out of life. */
-export function stepWeatherParticles(particles: WeatherParticle[], frameScale: number, w: number, h: number) {
+export function stepWeatherParticles(
+  particles: WeatherParticle[],
+  frameScale: number,
+  w: number,
+  h: number,
+  sizeScale = 1,
+) {
   for (let index = particles.length - 1; index >= 0; index -= 1) {
     const p = particles[index]!;
     p.life += frameScale;
+    // A shooting star waiting for its turn holds still.
+    if (p.life < 0) continue;
     p.x += p.vx * frameScale;
     p.y += p.vy * frameScale;
     if (DRIFTING_TYPES.has(p.type)) {
@@ -617,7 +651,7 @@ export function stepWeatherParticles(particles: WeatherParticle[], frameScale: n
     // A gust is long, so it may be off the right edge only once its tail is too.
     const margin = p.type === "gust" ? p.size + 20 : 20;
     const offScreen = p.y > h + 20 || p.y < -20 || p.x > w + margin || p.x < -margin;
-    if (offScreen || p.life > p.maxLife) particles[index] = createWeatherParticle(p.type, w, h, true);
+    if (offScreen || p.life > p.maxLife) particles[index] = createWeatherParticle(p.type, w, h, true, sizeScale);
   }
 }
 
@@ -628,7 +662,7 @@ export function stepWeatherParticles(particles: WeatherParticle[], frameScale: n
  * Fork: fast weather fades in over a few frames instead of sixty. A downpour drop crosses a phone
  * screen in under a second, so a sixty-frame fade left it half-invisible for its whole fall.
  */
-const QUICK_FADE_TYPES = new Set<WeatherParticle["type"]>(["drizzle", "downpour", "blizzard", "gust"]);
+const QUICK_FADE_TYPES = new Set<WeatherParticle["type"]>(["drizzle", "downpour", "blizzard", "gust", "shooting-star"]);
 
 function particleAlpha(p: WeatherParticle): number {
   const fadeIn = Math.min(p.life / (QUICK_FADE_TYPES.has(p.type) ? 8 : 60), 1);
@@ -763,6 +797,20 @@ export function drawWeatherParticle(ctx: WeatherCanvasContext, p: WeatherParticl
       ctx.beginPath();
       ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
       ctx.fill();
+      break;
+    }
+    case "shooting-star": {
+      const tailX = p.x - (p.vx / Math.hypot(p.vx, p.vy)) * p.size;
+      const tailY = p.y - (p.vy / Math.hypot(p.vx, p.vy)) * p.size;
+      const gradient = ctx.createLinearGradient(p.x, p.y, tailX, tailY);
+      gradient.addColorStop(0, "rgba(255,255,245,0.95)");
+      gradient.addColorStop(1, "rgba(255,255,245,0)");
+      ctx.strokeStyle = gradient;
+      ctx.lineWidth = 1.6;
+      ctx.beginPath();
+      ctx.moveTo(p.x, p.y);
+      ctx.lineTo(tailX, tailY);
+      ctx.stroke();
       break;
     }
     case "star": {

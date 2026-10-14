@@ -332,6 +332,29 @@ meters per bond are gone.
   and a **Board** button beside Marinara's own pin and download buttons puts it on that roleplay's
   reference board. It shares the board's size and type limits, and says so if a picture is refused.
 
+### The weather panel and weather sounds
+
+A **Weather** pill in the row above the message box opens a panel for the roleplay's weather. Its
+choices are remembered per chat in the browser; the sound switches are one preference for all chats.
+
+- **Follow the story or pick it yourself**: clear, drizzle, rain, downpour, thunderstorm, snow,
+  blizzard, fog, windy, autumn leaves, petals, aurora, embers or a sandstorm. A pick is the line the
+  tracker would have written, so it draws exactly like story weather. The **time of day** can follow
+  the story or be set to dawn, day, dusk or night.
+- **Sliders** for amount, speed, size, opacity and brightness, and a colour **tint** laid softly over
+  the scene. Amount scales every layer but never switches one off. Opacity, brightness and tint are
+  applied by the browser to the canvas, so they cost no drawing. The sliders save when you let go,
+  since a weather canvas can only be handed to its background worker once and each change makes a
+  new one.
+- **Sky**: a starry night with the odd shooting star (two of them, each waiting a while between
+  crossings), aurora ribbons over any weather, and the sun and moon following the hour, hidden, or
+  placed by hand.
+- **Weather sounds**, made in the browser with no audio files: rain whose loudness follows drizzle
+  through downpour, wind for windy weather, snow and sand, thunder now and then in a storm, and a
+  fireplace crackle for embers or whenever its own switch is on. Everything fades rather than
+  switching, there is a volume slider, and sound pauses while the tab is hidden. Browsers keep audio
+  silent until the page is touched, so it starts with your first tap.
+
 ## Upstream files touched
 
 Fork-only code lives in `packages/client/src/lib/fork/`, `Fork*` components, `packages/shared/src/features/fork-bond-shapes.ts`, `packages/server/src/services/import/fork/`
@@ -382,6 +405,10 @@ Edits to upstream files are marked with a `Fork:` comment.
 | `packages/client/src/features/tracker-panel/components/controls/StatGauge.tsx` | A word under each ring |
 | `packages/shared/src/index.ts` | Exports the relationship tracker's shapes |
 | `packages/client/src/components/chat/ChatImageLightbox.tsx` | Pin from chat button in the image viewer |
+| `packages/client/src/components/chat/WeatherEffects.tsx` | Weather panel tuning, tint and sounds |
+| `packages/client/src/workers/weather-effects.worker.ts` | Weather panel speed, size and sun position |
+| `packages/client/src/lib/weather-renderer.ts` | Shooting stars, size scaling, sun position override |
+| `packages/client/src/components/chat/ChatRoleplaySurface.tsx` | Feeds the weather panel's picks to the weather |
 | `packages/client/src/components/chat/ChatArea.tsx` | Passes portraits to the People panel |
 
 ## Known upstream issue kept as is

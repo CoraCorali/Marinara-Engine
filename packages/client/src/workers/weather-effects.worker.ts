@@ -100,7 +100,8 @@ function drawFrame(now: number, advanceSimulation = true) {
     if (config.celestial === "sun") {
       drawWeatherSun(
         context,
-        weatherCelestialX(hour, width),
+        // Fork: the weather panel can place the sun by hand.
+        config.celestialX != null ? config.celestialX * width : weatherCelestialX(hour, width),
         weatherCelestialY(hour, height, false),
         radius,
         width,
@@ -111,12 +112,16 @@ function drawFrame(now: number, advanceSimulation = true) {
       );
     } else {
       const moonPosition = hour >= 12 ? ((hour - 21 + 24) % 24) / 10 : (hour + 3) / 10;
-      const moonX = width * 0.1 + Math.min(1, Math.max(0, moonPosition)) * width * 0.8;
+      const moonX =
+        config.celestialX != null
+          ? config.celestialX * width
+          : width * 0.1 + Math.min(1, Math.max(0, moonPosition)) * width * 0.8;
       drawWeatherMoon(context, moonX, weatherCelestialY(hour, height, true), radius * 1.1, frameCount);
     }
   }
 
-  stepWeatherParticles(particles, frameScale, width, height);
+  // Fork: the weather panel's speed and size sliders.
+  stepWeatherParticles(particles, frameScale * (config.speedScale ?? 1), width, height, config.sizeScale ?? 1);
   // Drawn after the whole field has moved, so rain can go out in a few strokes instead of one
   // per drop.
   drawWeatherParticles(context, particles);

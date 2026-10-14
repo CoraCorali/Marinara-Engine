@@ -17,6 +17,9 @@ import {
   weatherCelestialY,
   type WeatherParticle,
 } from "../../lib/weather-renderer";
+import { applyWeatherTuning, weatherSoundScene, type WeatherPrefs } from "../../lib/fork/weather-prefs";
+import { useForkWeatherStore } from "../../stores/fork-weather.store";
+import { ForkWeatherSound } from "./ForkWeatherPanel";
 
 const MAX_CANVAS_DPR = 1;
 const MAX_CANVAS_PIXELS = 1920 * 1080;
@@ -30,6 +33,10 @@ interface WeatherEffectsProps {
   showCelestial?: boolean;
   /** Freeze ambient rendering while local text generation needs the GPU. */
   paused?: boolean;
+  /** Fork: the weather panel's sliders and switches. */
+  tuning?: WeatherPrefs;
+  /** Fork: play the weather's sounds when they are switched on. */
+  withSound?: boolean;
 }
 
 // ═══════════════════════════════════════════════
@@ -42,6 +49,8 @@ export function WeatherEffects({
   date,
   showCelestial = true,
   paused = false,
+  tuning,
+  withSound = false,
 }: WeatherEffectsProps) {
   const reduceAmbientEffects = useReducedAmbientEffects();
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -59,8 +68,14 @@ export function WeatherEffects({
   }, [paused]);
 
   const config = useMemo(() => {
-    return resolveWeatherRenderConfig(weather, timeOfDay, date);
-  }, [weather, timeOfDay, date]);
+    const resolved = resolveWeatherRenderConfig(weather, timeOfDay, date);
+    return tuning ? applyWeatherTuning(resolved, tuning) : resolved;
+  }, [weather, timeOfDay, date, tuning]);
+  const fireplace = useForkWeatherStore((s) => s.fireplace);
+  const soundScene = useMemo(() => weatherSoundScene(config, fireplace), [config, fireplace]);
+  const sound = withSound ? <ForkWeatherSound scene={soundScene} /> : null;
+  // Fork: a canvas can be handed to the worker only once, so new tuning means a new canvas.
+  const tuningKey = tuning ? JSON.stringify(tuning) : "";
 
   // Render when we have particles, celestial bodies, or time-based ambient effects
   const shouldDrawCelestial = showCelestial && config.celestial !== "none";
@@ -246,13 +261,17 @@ export function WeatherEffects({
         const hour = config.hour >= 0 ? config.hour : 12;
 
         if (config.celestial === "sun") {
-          const sx = weatherCelestialX(hour, cw);
+          // Fork: the weather panel can place the sun by hand.
+          const sx = config.celestialX != null ? config.celestialX * cw : weatherCelestialX(hour, cw);
           const sy = weatherCelestialY(hour, ch, false);
           drawWeatherSun(ctx, sx, sy, bodyRadius, cw, ch, config.sunRays, config.sunsetGlow, frameCount);
         } else if (config.celestial === "moon") {
           // Moon position: map 21h→left, 0h→center, 5h→right
           const moonNorm = hour >= 12 ? ((hour - 21 + 24) % 24) / 10 : (hour + 3) / 10;
-          const mx = cw * 0.1 + Math.min(1, Math.max(0, moonNorm)) * cw * 0.8;
+          const mx =
+            config.celestialX != null
+              ? config.celestialX * cw
+              : cw * 0.1 + Math.min(1, Math.max(0, moonNorm)) * cw * 0.8;
           const my = weatherCelestialY(hour, ch, true);
           drawWeatherMoon(ctx, mx, my, bodyRadius * 1.1, frameCount);
         }
@@ -260,7 +279,8 @@ export function WeatherEffects({
 
       const particles = particlesRef.current;
 
-      stepWeatherParticles(particles, frameScale, cw, ch);
+      // Fork: the weather panel's speed and size sliders.
+      stepWeatherParticles(particles, frameScale * (config.speedScale ?? 1), cw, ch, config.sizeScale ?? 1);
 
       // Drawn once the whole field has moved, so rain batches into a few strokes.
       drawWeatherParticles(ctx, particles);
@@ -273,7 +293,13 @@ export function WeatherEffects({
       if (resizePending) {
         resize();
         particlesRef.current = particlesRef.current.map((particle) =>
-          createWeatherParticle(particle.type, canvas.width / canvasScale, canvas.height / canvasScale),
+          createWeatherParticle(
+            particle.type,
+            canvas.width / canvasScale,
+            canvas.height / canvasScale,
+            false,
+            config.sizeScale ?? 1,
+          ),
         );
       }
       frameRef.current = requestAnimationFrame(tick);
@@ -293,13 +319,40 @@ export function WeatherEffects({
     };
   }, [config, shouldDrawCelestial, shouldRender, showCelestial, workerFailed]);
 
-  if (!shouldRender) return null;
+  // Fork: a tint from the weather panel, laid softly over the scene even when nothing is falling.
+  const tint =
+    tuning?.tint && !reduceAmbientEffects ? (
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-0 z-0 mix-blend-soft-light"
+        style={{ background: tuning.tint, opacity: 0.35 }}
+      />
+    ) : null;
+
+  if (!shouldRender) {
+    return (
+      <>
+        {tint}
+        {sound}
+      </>
+    );
+  }
 
   return (
-    <canvas
-      key={`${weather ?? ""}:${timeOfDay ?? ""}:${date ?? ""}:${showCelestial ? "celestial" : "particles"}:${workerFailed ? "fallback" : "worker"}`}
-      ref={canvasRef}
-      className="pointer-events-none absolute inset-0 z-0 h-full w-full [contain:strict]"
-    />
+    <>
+      <canvas
+        key={`${weather ?? ""}:${timeOfDay ?? ""}:${date ?? ""}:${showCelestial ? "celestial" : "particles"}:${workerFailed ? "fallback" : "worker"}:${tuningKey}`}
+        ref={canvasRef}
+        className="pointer-events-none absolute inset-0 z-0 h-full w-full [contain:strict]"
+        // Fork: opacity and brightness are the browser's job, so the sliders cost no drawing.
+        style={
+          tuning && (tuning.opacity !== 1 || tuning.brightness !== 1)
+            ? { opacity: Math.min(1, Math.max(0.1, tuning.opacity)), filter: `brightness(${tuning.brightness})` }
+            : undefined
+        }
+      />
+      {tint}
+      {sound}
+    </>
   );
 }

@@ -72,6 +72,8 @@ import { ChatInput } from "./ChatInput";
 import { CyoaChoices } from "./CyoaChoices";
 import { ForkBoardStrip } from "./ForkBoardStrip";
 import { ForkFixPart } from "./ForkFixPart";
+import { useChatWeatherPrefs } from "../../stores/fork-weather.store";
+import { effectiveWeatherInput } from "../../lib/fork/weather-prefs";
 import type { BoardScope } from "../../hooks/use-fork-board";
 import { CHAT_CONTROL_WINDOW_IDS, ChatConnectedChatWindow, ChatControlWindow } from "./ChatControlWindow";
 import { TrackerPanelBubble } from "./TrackerPanelBubble";
@@ -167,13 +169,25 @@ function useIsMobileToolbarViewport() {
 }
 
 function WeatherEffectsConnected({ paused }: { paused: boolean }) {
-  const weather = useGameStateStore((s) => s.current?.weather ?? null);
-  const timeOfDay = useGameStateStore((s) => s.current?.time ?? null);
+  const storyWeather = useGameStateStore((s) => s.current?.weather ?? null);
+  const storyTime = useGameStateStore((s) => s.current?.time ?? null);
   // Fork: the date sets the season's layer.
   const date = useGameStateStore((s) => s.current?.date ?? null);
+  // Fork: the weather panel can pick the weather and time, tune them, and play their sounds.
+  const chatId = useChatStore((s) => s.activeChatId);
+  const tuning = useChatWeatherPrefs(chatId);
+  const { weather, time: timeOfDay } = effectiveWeatherInput(tuning, { weather: storyWeather, time: storyTime });
   return (
     <Suspense fallback={null}>
-      <WeatherEffects weather={weather} timeOfDay={timeOfDay} date={date} paused={paused} />
+      <WeatherEffects
+        weather={weather}
+        timeOfDay={timeOfDay}
+        date={date}
+        paused={paused}
+        tuning={tuning}
+        showCelestial={tuning.celestial !== "hide"}
+        withSound
+      />
     </Suspense>
   );
 }
