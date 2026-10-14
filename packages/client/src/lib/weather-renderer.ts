@@ -389,10 +389,84 @@ export function createWeatherParticle(
 }
 
 // ── Draw helpers ──
-export function drawWeatherParticle(ctx: WeatherCanvasContext, p: WeatherParticle) {
+
+/** The visible alpha of a particle: zero once it has faded out or has not faded in yet. */
+function particleAlpha(p: WeatherParticle): number {
   const fadeIn = Math.min(p.life / 60, 1);
   const fadeOut = Math.max(1 - p.life / p.maxLife, 0);
-  const alpha = p.opacity * fadeIn * fadeOut;
+  return p.opacity * fadeIn * fadeOut;
+}
+
+/**
+ * Rain, in a handful of strokes instead of one per drop.
+ *
+ * Every drop is the same colour and differs only in width and alpha, but a canvas cannot change
+ * either mid-path, so each drop used to cost its own beginPath/stroke pair: 120 driver calls a
+ * frame in a thunderstorm, which is why rain was the weather that dropped frames. Rounding width
+ * and alpha into a few buckets lets every drop in a bucket share one path. The rounding is finer
+ * than the eye can follow on a falling two-pixel line, and the number of strokes is now bounded by
+ * the number of buckets rather than by the number of drops.
+ */
+const RAIN_ALPHA_STEPS = 5;
+const RAIN_WIDTH_STEPS = 3;
+
+function drawRainBatched(ctx: WeatherCanvasContext, drops: readonly WeatherParticle[]) {
+  if (drops.length === 0) return;
+  ctx.strokeStyle = "rgba(180,210,255,0.8)";
+  // bucket key -> the drops in it, built fresh each frame because the drops move
+  const buckets = new Map<number, WeatherParticle[]>();
+  let minWidth = Infinity;
+  let maxWidth = 0;
+  for (const drop of drops) {
+    if (drop.size < minWidth) minWidth = drop.size;
+    if (drop.size > maxWidth) maxWidth = drop.size;
+  }
+  const widthSpan = Math.max(maxWidth - minWidth, 0.0001);
+  for (const drop of drops) {
+    const alpha = particleAlpha(drop);
+    if (alpha <= 0) continue;
+    const alphaStep = Math.min(RAIN_ALPHA_STEPS - 1, Math.max(0, Math.round(alpha * (RAIN_ALPHA_STEPS - 1))));
+    const widthStep = Math.min(
+      RAIN_WIDTH_STEPS - 1,
+      Math.max(0, Math.round(((drop.size - minWidth) / widthSpan) * (RAIN_WIDTH_STEPS - 1))),
+    );
+    const key = alphaStep * RAIN_WIDTH_STEPS + widthStep;
+    const bucket = buckets.get(key);
+    if (bucket) bucket.push(drop);
+    else buckets.set(key, [drop]);
+  }
+  for (const [key, bucket] of buckets) {
+    const alphaStep = Math.floor(key / RAIN_WIDTH_STEPS);
+    const widthStep = key % RAIN_WIDTH_STEPS;
+    ctx.globalAlpha = alphaStep / (RAIN_ALPHA_STEPS - 1);
+    ctx.lineWidth = minWidth + (widthStep / (RAIN_WIDTH_STEPS - 1)) * widthSpan;
+    ctx.beginPath();
+    for (const drop of bucket) {
+      ctx.moveTo(drop.x, drop.y);
+      ctx.lineTo(drop.x + drop.vx * 2, drop.y + drop.vy * 2);
+    }
+    ctx.stroke();
+  }
+}
+
+/**
+ * Draw a whole field of particles. Rain is batched; everything else is drawn one at a time,
+ * because no other type shares a style closely enough for batching to pay.
+ */
+export function drawWeatherParticles(ctx: WeatherCanvasContext, particles: readonly WeatherParticle[]) {
+  let rain: WeatherParticle[] | null = null;
+  for (const particle of particles) {
+    if (particle.type === "rain") {
+      (rain ??= []).push(particle);
+      continue;
+    }
+    drawWeatherParticle(ctx, particle);
+  }
+  if (rain) drawRainBatched(ctx, rain);
+}
+
+export function drawWeatherParticle(ctx: WeatherCanvasContext, p: WeatherParticle) {
+  const alpha = particleAlpha(p);
   if (alpha <= 0) return;
 
   ctx.globalAlpha = alpha;

@@ -106,6 +106,16 @@ Markup is stripped and every part is length-capped before it is sent.
   around every edge, which is what makes a piece cuttable afterwards. It uses the default image
   generation connection. A failed draw leaves nothing behind.
 
+- **Rain stops dropping frames.** Two things in the draw loop, both in the engine rather than in
+  any theme. Every raindrop used to cost its own path and its own stroke, so a thunderstorm spent
+  120 driver calls a frame on a field of two-pixel lines; drops now share a path with the others of
+  roughly their width and alpha, which bounds the strokes at fifteen however hard it rains, and the
+  rounding is finer than the eye follows on a falling line. Separately, the test for which
+  particles drift sideways built a fresh array for every particle on every frame, around seven
+  thousand throwaway arrays a second in a storm, all of it work for the garbage collector; it is a
+  Set now. Both apply to every weather, not only rain, and neither changes what you see.
+  This does not touch whatever a theme's own blur and glow cost on top.
+
 ## Upstream files touched
 
 Fork-only code lives in `packages/client/src/lib/fork/`, `packages/server/src/services/import/fork/`
@@ -131,6 +141,9 @@ Edits to upstream files are marked with a `Fork:` comment.
 | `packages/client/src/components/chat/ChatArea.tsx` | Closet modal and its opener |
 | `packages/client/src/components/chat/ForkBoardStrip.tsx` | Closet button beside Board |
 | `packages/server/src/services/storage/characters.storage.ts` | Clears the closet when a persona goes |
+| `packages/client/src/lib/weather-renderer.ts` | Batched rain drawing |
+| `packages/client/src/workers/weather-effects.worker.ts` | Draws the field in one pass, no per-particle allocation |
+| `packages/client/src/components/chat/WeatherEffects.tsx` | Same, on the non-worker path |
 | `packages/client/src/components/chat/ChatRoleplaySurface.tsx` | In-scene strip |
 | `packages/client/src/components/chat/ChatInput.tsx` | Director button (and the Spark button) |
 | `packages/server/src/routes/generate.routes.ts` | Saves which agent made the choices |

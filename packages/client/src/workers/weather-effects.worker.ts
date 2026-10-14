@@ -1,7 +1,7 @@
 import {
   createWeatherParticle,
   drawWeatherMoon,
-  drawWeatherParticle,
+  drawWeatherParticles,
   drawWeatherSun,
   weatherCelestialX,
   weatherCelestialY,
@@ -24,6 +24,9 @@ type VisibilityMessage = { type: "visibility"; hidden: boolean };
 type WeatherWorkerMessage = InitMessage | ResizeMessage | VisibilityMessage;
 
 const FRAME_MS = 1000 / 30;
+/** Types that drift sideways as they fall. A Set, because this is tested once per particle per frame. */
+const DRIFTING_TYPES = new Set(["snow", "leaf", "petal", "ash"]);
+
 const BASE_FRAME_MS = 1000 / 60;
 const FIREFLY_COUNT = 10;
 const STAR_COUNT = 18;
@@ -134,7 +137,7 @@ function drawFrame(now: number, advanceSimulation = true) {
     particle.life += frameScale;
     particle.x += particle.vx * frameScale;
     particle.y += particle.vy * frameScale;
-    if (["snow", "leaf", "petal", "ash"].includes(particle.type)) {
+    if (DRIFTING_TYPES.has(particle.type)) {
       particle.wobble += 0.02 * frameScale;
       particle.x += Math.sin(particle.wobble) * 0.5 * frameScale;
     } else if (particle.type === "ember") {
@@ -145,12 +148,14 @@ function drawFrame(now: number, advanceSimulation = true) {
       particle.x += Math.sin(particle.wobble) * 0.8 * frameScale;
       particle.y += Math.cos(particle.wobble * 0.7) * 0.4 * frameScale;
     }
-    drawWeatherParticle(context, particle);
     const outside = particle.y > height + 20 || particle.y < -20 || particle.x > width + 20 || particle.x < -20;
     if (outside || particle.life > particle.maxLife) {
       particles[index] = createWeatherParticle(particle.type, width, height, true);
     }
   }
+  // Drawn after the whole field has moved, so rain can go out in a few strokes instead of one
+  // per drop.
+  drawWeatherParticles(context, particles);
 }
 
 function scheduleFrame() {

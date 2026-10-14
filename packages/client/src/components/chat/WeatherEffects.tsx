@@ -8,7 +8,7 @@ import { useReducedAmbientEffects } from "../../hooks/use-reduced-ambient-effect
 import {
   createWeatherParticle,
   drawWeatherMoon,
-  drawWeatherParticle,
+  drawWeatherParticles,
   drawWeatherSun,
   resolveWeatherRenderConfig,
   weatherCelestialX,
@@ -286,14 +286,15 @@ export function WeatherEffects({ weather, timeOfDay, showCelestial = true, pause
           p.y += Math.cos(p.wobble * 0.7) * 0.4 * frameScale;
         }
 
-        drawWeatherParticle(ctx, p);
-
         // Respawn if off-screen or expired
         const offScreen = p.y > ch + 20 || p.y < -20 || p.x > cw + 20 || p.x < -20;
         if (offScreen || p.life > p.maxLife) {
           particles[i] = createWeatherParticle(p.type, cw, ch, true);
         }
       }
+
+      // Drawn once the whole field has moved, so rain batches into a few strokes.
+      drawWeatherParticles(ctx, particles);
 
       frameRef.current = requestAnimationFrame(tick);
     };
