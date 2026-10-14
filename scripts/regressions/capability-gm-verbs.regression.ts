@@ -826,10 +826,14 @@ assert.deepEqual(
 // are reserved; room generation also preserves the coordinator's multiplayer object.
 // The other half of the boundary — a read off a parameter inside a helper — has no count
 // to pin, which is why sub-source 7 exists rather than a seventh sweep. The docs state both limits.
+// Fork: 20, not 21. The retry-agents route's map sync used to write the whole metadata object it
+// had read before the agents ran (`updateMetadata(chatId, chatMeta)`, an opaque variable payload);
+// it now patches only gameMap, gameMaps and activeGameMapId, all under the reserved `game` /
+// `active` namespaces, so one opaque call is gone and nothing new is written.
 assert.equal(
   unreadableWriteCalls,
-  21,
-  `chat-metadata writes this sweep cannot read statically changed: expected 21, found ${unreadableWriteCalls}. ` +
+  20,
+  `chat-metadata writes this sweep cannot read statically changed: expected 20, found ${unreadableWriteCalls}. ` +
     "This count is a boundary marker, not a budget, so do not simply edit the number to match. Read the " +
     "call this added by hand — the sites are listed below — and decide what it writes: if it commits a key " +
     "under a namespace that is not already in ENGINE_OWNED_METADATA_KEY_PREFIXES, add that namespace (or " +

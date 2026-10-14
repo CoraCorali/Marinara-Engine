@@ -14350,13 +14350,14 @@ export async function generateRoutes(app: FastifyInstance, options: GenerateRout
     // An agent tail may overlap a newer reply on the same backend. Its scoped
     // AbortSignal is safe; a backend-wide abort endpoint is not.
     // Fork: only a local backend (KoboldCpp) has this endpoint, and Stop does not wait on it.
-    if (body.agentsOnly !== true && activeGeneration?.backendUrl && isLocalBackendUrl(activeGeneration.backendUrl)) {
-      const backendRoot = activeGeneration.backendUrl.replace(/\/v1\/?$/, "");
-      const abortUrl = backendRoot + "/api/extra/abort";
-      logger.info("[abort] Sending abort to backend: %s", abortUrl);
-      void fetch(abortUrl, { method: "POST", signal: AbortSignal.timeout(5000) })
-        .then(() => logger.info("[abort] Backend abort sent successfully"))
-        .catch((err) => logger.warn(err, "[abort] Backend abort failed"));
+    if (body.agentsOnly !== true && activeGeneration?.backendUrl) {
+      const abortUrl = activeGeneration.backendUrl.replace(/\/v1\/?$/, "") + "/api/extra/abort";
+      if (isLocalBackendUrl(activeGeneration.backendUrl)) {
+        logger.info("[abort] Sending abort to backend: %s", abortUrl);
+        void fetch(abortUrl, { method: "POST", signal: AbortSignal.timeout(5000) })
+          .then(() => logger.info("[abort] Backend abort sent successfully"))
+          .catch((err) => logger.warn(err, "[abort] Backend abort failed"));
+      }
     }
 
     // Keep the entry registered until the generation route reaches its

@@ -4,7 +4,7 @@
 import type { DB } from "../db/connection.js";
 import { createBoardPinsStorage } from "./board/fork-board-pins.js";
 import { removeForkBoardScope } from "./board/fork-board-cleanup.js";
-import { bonds, createBondsStorage } from "./bonds/fork-bonds.js";
+import { bondMoments, bondTurns, bonds, createBondsStorage } from "./bonds/fork-bonds.js";
 import { bondPairs, createBondPairsStorage } from "./bonds/fork-bond-pairs.js";
 import { undoBondTurn } from "./bonds/fork-bond-updates.js";
 import { eq } from "../db/file-query.js";
@@ -110,7 +110,25 @@ export async function forgetForkReplies(
   db: DB,
   removed: readonly { id: string; chatId: string; createdAt: string }[],
 ): Promise<void> {
-  const newestFirst = [...removed].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  // Two reads per chat find the replies that left a tracker run or a moment; only those are undone,
+  // so deleting many ordinary messages costs the same as deleting one.
+  const tracked = new Set<string>();
+  for (const chatId of new Set(removed.map((message) => message.chatId))) {
+    try {
+      const turns = (await db.select().from(bondTurns).where(eq(bondTurns.chatId, chatId))) as unknown as {
+        messageId: string;
+      }[];
+      const moments = (await db.select().from(bondMoments).where(eq(bondMoments.chatId, chatId))) as unknown as {
+        messageId: string;
+      }[];
+      for (const row of [...turns, ...moments]) if (row.messageId) tracked.add(`${chatId}\u0000${row.messageId}`);
+    } catch (error) {
+      logger.warn(error, "[fork-bonds] Could not read the tracker runs of chat %s", chatId);
+    }
+  }
+  const newestFirst = removed
+    .filter((message) => tracked.has(`${message.chatId}\u0000${message.id}`))
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
   for (const message of newestFirst) {
     await undoBondTurn(db, message.chatId, message.id).catch((error) =>
       logger.warn(error, "[fork-bonds] Could not take back the tracker run of message %s", message.id),
