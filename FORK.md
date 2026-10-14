@@ -395,6 +395,47 @@ tokens of thinking and a reply cut off mid-sentence.
   direction chalked on in a typewriter face, "Take 2" counting the Director's answers, and
   **Rewrite reply** and **Save for next** underneath. The slate grows with the note.
 
+### Bug pass over everything
+
+A full review of every fork feature, with a test for each fix that has logic in it.
+
+- **Swiping a reply no longer stacks relationship moves.** Each reply's tracker run is remembered,
+  and a swipe or re-roll of that reply takes it back before stepping again, along with its moments.
+  Three swipes of one reply move a bond one rung, not three. A value is only put back while it still
+  holds what that run left, so a later reply or a change made by hand is never undone.
+- **Leaving a tangled state lands where it is named.** A marriage that went "Complicated" and then
+  back to "Devoted" no longer drops to Stranger.
+- **Old bonds keep their place.** A bond from the first version takes its rung from its old stage
+  (a husband reopens Devoted, not Stranger) or from its old closeness meter, and that rung is written
+  down on its first edit, so a status change does not move it.
+- **The agent's words are read without caring about case** ("Love", "MARRIED"), and people who are
+  not cards keep separate ids even when their names are in Japanese or Cyrillic.
+- **Generation no longer depends on startup order.** The fork's tables are registered when storage
+  opens rather than in app startup, so nothing that opens storage can fail with "Unsupported table".
+- **Updating a preset keeps scripts you wrote for it.** Only scripts with the same name as one in the
+  new file's pack are replaced, and a file with no pack leaves the preset's scripts alone.
+- **Try again** is not offered once part of the run was saved (it would add a second reply), and on
+  a turn with a map move it now generates the reply instead of quietly doing nothing.
+- **Wait until the reply is finished** works in Conversation mode too.
+- **Stars and fireflies are drawn at all.** They were born with no opacity, and the renderer skips
+  anything invisible, so the night sky and the Stars switch only ever showed the shooting stars.
+- **The weather no longer falls back to the slower renderer** after tapping a chip that is already
+  picked: the drawing and its canvas now follow one key. Tint, opacity and brightness no longer
+  rebuild the canvas at all.
+- **Weather sounds**: crackles and thunder no longer pile up into one loud pop when audio wakes, the
+  sound keeps playing when the weather canvas appears or goes, and a key press or a lifted finger
+  wakes it as well as a touch.
+- **Fix this part** edits the copy you picked when the same words appear twice, keeps its markers on
+  a very long reply, closes with the phone's back button, and ignores Escape meant for typing or for
+  a dialog on top. Slop phrases typed with a phone's curly apostrophe now match.
+- **The board**: Newest goes by when a pin was added, quick arrow-key moves build on each other, and a
+  second drag before the first save lands is no longer snapped back.
+- **Re-roll after Scene Spark on a new chat** asks Spark again, not the official choice agent.
+- **The Director** skips messages you hid from the AI, and a failed model call is logged and answered with
+  a clear error. **Pin from chat** says plainly when it could not read a picture.
+- Smaller: the moments list shows status names, the bond ring has a plain-colour fallback, tracker
+  card rows keep their own keys.
+
 ## Upstream files touched
 
 Fork-only code lives in `packages/client/src/lib/fork/`, `Fork*` components, `packages/shared/src/features/fork-bond-shapes.ts`, `packages/server/src/services/import/fork/`
@@ -416,8 +457,7 @@ Edits to upstream files are marked with a `Fork:` comment.
 | `packages/client/src/components/modals/ImportPresetModal.tsx` | Update-or-copy prompt on preset import |
 | `packages/server/src/services/import/marinara.importer.ts` | Preset update in place, regex pack install |
 | `packages/server/src/routes/prompts.routes.ts` | Preset export carries its regex pack |
-| `packages/server/src/app.ts` | Registers the board, tracker and moments tables at startup |
-| `packages/server/src/db/connection.ts` | `registerForkTables` helper |
+| `packages/server/src/db/connection.ts` | Registers the fork's tables (`db/fork-tables.ts`) when storage opens; `registerForkTables` helper |
 | `packages/server/src/routes/index.ts` | Registers the board and Director routes |
 | `packages/server/src/routes/generate.routes.ts` | Sends in-scene pins, their captions and the bonds note with the reply |
 | `packages/client/src/components/chat/ForkBoardStrip.tsx` | Bonds button too |
@@ -456,6 +496,9 @@ Edits to upstream files are marked with a `Fork:` comment.
 | `packages/client/src/components/chat/ChatMessage.tsx` | Passes those scripts while a reply streams |
 | `packages/client/src/components/agents/RegexScriptEditor.tsx` | The wait-until-finished checkbox |
 | `packages/client/src/components/chat/ChatArea.tsx` | Passes portraits to the People panel |
+| `packages/client/src/components/chat/ConversationMessage.tsx` | Wait-until-finished regex in Conversation mode |
+| `packages/client/src/stores/agent.store.ts` | Remembers which choice agent made the choices on screen |
+| `packages/server/src/routes/generate/retry-agents-route.ts` | Passes the reply to the tracker update, so a re-roll replaces its move |
 
 ## Known upstream issue kept as is
 

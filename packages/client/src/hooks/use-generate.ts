@@ -2156,7 +2156,7 @@ export function useGenerate() {
                   const d = result.data as Record<string, unknown>;
                   const choices = (d.choices as Array<{ label: string; text: string }>) ?? [];
                   if (choices.length > 0) {
-                    setCyoaChoices(choices, params.chatId);
+                    setCyoaChoices(choices, params.chatId, result.agentType);
                   }
                 }
 
@@ -3844,7 +3844,7 @@ export function useGenerate() {
                 if (result.resultType === "cyoa_choices") {
                   const d = result.data as Record<string, unknown>;
                   const choices = (d.choices as Array<{ label: string; text: string }>) ?? [];
-                  if (shouldApplyVisibleResult) setCyoaChoices(choices, chatId);
+                  if (shouldApplyVisibleResult) setCyoaChoices(choices, chatId, result.agentType);
                 }
                 // YouTube re-pick: drive the in-app player with the fresh intent.
                 if (result.resultType === "youtube_control" && shouldApplyVisibleResult) {

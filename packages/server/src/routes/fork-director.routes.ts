@@ -70,6 +70,19 @@ function parseStringList(value: unknown): string[] {
   }
 }
 
+/** A message the user hid from the AI (its extra may still be stored as JSON text). */
+function hiddenFromAI(extra: unknown): boolean {
+  let value = extra;
+  if (typeof value === "string") {
+    try {
+      value = JSON.parse(value);
+    } catch {
+      return false;
+    }
+  }
+  return Boolean(value && typeof value === "object" && (value as { hiddenFromAI?: unknown }).hiddenFromAI === true);
+}
+
 export async function forkDirectorRoutes(app: FastifyInstance) {
   const chats = createChatsStorage(app.db);
   const characters = createCharactersStorage(app.db);
@@ -136,8 +149,12 @@ export async function forkDirectorRoutes(app: FastifyInstance) {
       : null;
 
     // Only the tail matters here, and a long roleplay should not be read whole on every turn.
-    // Previews already drop system, hidden and command-only messages.
-    const recent = await chats.listMessagePreviews(chatId, DIRECTOR_SCENE_MESSAGES);
+    // Previews already drop system, hidden and command-only messages; a message the user hid from
+    // the AI is dropped here too, so the Director sees what the writer model sees. A few extra are
+    // read so the scene is still full when some of the tail is hidden.
+    const recent = (await chats.listMessagePreviews(chatId, DIRECTOR_SCENE_MESSAGES * 2))
+      .filter((message) => !hiddenFromAI(message.extra))
+      .slice(-DIRECTOR_SCENE_MESSAGES);
     const scene: DirectorSceneMessage[] = recent.map((message) => ({
       role: message.role,
       content: message.content,

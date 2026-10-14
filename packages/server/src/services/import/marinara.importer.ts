@@ -1054,13 +1054,31 @@ async function importPreset(data: unknown, db: DB, options?: { replacePresetId?:
     ),
   });
 
-  // Fork: install the preset's own regex pack, replacing the one a previous import left.
+  // Fork: install the preset's own regex pack. A script of the same name the previous import left
+  // is replaced, so updating never stacks copies; anything else on this preset (a script the user
+  // wrote for it) is kept, and a file with no pack leaves the preset's scripts alone entirely.
   let regexInstalled = 0;
   const packScripts = readPresetRegexPack(d.regexScripts, newPreset.id);
-  if (replaceTarget || packScripts.length > 0) {
+  if (packScripts.length > 0) {
     const regexStorage = createRegexScriptsStorage(db);
+    const incoming = new Set(
+      packScripts.map((script) =>
+        String(script.name ?? "")
+          .trim()
+          .toLocaleLowerCase(),
+      ),
+    );
     for (const script of await regexStorage.list()) {
-      if (isPackScript(script, newPreset.id)) await regexStorage.remove(script.id);
+      if (
+        isPackScript(script, newPreset.id) &&
+        incoming.has(
+          String(script.name ?? "")
+            .trim()
+            .toLocaleLowerCase(),
+        )
+      ) {
+        await regexStorage.remove(script.id);
+      }
     }
     for (const script of packScripts) {
       if (await regexStorage.create(script)) regexInstalled += 1;

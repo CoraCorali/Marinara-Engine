@@ -40,6 +40,7 @@ export function CyoaChoices({ messages }: Props) {
   const { t: localizeUi } = useUiTranslation();
   const choices = useAgentStore((s) => s.cyoaChoices);
   const choicesChatId = useAgentStore((s) => s.cyoaChoicesChatId);
+  const choicesAgentType = useAgentStore((s) => s.cyoaChoicesAgentType);
   const setCyoaChoices = useAgentStore((s) => s.setCyoaChoices);
   const clearCyoaChoices = useAgentStore((s) => s.clearCyoaChoices);
   const { generate, retryAgents } = useGenerate();
@@ -215,11 +216,23 @@ export function CyoaChoices({ messages }: Props) {
       // Re-runs ONLY the CYOA agent with fresh context (latest messages + last
       // assistant's extras). The retry route persists the new choices to the
       // message's extra and the SSE handler swaps them into the store.
-      await retryAgents(activeChatId, [persistedChoiceState?.agentType ?? "cyoa"]);
+      // Fork: on a chat with no reply yet (Scene Spark's opening scenes) nothing is saved on a
+      // message, so the agent that made the choices on screen is asked again.
+      const liveAgentType = choicesChatId === activeChatId ? choicesAgentType : null;
+      await retryAgents(activeChatId, [persistedChoiceState?.agentType ?? liveAgentType ?? "cyoa"]);
     } finally {
       setIsRerolling(false);
     }
-  }, [activeChatId, isStreaming, isEditing, isRerolling, persistedChoiceState?.agentType, retryAgents]);
+  }, [
+    activeChatId,
+    choicesAgentType,
+    choicesChatId,
+    isStreaming,
+    isEditing,
+    isRerolling,
+    persistedChoiceState?.agentType,
+    retryAgents,
+  ]);
 
   const handleStartEdit = useCallback(() => {
     setDraftChoices(choices.map((choice) => ({ ...choice })));

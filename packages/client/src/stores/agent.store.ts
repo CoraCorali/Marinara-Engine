@@ -152,6 +152,8 @@ interface AgentState {
     text: string;
   }>;
   cyoaChoicesChatId: string | null;
+  /** Fork: which choice agent made the choices on screen (Scene Spark or the official one). */
+  cyoaChoicesAgentType: string | null;
   mariChips: MariSuggestionChip[];
   mariChipsChatId: string | null;
   /**
@@ -194,7 +196,7 @@ interface AgentState {
   revealNextEchoMessage: () => void;
   setEchoBaseline: (count: number) => void;
   setEchoLoadedChatId: (chatId: string | null) => void;
-  setCyoaChoices: (choices: Array<{ label: string; text: string }>, chatId?: string | null) => void;
+  setCyoaChoices: (choices: Array<{ label: string; text: string }>, chatId?: string | null, agentType?: string) => void;
   clearCyoaChoices: () => void;
   setMariChips: (chatId: string | null, chips: MariSuggestionChip[]) => void;
   clearMariChips: () => void;
@@ -239,6 +241,7 @@ type AgentDataState = Pick<
   | "echoLoadedChatId"
   | "cyoaChoices"
   | "cyoaChoicesChatId"
+  | "cyoaChoicesAgentType"
   | "mariChips"
   | "mariChipsChatId"
   | "mariPlan"
@@ -273,6 +276,7 @@ function createInitialAgentDataState(): AgentDataState {
     echoLoadedChatId: null,
     cyoaChoices: [],
     cyoaChoicesChatId: null,
+    cyoaChoicesAgentType: null,
     mariChips: [],
     mariChipsChatId: null,
     mariPlan: null,
@@ -486,8 +490,14 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   setEchoBaseline: (count) => set({ echoBaseline: count }),
   setEchoLoadedChatId: (chatId) => set({ echoLoadedChatId: chatId }),
 
-  setCyoaChoices: (choices, chatId = null) => set({ cyoaChoices: choices, cyoaChoicesChatId: chatId }),
-  clearCyoaChoices: () => set({ cyoaChoices: [], cyoaChoicesChatId: null }),
+  // Fork: an edit of the same chat's choices keeps the agent that made them.
+  setCyoaChoices: (choices, chatId = null, agentType) =>
+    set((state) => ({
+      cyoaChoices: choices,
+      cyoaChoicesChatId: chatId,
+      cyoaChoicesAgentType: agentType ?? (state.cyoaChoicesChatId === chatId ? state.cyoaChoicesAgentType : null),
+    })),
+  clearCyoaChoices: () => set({ cyoaChoices: [], cyoaChoicesChatId: null, cyoaChoicesAgentType: null }),
   setMariChips: (chatId, chips) => set({ mariChips: chips, mariChipsChatId: chatId }),
   clearMariChips: () => set({ mariChips: [], mariChipsChatId: null }),
   setMariPlan: (chatId, steps) =>

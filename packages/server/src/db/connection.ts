@@ -8,6 +8,7 @@ import {
   type FileNativeStoreController,
   type FileStoreStats,
 } from "./file-backed-store.js";
+import { FORK_TABLES } from "./fork-tables.js";
 
 type DbCleanup = () => void | Promise<void>;
 
@@ -18,6 +19,8 @@ let fileStore: FileNativeStoreController | null = null;
 async function createStorage(): Promise<DB> {
   const db = await createFileNativeDB();
   fileStore = db._fileStore;
+  // Fork: the fork's tables are part of opening storage (see fork-tables.ts).
+  fileStore.registerTables(FORK_TABLES);
   dbCleanup = async () => {
     await fileStore?.close();
     fileStore = null;
@@ -34,7 +37,7 @@ export async function getDB() {
 
 /**
  * Fork: register extra file-backed tables on the live store, the same path capability packages
- * use. Keeps the reference board off the built-in table list, so no storage-format bump is needed.
+ * use. The fork's own are registered when storage opens; this stays for tests that add more.
  */
 export function registerForkTables(tables: readonly unknown[]): void {
   fileStore?.registerTables(tables);

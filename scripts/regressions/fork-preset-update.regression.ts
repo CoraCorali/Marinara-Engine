@@ -167,6 +167,15 @@ const second = await importMarinara(file("My Preset", "Second section", "BOLT") 
 assert.equal(second.success, true);
 assert.equal(second.id !== presetId, true, "without replacePresetId an import still adds a copy");
 
+// The user writes a script of their own for this preset.
+await regex.create({
+  name: "My own script",
+  findRegex: "mine",
+  replaceString: "",
+  placement: ["ai_output"],
+  targetPromptPresetIds: [presetId],
+} as never);
+
 const third = await importMarinara(
   { ...file("My Preset", "Third section", "BOLT"), replacePresetId: presetId } as never,
   db,
@@ -184,8 +193,21 @@ assert.equal(sections[0]!.name, "Third section");
 assert.equal((await prompts.listChoiceBlocksForPreset(presetId)).length, 1, "choice blocks are replaced too");
 
 const scripts = (await regex.list()).filter((script) => isPackScript(script, presetId));
-assert.equal(scripts.length, 1, "the pack is replaced, not duplicated");
-assert.equal(scripts[0]!.findRegex, "hello");
+assert.equal(
+  scripts.filter((script) => script.name === "Pack script").length,
+  1,
+  "the pack is replaced, not duplicated",
+);
+assert.ok(
+  scripts.some((script) => script.name === "My own script"),
+  "a script the user wrote for the preset is kept",
+);
+
+// An update from a file with no pack leaves the preset's scripts alone.
+const packless = file("My Preset", "Fourth section", "BOLT") as { data: Record<string, unknown> };
+delete packless.data.regexScripts;
+await importMarinara({ ...packless, replacePresetId: presetId } as never, db);
+assert.equal((await regex.list()).filter((script) => isPackScript(script, presetId)).length, 2);
 
 // A missing target is reported rather than silently creating a copy.
 const orphan = await importMarinara({ ...file("My Preset", "x", "BOLT"), replacePresetId: "no-such-id" } as never, db);
@@ -193,9 +215,8 @@ assert.equal(orphan.success, false);
 
 // ── Export carries the pack ──
 const exported = buildPresetRegexPack(await regex.list(), presetId);
-assert.equal(exported.length, 1);
-assert.equal(exported[0]!.name, "Pack script");
-assert.deepEqual(exported[0]!.placement, ["ai_output"]);
+assert.deepEqual(exported.map((script) => script.name).sort(), ["My own script", "Pack script"]);
+assert.deepEqual(exported.find((script) => script.name === "Pack script")!.placement, ["ai_output"]);
 
 await closeDB();
 rmSync(dir, { recursive: true, force: true });

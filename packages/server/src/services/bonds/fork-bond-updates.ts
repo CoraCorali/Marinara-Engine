@@ -28,7 +28,18 @@ import {
   type ForkLoveStatus,
 } from "@marinara-engine/shared";
 import type { DB } from "../../db/connection.js";
-import { MAX_BOND_FIELD, MAX_BOND_ROUTE, cleanFields, createBondsStorage, type Bond } from "./fork-bonds.js";
+import { and, eq } from "../../db/file-query.js";
+import { newId, now } from "../../utils/id-generator.js";
+import {
+  MAX_BOND_FIELD,
+  MAX_BOND_ROUTE,
+  bondMoments,
+  bondTurns,
+  cleanFields,
+  createBondsStorage,
+  type Bond,
+  type BondInput,
+} from "./fork-bonds.js";
 
 /** The most rungs a romance's status may travel in one reply. People do not go from talking to married. */
 export const MAX_STATUS_STEP = 1;
@@ -267,13 +278,87 @@ export async function applyBondsAgentResult(
   chatId: string,
   data: unknown,
   resolveCharacterId: (name: string) => string | null,
+  /** The reply this run read. A second run for the same reply (a swipe, a re-roll) replaces the first. */
+  messageId?: string,
 ): Promise<{ changed: number; added: number; moments: number }> {
   const store = createBondsStorage(db);
-  const plan = planBondUpdates(data, await store.listForChat(chatId), resolveCharacterId);
+  if (messageId) await undoBondTurn(db, chatId, messageId);
+  const before = await store.listForChat(chatId);
+  const plan = planBondUpdates(data, before, resolveCharacterId);
   for (const { id, ...patch } of plan.changes) await store.update(id, patch);
   for (const creation of plan.creations) await store.create({ chatId, ...creation });
-  for (const moment of plan.moments) await store.addMoment({ bondId: moment.id, chatId, ...moment });
+  for (const moment of plan.moments) await store.addMoment({ bondId: moment.id, chatId, messageId, ...moment });
+  if (messageId) await recordBondTurn(db, chatId, messageId, before, await store.listForChat(chatId));
   return { changed: plan.changes.length, added: plan.creations.length, moments: plan.moments.length };
+}
+
+/** The values a run can move and a re-roll takes back. Written fields are rewritten by the next run anyway. */
+const TURN_KEYS = ["kind", "status", "rung", "route", "condition", "drift"] as const;
+type TurnValues = Partial<Record<(typeof TURN_KEYS)[number], string>>;
+type TurnChange = { bondId: string; before: TurnValues; after: TurnValues };
+
+function turnValue(bond: Bond, key: (typeof TURN_KEYS)[number]): string {
+  return (key === "status" ? bond.status : bond[key]) ?? "";
+}
+
+async function recordBondTurn(db: DB, chatId: string, messageId: string, before: Bond[], after: Bond[]) {
+  const changes: TurnChange[] = [];
+  for (const bond of after) {
+    const old = before.find((candidate) => candidate.id === bond.id);
+    if (!old) continue;
+    const change: TurnChange = { bondId: bond.id, before: {}, after: {} };
+    for (const key of TURN_KEYS) {
+      if (turnValue(old, key) === turnValue(bond, key)) continue;
+      change.before[key] = turnValue(old, key);
+      change.after[key] = turnValue(bond, key);
+    }
+    if (Object.keys(change.after).length > 0) changes.push(change);
+  }
+  await db.delete(bondTurns).where(and(eq(bondTurns.chatId, chatId), eq(bondTurns.messageId, messageId)));
+  if (changes.length === 0) return;
+  await db
+    .insert(bondTurns)
+    .values({ id: newId(), chatId, messageId, changes: JSON.stringify(changes), createdAt: now() } as never);
+}
+
+/**
+ * Take back what an earlier run for this reply moved, and its moments. A value is only put back
+ * while it still holds what that run left, so a later reply's move or a change made by hand since
+ * is never undone.
+ */
+export async function undoBondTurn(db: DB, chatId: string, messageId: string): Promise<void> {
+  const store = createBondsStorage(db);
+  const rows = (await db
+    .select()
+    .from(bondTurns)
+    .where(and(eq(bondTurns.chatId, chatId), eq(bondTurns.messageId, messageId)))) as unknown as {
+    changes: string;
+  }[];
+  for (const row of rows) {
+    let changes: TurnChange[] = [];
+    try {
+      changes = JSON.parse(row.changes) as TurnChange[];
+    } catch {
+      continue;
+    }
+    for (const change of Array.isArray(changes) ? changes : []) {
+      const bond = await store.getById(change.bondId);
+      if (!bond) continue;
+      const patch: BondInput = {};
+      for (const key of TURN_KEYS) {
+        if (change.after?.[key] === undefined || turnValue(bond, key) !== change.after[key]) continue;
+        patch[key] = change.before?.[key] ?? "";
+      }
+      // Taking back a change of kind brings the old kind's status and rung back with it.
+      if (patch.kind !== undefined) {
+        patch.status ??= change.before?.status;
+        patch.rung ??= change.before?.rung;
+      }
+      if (Object.keys(patch).length > 0) await store.update(bond.id, patch);
+    }
+  }
+  await db.delete(bondTurns).where(and(eq(bondTurns.chatId, chatId), eq(bondTurns.messageId, messageId)));
+  await db.delete(bondMoments).where(and(eq(bondMoments.chatId, chatId), eq(bondMoments.messageId, messageId)));
 }
 
 /** The format the agent writes in, built from the shared shapes so it can never drift from them. */

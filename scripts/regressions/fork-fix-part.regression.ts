@@ -4,7 +4,7 @@
  */
 import assert from "node:assert/strict";
 
-const { DEFAULT_SLOP_PHRASES, findSlopMatches, locatePassage, replacePassage, sentenceAround } =
+const { DEFAULT_SLOP_PHRASES, findSlopMatches, locatePassage, passageOccurrence, replacePassage, sentenceAround } =
   await import("../../packages/client/src/lib/fork/slop.js");
 const { buildFixPartMessages, isValidFixRange, readFixPartReply, DEFAULT_FIX_INSTRUCTION } =
   await import("../../packages/server/src/services/generation/fork-fix-part.js");
@@ -123,5 +123,20 @@ assert.equal(
 );
 assert.equal(readFixPartReply('"Stay here."', '"Go away."'), '"Stay here."', "speech keeps its quotes");
 assert.equal(readFixPartReply("   ", original), "", "an empty answer stays empty");
+
+// ── Bug pass ──
+assert.equal(
+  findSlopMatches("She couldn't help but grin.", ["couldn’t help but"]).length,
+  1,
+  "a phrase typed with a curly apostrophe still matches the straight one",
+);
+const twice = '"No." She shakes her head. *"No."*';
+const second = locatePassage(twice, '"No."', passageOccurrence('"No." She shakes her head. "No."', 27, '"No."'));
+assert.equal(twice.slice(second!.start, second!.end), '*"No."*', "the copy picked on screen is the one fixed");
+assert.equal(locatePassage(twice, '"No."', 5)!.start, 0, "an occurrence past the end falls back to the first");
+const longReply = `${"Filler sentence. ".repeat(1200)}The last line.`;
+const longStart = longReply.indexOf("The last line.");
+const [, longUser] = buildFixPartMessages({ reply: longReply, start: longStart, end: longStart + 14 });
+assert.ok(longUser!.content.includes("⟦The last line.⟧"), "a passage near the end of a long reply keeps its markers");
 
 console.log("fork fix part: ok");

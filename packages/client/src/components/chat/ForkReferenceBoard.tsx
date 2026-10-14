@@ -114,6 +114,17 @@ export function ForkReferenceBoard({ chatScope, personaScope }: Props) {
       }),
     );
 
+  // Holds an order on screen while it saves. Only the newest save lets go of it, so a drag or a
+  // key press started before the last one finished is never snapped back by the older save.
+  const saveSeqRef = useRef(0);
+  const holdAndSave = (ids: string[]) => {
+    const seq = ++saveSeqRef.current;
+    setDragOrder(ids);
+    void saveOrder(ids).finally(() => {
+      if (saveSeqRef.current === seq) setDragOrder(null);
+    });
+  };
+
   const moveTo = (ids: string[], id: string, index: number) => {
     const next = ids.filter((entry) => entry !== id);
     next.splice(Math.max(0, Math.min(next.length, index)), 0, id);
@@ -139,8 +150,7 @@ export function ForkReferenceBoard({ chatScope, personaScope }: Props) {
   };
   // The dragged order stays on screen until every save has landed, so nothing jumps back mid-save.
   const onHandleUp = () => {
-    if (draggingId && dragOrder) void saveOrder(dragOrder).finally(() => setDragOrder(null));
-    else setDragOrder(null);
+    if (dragOrder) holdAndSave(dragOrder);
     setDraggingId(null);
   };
   // The same handle moves a pin with the arrow keys, for anyone not using a finger or a mouse.
@@ -155,7 +165,8 @@ export function ForkReferenceBoard({ chatScope, personaScope }: Props) {
           : 0;
     if (!delta) return;
     event.preventDefault();
-    void saveOrder(moveTo(ids, id, ids.indexOf(id) + delta));
+    // Builds on the order still on screen, so three quick presses move the pin three places.
+    holdAndSave(moveTo(ids, id, ids.indexOf(id) + delta));
   };
 
   const handleFiles = async (event: ChangeEvent<HTMLInputElement>) => {

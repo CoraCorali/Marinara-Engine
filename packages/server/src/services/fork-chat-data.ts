@@ -48,7 +48,7 @@ export async function copyForkChatData(db: DB, fromChatId: string, toChatId: str
       if (!copy) continue;
       // The branch shares the story so far, so it starts with the same moments.
       for (const moment of moments.filter((entry) => entry.bondId === id)) {
-        await bonds.addMoment({ ...moment, bondId: copy.id, chatId: toChatId });
+        await bonds.addMoment({ ...moment, bondId: copy.id, chatId: toChatId, messageId: "" });
       }
     }
   } catch (error) {

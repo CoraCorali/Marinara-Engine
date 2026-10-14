@@ -12567,10 +12567,16 @@ export async function generateRoutes(app: FastifyInstance, options: GenerateRout
               customAgentCanApplyResult(result, resolvedAgents, builtInAgentTypes, "edit_trackers")
             ) {
               try {
-                const moved = await applyBondsAgentResult(app.db, input.chatId, result.data, (name) => {
-                  const wanted = normalizeTextForMatch(name);
-                  return charInfo.find((character) => normalizeTextForMatch(character.name) === wanted)?.id ?? null;
-                });
+                const moved = await applyBondsAgentResult(
+                  app.db,
+                  input.chatId,
+                  result.data,
+                  (name) => {
+                    const wanted = normalizeTextForMatch(name);
+                    return charInfo.find((character) => normalizeTextForMatch(character.name) === wanted)?.id ?? null;
+                  },
+                  messageId,
+                );
                 if (moved.changed > 0 || moved.added > 0) {
                   logger.debug("[fork_bonds] %d bonds changed, %d added", moved.changed, moved.added);
                 }

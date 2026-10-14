@@ -15,10 +15,10 @@ process.env.LOG_LEVEL = "silent";
 
 const shared = await import("../../packages/shared/src/features/fork-bond-shapes.js");
 const { getDB, closeDB, registerForkTables } = await import("../../packages/server/src/db/connection.js");
-const { bonds, bondMoments, createBondsStorage, describeMoves, toBond, MAX_BONDS_PER_CHAT } =
+const { bonds, bondMoments, bondTurns, createBondsStorage, describeMoves, toBond, MAX_BONDS_PER_CHAT } =
   await import("../../packages/server/src/services/bonds/fork-bonds.js");
 const { bondsPromptBlock } = await import("../../packages/server/src/services/generation/fork-bonds-prompt.js");
-const { planBondUpdates, bondsAgentStateBlock, outsiderId } =
+const { planBondUpdates, bondsAgentStateBlock, outsiderId, applyBondsAgentResult } =
   await import("../../packages/server/src/services/bonds/fork-bond-updates.js");
 
 // ── The shapes ──
@@ -45,7 +45,7 @@ assert.deepEqual(shared.forkBondNeighbours("love", "Close"), { below: "Friendly"
 assert.deepEqual(shared.forkBondNeighbours("love", "Unrequited"), { below: null, above: null });
 
 const db = await getDB();
-registerForkTables([bonds, bondMoments]);
+registerForkTables([bonds, bondMoments, bondTurns]);
 const store = createBondsStorage(db);
 const CHAT = "chat-vee";
 
@@ -284,6 +284,52 @@ assert.ok(stateBlock.includes("Stranger → Noticed → Acquaintance"), "the lad
 assert.ok(stateBlock.includes('"who":"Vee"') && stateBlock.includes('"rung":"Close"'));
 assert.ok(stateBlock.trimEnd().endsWith("</current_relationships>"));
 assert.ok(bondsAgentStateBlock([], () => "").includes("holds nothing yet"));
+
+// ── Leaving a tangled state lands where it is named ──
+assert.equal(step("love", "Complicated", "Devoted"), "Devoted", "a marriage is not dropped to Stranger");
+
+// ── A swipe replaces the reply's move instead of adding to it ──
+const swipeBond = (await store.create({ chatId: "chat-swipe", characterId: "char-sol", kind: "love", rung: "Close" }))!;
+const solResolve = (name: string) => (name === "Sol" ? "char-sol" : null);
+const reading = { bonds: [{ who: "Sol", rung: "Devoted", status: "dating", turn: "The kiss." }] };
+await applyBondsAgentResult(db, "chat-swipe", reading, solResolve, "msg-1");
+assert.equal((await store.getById(swipeBond.id))!.rung, "Confidant");
+await applyBondsAgentResult(db, "chat-swipe", reading, solResolve, "msg-1");
+await applyBondsAgentResult(db, "chat-swipe", reading, solResolve, "msg-1");
+const swiped = (await store.getById(swipeBond.id))!;
+assert.equal(swiped.rung, "Confidant", "three swipes of one reply move one rung, not three");
+assert.equal(swiped.status, "dating");
+assert.equal(
+  (await store.listMoments(swipeBond.id)).length,
+  2,
+  "the swiped-away reply's moments go with it (one rung, one status)",
+);
+await applyBondsAgentResult(db, "chat-swipe", { bonds: [{ who: "Sol", rung: "Stranger" }] }, solResolve, "msg-1");
+assert.equal((await store.getById(swipeBond.id))!.rung, "Friendly", "a re-roll steps from before the reply");
+await applyBondsAgentResult(db, "chat-swipe", reading, solResolve, "msg-2");
+assert.equal((await store.getById(swipeBond.id))!.rung, "Close", "the next reply steps from there");
+await store.update(swipeBond.id, { rung: "Intimate" });
+await applyBondsAgentResult(db, "chat-swipe", { bonds: [] }, solResolve, "msg-2");
+assert.equal((await store.getById(swipeBond.id))!.rung, "Intimate", "a change made by hand since is never taken back");
+await store.removeChat("chat-swipe");
+assert.equal((await store.listMomentsForChat("chat-swipe")).length, 0);
+
+// ── An old bond's worked-out rung is written down on its first edit ──
+await db.insert(bonds).values({
+  id: "legacy-row",
+  chatId: "chat-old",
+  characterId: "char-old",
+  label: "",
+  kind: "love",
+  stage: "talking",
+  rung: "",
+  order: 0,
+  createdAt: "",
+  updatedAt: "",
+} as never);
+assert.equal((await store.getById("legacy-row"))!.rung, "Familiar");
+await store.update("legacy-row", { status: "dating" });
+assert.equal((await store.getById("legacy-row"))!.rung, "Familiar", "a status change does not move the rung");
 
 // ── The tracker is capped ──
 for (let index = 0; index < MAX_BONDS_PER_CHAT; index += 1) {

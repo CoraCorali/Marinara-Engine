@@ -11,7 +11,9 @@ import { Modal } from "../ui/Modal";
 import { cn } from "../../lib/utils";
 import { useUIStore } from "../../stores/ui.store";
 import { useForkSlopStore } from "../../stores/fork-slop.store";
-import { findSlopMatches, locatePassage, replacePassage, sentenceAround } from "../../lib/fork/slop";
+import { findSlopMatches, locatePassage, passageOccurrence, replacePassage, sentenceAround } from "../../lib/fork/slop";
+import { useBackDismiss } from "../../hooks/use-back-dismiss";
+import { isModalOverlayOpen } from "../../lib/modal-overlay-registry";
 
 type MessageLike = { id: string; role: string; content: string };
 
@@ -116,6 +118,16 @@ function renderedText(content: Element) {
   return { text, rangeFor };
 }
 
+/** Which copy of the passage the reader picked, counted in the reply as shown. */
+function occurrenceOf(glow: Range | null, passage: string): number {
+  const content = glow ? elementOf(glow.startContainer)?.closest(".mari-message-content") : null;
+  if (!glow || !content) return 0;
+  const before = document.createRange();
+  before.setStart(content, 0);
+  before.setEnd(glow.startContainer, glow.startOffset);
+  return passageOccurrence(renderedText(content).text, before.toString().length, passage);
+}
+
 /** Ranges for every listed phrase in one message's rendered text. */
 function marksIn(content: Element, messageId: string, phrases: readonly string[]): SlopMark[] {
   const { text, rangeFor } = renderedText(content);
@@ -156,7 +168,7 @@ export function ForkFixPart({ chatId, messages, onEdit, busy }: Props) {
   const openFix = useCallback(
     (messageId: string, passage: string, glow: Range | null) => {
       const reply = replyById(messageId);
-      const found = reply ? locatePassage(reply.content, passage) : null;
+      const found = reply ? locatePassage(reply.content, passage, occurrenceOf(glow, passage)) : null;
       if (!reply || !found) {
         toast.error(localizeUi("ui.chat.forkfix.couldNotFindPassage"));
         return;
@@ -291,10 +303,14 @@ export function ForkFixPart({ chatId, messages, onEdit, busy }: Props) {
   const closeSheet = useCallback(() => {
     if (!saving) setTarget(null);
   }, [saving]);
+  // The phone's back button closes the sheet, the way it closes Marinara's own dialogs.
+  useBackDismiss(Boolean(target), closeSheet);
   useEffect(() => {
     if (!target) return;
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") closeSheet();
+      // Escape that cancels typing in an IME, or closes a dialog opened over the sheet, is not for us.
+      if (event.key !== "Escape" || event.isComposing || isModalOverlayOpen()) return;
+      closeSheet();
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -547,7 +563,7 @@ function SlopListEditor({ latestReply }: { latestReply: string }) {
   const add = () => {
     const phrase = adding.trim();
     if (!phrase) return;
-    if (!phrases.some((existing) => existing.toLocaleLowerCase() === phrase.toLocaleLowerCase())) {
+    if (!phrases.some((existing) => key(existing.trim()) === key(phrase))) {
       setPhrases([phrase, ...phrases]);
     }
     setAdding("");

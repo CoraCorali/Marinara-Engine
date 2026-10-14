@@ -32,6 +32,17 @@ export function isValidFixRange(reply: string, start: number, end: number): bool
   return Number.isInteger(start) && Number.isInteger(end) && start >= 0 && end > start && end <= reply.length;
 }
 
+/**
+ * A long reply is cut to a window around the marked passage, never from the top: cutting the top
+ * would drop the markers of a passage near the end, and the model would rewrite something else.
+ */
+function replyWindow(marked: string, start: number): string {
+  if (marked.length <= MAX_REPLY_CHARS) return marked;
+  const from = Math.max(0, Math.min(start - Math.floor(MAX_REPLY_CHARS / 3), marked.length - MAX_REPLY_CHARS));
+  const to = from + MAX_REPLY_CHARS;
+  return `${from > 0 ? "…" : ""}${marked.slice(from, to)}${to < marked.length ? "…" : ""}`;
+}
+
 /** The two messages sent to the model: the editing rules, and the reply with the passage marked. */
 export function buildFixPartMessages(request: FixPartRequest): Array<{ role: "system" | "user"; content: string }> {
   const { reply, start, end } = request;
@@ -63,7 +74,7 @@ export function buildFixPartMessages(request: FixPartRequest): Array<{ role: "sy
   const instruction = (request.instruction ?? "").trim().slice(0, MAX_INSTRUCTION_CHARS) || DEFAULT_FIX_INSTRUCTION;
   const user = [
     ...(previousTurn ? [`<the_turn_it_answered>\n${previousTurn}\n</the_turn_it_answered>`, ""] : []),
-    `<reply>\n${marked.slice(0, MAX_REPLY_CHARS)}\n</reply>`,
+    `<reply>\n${replyWindow(marked, start)}\n</reply>`,
     "",
     `What to change in the marked passage: ${instruction}`,
   ].join("\n");

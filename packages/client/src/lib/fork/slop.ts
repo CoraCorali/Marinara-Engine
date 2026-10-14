@@ -66,7 +66,8 @@ function escapeRegExp(value: string): string {
 
 /** Curly and straight apostrophes are the same apostrophe for matching purposes. */
 function phrasePattern(phrase: string): string {
-  return escapeRegExp(phrase.trim()).replace(/'/g, "['’]");
+  // Either spelling in the list matches both: a phone's smart punctuation types the curly one.
+  return escapeRegExp(phrase.trim()).replace(/['’]/g, "['’]");
 }
 
 /**
@@ -121,13 +122,41 @@ function normalizeWithMap(text: string): { normalized: string; map: number[] } {
  * way and the match is mapped back to stored offsets. Returns null when the passage is not in the
  * stored text at all, which happens when a display-only regex script rewrote what is shown.
  */
-export function locatePassage(stored: string, picked: string): { start: number; end: number } | null {
+export function locatePassage(
+  stored: string,
+  picked: string,
+  /** Which copy, when the passage appears more than once ("No." … "No."); 0 is the first. */
+  occurrence = 0,
+): { start: number; end: number } | null {
   const target = normalizeWithMap(picked).normalized.trim();
   if (!target) return null;
   const { normalized, map } = normalizeWithMap(stored);
-  const at = normalized.indexOf(target);
-  if (at < 0) return null;
+  const first = normalized.indexOf(target);
+  if (first < 0) return null;
+  let at = first;
+  for (let count = 0; count < occurrence; count += 1) {
+    const next = normalized.indexOf(target, at + target.length);
+    // Fewer copies in the stored text than on screen (a display regex): the first is the best guess.
+    if (next < 0) {
+      at = first;
+      break;
+    }
+    at = next;
+  }
   return balanceMarkup(stored, map[at]!, map[at + target.length - 1]! + 1);
+}
+
+/** How many copies of a passage come before the one that starts at `offset` in the shown text. */
+export function passageOccurrence(shown: string, offset: number, picked: string): number {
+  const target = normalizeWithMap(picked).normalized.trim();
+  if (!target) return 0;
+  const { normalized, map } = normalizeWithMap(shown);
+  let count = 0;
+  for (let at = normalized.indexOf(target); at >= 0; at = normalized.indexOf(target, at + target.length)) {
+    if (map[at]! >= offset) break;
+    count += 1;
+  }
+  return count;
 }
 
 function markupBalanced(text: string): boolean {

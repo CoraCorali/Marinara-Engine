@@ -3347,12 +3347,18 @@ async function applyRetryResultEffects(args: {
       customAgentCanApplyRetryResult(result, resolvedAgents, "edit_trackers")
     ) {
       try {
-        await applyBondsAgentResult(app.db, chatId, result.data, (name) => {
-          const wanted = normalizeTextForMatch(name);
-          return (
-            agentContext.characters.find((character) => normalizeTextForMatch(character.name) === wanted)?.id ?? null
-          );
-        });
+        await applyBondsAgentResult(
+          app.db,
+          chatId,
+          result.data,
+          (name) => {
+            const wanted = normalizeTextForMatch(name);
+            return (
+              agentContext.characters.find((character) => normalizeTextForMatch(character.name) === wanted)?.id ?? null
+            );
+          },
+          retryMessageId || undefined,
+        );
         assertRetryActive();
       } catch (err) {
         assertRetryActive();

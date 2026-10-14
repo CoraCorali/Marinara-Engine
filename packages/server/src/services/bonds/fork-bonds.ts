@@ -71,6 +71,22 @@ export const bondMoments = fileTable("fork_bond_moments", {
   to: text("to").notNull().default(""),
   /** What happened, in a line: the scene's turn, or what the user wrote. */
   text: text("text").notNull().default(""),
+  /** The reply whose agent run made this moment; empty for one made by hand. */
+  messageId: text("message_id").notNull().default(""),
+  createdAt: text("created_at").notNull(),
+});
+
+/**
+ * What one reply's agent run moved, so a re-roll of that reply can take it back first. Without
+ * this, every swipe stepped again from where the last swipe left the bond, and three swipes could
+ * carry a romance three rungs in one scene.
+ */
+export const bondTurns = fileTable("fork_bond_turns", {
+  id: text("id").primaryKey(),
+  chatId: text("chat_id").notNull(),
+  messageId: text("message_id").notNull(),
+  /** JSON: [{ bondId, before, after }], each side holding the moved values only. */
+  changes: text("changes").notNull().default("[]"),
   createdAt: text("created_at").notNull(),
 });
 
@@ -116,6 +132,7 @@ export type BondMoment = {
   from: string;
   to: string;
   text: string;
+  messageId?: string;
   createdAt: string;
 };
 
@@ -281,6 +298,9 @@ export function createBondsStorage(db: DB) {
           const rung = normalizeForkBondRung(kind, data.rung);
           if (rung) fields.rung = rung;
         }
+        // A first-version bond has no stored rung, only one worked out from its old stage. Writing
+        // it down now keeps a status change from silently moving the rung along with it.
+        if (!fields.rung) fields.rung = current.rung;
         if (data.route !== undefined && kind === "love") fields.route = cleanRoute(data.route);
         if (data.fields !== undefined) {
           const merged: Record<string, unknown> = { ...current.fields, ...data.fields };
@@ -306,6 +326,9 @@ export function createBondsStorage(db: DB) {
     /** Every bond in a chat, so deleting the chat leaves nothing behind. */
     async removeChat(chatId: string): Promise<void> {
       for (const bond of await this.listForChat(chatId)) await this.remove(bond.id);
+      // A moment written while its bond was being deleted would otherwise outlive both.
+      for (const moment of await this.listMomentsForChat(chatId)) await this.removeMoment(moment.id);
+      await db.delete(bondTurns).where(eq(bondTurns.chatId, chatId));
     },
 
     /** Oldest first, the order the story happened in. */
@@ -334,6 +357,7 @@ export function createBondsStorage(db: DB) {
       from: string;
       to: string;
       text?: string;
+      messageId?: string;
       createdAt?: string;
     }) {
       const moment: BondMoment = {
@@ -343,6 +367,7 @@ export function createBondsStorage(db: DB) {
         from: input.from.slice(0, 80),
         to: input.to.slice(0, 80),
         text: (input.text ?? "").trim().slice(0, MAX_MOMENT_TEXT),
+        messageId: input.messageId ?? "",
         createdAt: input.createdAt ?? now(),
       };
       await db.insert(bondMoments).values(moment as never);

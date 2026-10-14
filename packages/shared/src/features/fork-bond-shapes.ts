@@ -232,14 +232,16 @@ export function forkBondRungPosition(kind: ForkBondKind, rung: string): { ladder
  *
  * On the same ladder it moves at most one rung. Onto another ladder it lands on that ladder's first
  * rung, so falling out with someone Devoted makes them Wary, not a Nemesis overnight. A tangled
- * state is a description rather than a height, so it can be named directly.
+ * state is a description rather than a height, so it can be named directly, and left the same way.
  */
 export function stepForkBondRung(kind: ForkBondKind, current: string, wanted: string): string {
   if (wanted === current) return current;
   const ladders = FORK_BOND_SHAPES[kind].ladders;
   const from = forkBondRungPosition(kind, current);
   const to = forkBondRungPosition(kind, wanted);
-  if (to.ladder === -1) return wanted;
+  // A tangled state has no height, so moving into one, or out of one, lands where it is named.
+  // Leaving "Complicated" for "Devoted" must not drop a marriage to the foot of the ladder.
+  if (to.ladder === -1 || from.ladder === -1) return wanted;
   if (from.ladder === to.ladder) {
     const step = to.step > from.step ? from.step + 1 : from.step - 1;
     return ladders[to.ladder]![step]!;
