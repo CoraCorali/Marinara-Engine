@@ -7,6 +7,7 @@ import type { ChatImage } from "../../hooks/use-gallery";
 import { useGalleryStore } from "../../stores/gallery.store";
 import { ImageDownloadButton } from "../ui/ImageDownloadButton";
 import { ImagePromptPanel } from "./ImagePromptPanel";
+import { ForkPinToBoardButton } from "./ForkPinToBoardButton";
 import { useTranslation as useUiTranslation } from "react-i18next";
 
 export function formatChatImageMeta(image: Pick<ChatImage, "model" | "provider" | "width" | "height">) {
@@ -123,6 +124,8 @@ export function ChatImageLightbox({
                 <Pin size="0.875rem" />
               </button>
             )}
+            {/* Fork: Pin from chat, onto this roleplay's reference board. */}
+            <ForkPinToBoardButton url={image.url} />
             {downloadEnabled && <ImageDownloadButton url={image.url} filename={downloadName} />}
             <button
               type="button"

@@ -310,6 +310,28 @@ meters per bond are gone.
 - **Old bonds keep their note**, which becomes the heart of the card. Their two numbers are no longer
   used.
 
+### Fix this part as a sheet, Slop chips, a polaroid board, and Pin from chat
+
+- **Fix this part opens as a sheet from the bottom** instead of a full screen, so the reply stays in
+  view above it. The passage you picked glows in place in the reply (theme accent, drawn by the
+  browser over the text, so the message is untouched), and the reply scrolls up so it sits above
+  the sheet. Once there is a rewrite, a **Before / After** toggle shows the original or the new
+  version in the same spot. The quick asks are a sideways-scrolling row of chips that light up
+  when picked. Escape or the × closes it.
+- **The Slop list is chips.** Each phrase is a chip with its own ×, there is an add box at the
+  top, and a line says how many phrases from the list are in the newest reply. Those phrases' chips
+  glow orange, so you can see what the model is actually leaning on. The switches for the
+  highlighter and "Add to lorebook" stay at the top.
+- **The reference board is polaroids**: a cream frame, a square photo, the caption written under it
+  in italic serif, a strip of tape in the theme colour on pins that are in scene, and a slight tilt
+  either way. Pins that are not in scene fade. A **sort** menu offers my order, in scene first, by
+  category and newest first. In "my order", the grip handle on each polaroid drags it to a new
+  place with a finger or a mouse, and moves it with the arrow keys too. The dragged order stays on
+  screen until every save lands.
+- **Pin from chat.** Open any picture in a Roleplay chat (an illustration, a selfie, an attachment)
+  and a **Board** button beside Marinara's own pin and download buttons puts it on that roleplay's
+  reference board. It shares the board's size and type limits, and says so if a picture is refused.
+
 ## Upstream files touched
 
 Fork-only code lives in `packages/client/src/lib/fork/`, `Fork*` components, `packages/shared/src/features/fork-bond-shapes.ts`, `packages/server/src/services/import/fork/`
@@ -359,6 +381,7 @@ Edits to upstream files are marked with a `Fork:` comment.
 | `packages/client/src/features/tracker-panel/components/sections/PersonaInventoryPanel.tsx` | Persona stats always as rings |
 | `packages/client/src/features/tracker-panel/components/controls/StatGauge.tsx` | A word under each ring |
 | `packages/shared/src/index.ts` | Exports the relationship tracker's shapes |
+| `packages/client/src/components/chat/ChatImageLightbox.tsx` | Pin from chat button in the image viewer |
 | `packages/client/src/components/chat/ChatArea.tsx` | Passes portraits to the People panel |
 
 ## Known upstream issue kept as is
