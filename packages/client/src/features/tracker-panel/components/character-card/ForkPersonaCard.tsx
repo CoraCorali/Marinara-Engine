@@ -17,7 +17,8 @@ import {
 import { useBoardPins, type BoardPin } from "../../../../hooks/use-fork-board";
 import { useBonds, type Bond } from "../../../../hooks/use-fork-bonds";
 import { useChat, useUpdateChatMetadata } from "../../../../hooks/use-chats";
-import { useCharacter } from "../../../../hooks/use-characters";
+import { useCharacter, usePersona } from "../../../../hooks/use-characters";
+import { useGameStateStore } from "../../../../stores/game-state.store";
 import { openForkPanel } from "../../../../lib/fork/open-panel";
 import { statWordKey } from "../../../../lib/fork/stat-words";
 import { getStatPercent } from "../../lib/tracker-stat-layout";
@@ -78,25 +79,33 @@ function Ring({ stat }: { stat: CharacterStat }) {
 
 export function ForkPersonaCard({
   activeChatId,
-  persona,
+  persona: personaProp,
   status,
   onSaveStatus,
   personaStats,
-  location,
+  location: locationProp,
   holding,
   presentCharacters,
 }: {
   activeChatId: string;
-  persona: Persona | null;
+  /** Left out where the caller does not know it (the HUD): the chat's own persona is used. */
+  persona?: Persona | null;
   status: string;
   onSaveStatus: (status: string) => void;
   personaStats: readonly CharacterStat[];
-  location: string | null;
+  /** Left out where the caller does not know it: the world state's location is used. */
+  location?: string | null;
   holding: readonly string[];
   presentCharacters: readonly PresentCharacter[];
 }) {
   const { t: localizeUi } = useUiTranslation();
   const { data: chat } = useChat(activeChatId);
+  const { data: chatPersona } = usePersona(personaProp === undefined ? (chat?.personaId ?? null) : null);
+  const persona = personaProp === undefined ? ((chatPersona as Persona | undefined) ?? null) : personaProp;
+  const storyLocation = useGameStateStore((state) =>
+    state.current && state.current.chatId === activeChatId ? state.current.location : null,
+  );
+  const location = locationProp === undefined ? storyLocation : locationProp;
   const updateMeta = useUpdateChatMetadata({ serialize: true });
   const { data: chatPins } = useBoardPins({ scopeType: "chat", scopeId: activeChatId });
   const { data: personaPins } = useBoardPins(persona ? { scopeType: "persona", scopeId: persona.id } : null);
@@ -172,11 +181,7 @@ export function ForkPersonaCard({
             <img src={pin.imagePath} alt="" className="h-7 w-7 shrink-0 rounded-md object-cover" draggable={false} />
             <span className="min-w-0 flex-1">
               {pin.slot && (
-                <span className="font-bold">
-                  {localizeUi("ui.trackerPanel.forkpersonacard.value1", {
-                    value1: localizeUi(PIN_SLOT_LABEL_KEYS[pin.slot]),
-                  })}
-                </span>
+                <span className="block text-[0.6875rem] font-bold">{localizeUi(PIN_SLOT_LABEL_KEYS[pin.slot])}</span>
               )}
               <span className="line-clamp-2">{pin.caption || "—"}</span>
             </span>

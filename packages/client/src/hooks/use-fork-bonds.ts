@@ -133,3 +133,59 @@ export function useDeleteMoment(chatId: string | null) {
     onError: saveFailed,
   });
 }
+
+// ── Pairs: how two characters stand with each other ──
+
+export interface BondPair {
+  id: string;
+  chatId: string;
+  aId: string;
+  bId: string;
+  kind: ForkBondKind;
+  rung: string;
+  aLine: string;
+  bLine: string;
+  order: number;
+}
+
+export type BondPairPatch = { kind?: ForkBondKind; rung?: string; aLine?: string; bLine?: string };
+
+const pairKeys = (chatId: string | null) => ["fork-bonds", chatId ?? "none", "pairs"] as const;
+
+export function useBondPairs(chatId: string | null) {
+  return useQuery({
+    queryKey: pairKeys(chatId),
+    queryFn: () => api.get<BondPair[]>(`/fork-bonds/pairs?chatId=${encodeURIComponent(chatId!)}`),
+    enabled: Boolean(chatId),
+    staleTime: 0,
+  });
+}
+
+export function useAddBondPair(chatId: string | null) {
+  const invalidate = useInvalidateBonds(chatId);
+  return useMutation({
+    mutationFn: (input: { firstId: string; secondId: string; kind?: ForkBondKind }) =>
+      api.post<BondPair>("/fork-bonds/pairs", { chatId, ...input }),
+    onSuccess: invalidate,
+    onError: saveFailed,
+  });
+}
+
+export function useUpdateBondPair(chatId: string | null) {
+  const invalidate = useInvalidateBonds(chatId);
+  return useMutation({
+    mutationFn: ({ id, ...data }: { id: string } & BondPairPatch) =>
+      api.patch<BondPair>(`/fork-bonds/pairs/${id}`, data),
+    onSuccess: invalidate,
+    onError: saveFailed,
+  });
+}
+
+export function useDeleteBondPair(chatId: string | null) {
+  const invalidate = useInvalidateBonds(chatId);
+  return useMutation({
+    mutationFn: (id: string) => api.delete<{ success: boolean }>(`/fork-bonds/pairs/${id}`),
+    onSuccess: invalidate,
+    onError: saveFailed,
+  });
+}

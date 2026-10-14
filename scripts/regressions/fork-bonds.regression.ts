@@ -335,6 +335,64 @@ assert.equal((await store.getById("legacy-row"))!.rung, "Familiar");
 await store.update("legacy-row", { status: "dating" });
 assert.equal((await store.getById("legacy-row"))!.rung, "Familiar", "a status change does not move the rung");
 
+// ── Pairs: how two characters stand with each other ──
+const { createBondPairsStorage, pairsPromptBlock, planPairUpdates } =
+  await import("../../packages/server/src/services/bonds/fork-bond-pairs.js");
+const pairStore = createBondPairsStorage(db);
+const veeGia = (await pairStore.create({
+  chatId: "chat-pairs",
+  firstId: "char-vee",
+  secondId: "char-gia",
+  kind: "family",
+  rung: "Distant",
+  aLine: "Lets her calls ring out.",
+  bLine: "Still calls every Sunday.",
+}))!;
+assert.equal(veeGia.aId, "char-gia", "a pair is stored in a fixed order");
+assert.equal(veeGia.aLine, "Still calls every Sunday.", "and each side's line follows its person");
+assert.equal(
+  (await pairStore.create({ chatId: "chat-pairs", firstId: "char-gia", secondId: "char-vee" }))!.id,
+  veeGia.id,
+  "the same two people are never a second pair",
+);
+assert.equal(await pairStore.create({ chatId: "chat-pairs", firstId: "char-vee", secondId: "char-vee" }), null);
+const pairNames = (id: string) => ({ "char-vee": "Vee", "char-gia": "Gia", "char-dee": "Dee" })[id] ?? "";
+assert.equal(
+  pairsPromptBlock(await pairStore.listForChat("chat-pairs"), pairNames),
+  "Between the characters:\n- Gia & Vee (family): Distant. Gia: Still calls every Sunday. Vee: Lets her calls ring out.",
+);
+const pairResolve = (name: string) => ({ Vee: "char-vee", Gia: "char-gia", Dee: "char-dee" })[name] ?? null;
+const pairPlan = planPairUpdates(
+  {
+    pairs: [
+      { a: "Vee", b: "Gia", rung: "Close", a_feels: "Picked up for once." },
+      { a: "Vee", b: "Dee", kind: "friend", rung: "Ride-or-die" },
+      { a: "Vee", b: "Nobody", kind: "friend" },
+    ],
+  },
+  await pairStore.listForChat("chat-pairs"),
+  pairResolve,
+);
+assert.deepEqual(
+  pairPlan.changes,
+  [{ id: veeGia.id, rung: "Dutiful", bLine: "Picked up for once." }],
+  "one rung per scene, the right side's line",
+);
+assert.equal(pairPlan.creations.length, 1, "a pair with someone who is not a card is skipped");
+assert.equal(pairPlan.creations[0]!.rung, "Ride-or-die", "a new pair starts where it is named");
+
+// A swipe takes back the pair's move too.
+await applyBondsAgentResult(db, "chat-pairs", { pairs: [{ a: "Vee", b: "Gia", rung: "Close" }] }, pairResolve, "msg-p");
+assert.equal((await pairStore.getById(veeGia.id))!.rung, "Dutiful");
+await applyBondsAgentResult(db, "chat-pairs", { pairs: [{ a: "Vee", b: "Gia", rung: "Close" }] }, pairResolve, "msg-p");
+assert.equal((await pairStore.getById(veeGia.id))!.rung, "Dutiful", "two swipes of one reply move a pair one rung");
+assert.ok(
+  bondsAgentStateBlock([], pairNames, await pairStore.listForChat("chat-pairs")).includes('"a":"Gia","b":"Vee"'),
+  "the agent is shown the pairs it can move",
+);
+await pairStore.removeChat("chat-pairs");
+assert.equal((await pairStore.listForChat("chat-pairs")).length, 0);
+
 // ── The tracker is capped ──
 for (let index = 0; index < MAX_BONDS_PER_CHAT; index += 1) {
   await store.create({ chatId: "chat-full", characterId: `char-${index}`, kind: "other" });

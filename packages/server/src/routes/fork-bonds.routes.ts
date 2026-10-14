@@ -1,6 +1,17 @@
 // Fork feature: the relationship tracker API (see FORK.md).
 import type { FastifyInstance } from "fastify";
 import { MAX_BONDS_PER_CHAT, createBondsStorage, describeMoves, type BondInput } from "../services/bonds/fork-bonds.js";
+import { MAX_PAIRS_PER_CHAT, createBondPairsStorage, type BondPairInput } from "../services/bonds/fork-bond-pairs.js";
+
+/** The parts of a request body a pair may be written from. */
+function readPairInput(body: Record<string, unknown>): BondPairInput {
+  return {
+    ...(body.kind !== undefined ? { kind: body.kind } : {}),
+    ...(body.rung !== undefined ? { rung: body.rung } : {}),
+    ...(typeof body.aLine === "string" ? { aLine: body.aLine } : {}),
+    ...(typeof body.bLine === "string" ? { bLine: body.bLine } : {}),
+  };
+}
 
 /** The parts of a request body a bond may be written from. */
 function readBondInput(body: Record<string, unknown>): BondInput {
@@ -55,6 +66,40 @@ export async function forkBondsRoutes(app: FastifyInstance) {
     const bond = await storage.getById(req.params.id);
     if (!bond) return reply.status(404).send({ error: "Bond not found" });
     await storage.remove(bond.id);
+    return { success: true };
+  });
+
+  // ── Pairs: how two characters stand with each other ──
+  const pairs = createBondPairsStorage(app.db);
+
+  app.get("/pairs", async (req, reply) => {
+    const query = (req.query ?? {}) as { chatId?: unknown };
+    const chatId = typeof query.chatId === "string" ? query.chatId.trim() : "";
+    if (!chatId) return reply.status(400).send({ error: "chatId is required" });
+    return pairs.listForChat(chatId);
+  });
+
+  app.post("/pairs", async (req, reply) => {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const chatId = typeof body.chatId === "string" ? body.chatId.trim() : "";
+    const firstId = typeof body.firstId === "string" ? body.firstId.trim() : "";
+    const secondId = typeof body.secondId === "string" ? body.secondId.trim() : "";
+    if (!chatId || !firstId || !secondId || firstId === secondId) {
+      return reply.status(400).send({ error: "chatId and two different characters are required" });
+    }
+    const pair = await pairs.create({ chatId, firstId, secondId, ...readPairInput(body) });
+    if (!pair) return reply.status(400).send({ error: `A chat tracks at most ${MAX_PAIRS_PER_CHAT} pairs` });
+    return pair;
+  });
+
+  app.patch<{ Params: { id: string } }>("/pairs/:id", async (req, reply) => {
+    const updated = await pairs.update(req.params.id, readPairInput((req.body ?? {}) as Record<string, unknown>));
+    if (!updated) return reply.status(404).send({ error: "Pair not found" });
+    return updated;
+  });
+
+  app.delete<{ Params: { id: string } }>("/pairs/:id", async (req) => {
+    await pairs.remove(req.params.id);
     return { success: true };
   });
 

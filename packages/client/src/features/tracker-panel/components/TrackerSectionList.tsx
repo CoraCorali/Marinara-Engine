@@ -1,4 +1,4 @@
-import { useCallback, type ReactNode } from "react";
+import { useCallback, type ReactNode, Fragment } from "react";
 import { RefreshCw, Sparkles } from "lucide-react";
 import type {
   GameState,
@@ -30,6 +30,7 @@ import { CharacterTrackerPanel } from "./sections/CharacterTrackerPanel";
 import { CustomTrackerPanel } from "./sections/CustomTrackerPanel";
 import { PersonaInventoryPanel } from "./sections/PersonaInventoryPanel";
 import { ForkPersonaCard } from "./character-card/ForkPersonaCard";
+import { ForkRelationshipsSection } from "./sections/ForkRelationshipsSection";
 import { InventoryTrackerPanel } from "./sections/InventoryTrackerPanel";
 import { QuestTrackerPanel } from "./sections/quest-tracker/QuestTrackerPanel";
 import { WorldStatePanel } from "./sections/WorldStatePanel";
@@ -271,33 +272,37 @@ export function TrackerSectionList({
         );
       case "characters":
         return (
-          <CharacterTrackerPanel
-            key="characters"
-            activeChatId={activeChatId}
-            characters={presentCharacters}
-            featuredCharacterCards={featuredCharacterCards}
-            spriteExpressions={spriteExpressions}
-            expressionSpritesEnabled={expressionSpritesEnabled}
-            characterPictures={characterSpriteLookup.pictureById}
-            characterProfileColors={characterSpriteLookup.profileColorsById}
-            resolveSpriteCharacterId={resolveSpriteCharacterId}
-            trackerPanelSide={trackerPanelSide}
-            trackerPanelSizeProfile={trackerPanelSizeProfile}
-            thoughtBubbleDisplay={trackerPanelThoughtBubbleDisplay}
-            statDisplayMode={trackerStatDisplayMode}
-            resolveStatIcon={resolveStatIcon}
-            dockedThoughtsAlwaysVisible={trackerPanelDockedThoughtsAlwaysVisible}
-            action={renderCharacterHeaderAction()}
-            onUpdateCharacter={updateCharacter}
-            onRemoveCharacter={removeCharacter}
-            onAddCharacter={addCharacter}
-            onUploadAvatar={openAvatarUpload}
-            onToggleFeatured={toggleFeaturedCharacterCard}
-            deleteMode={deleteMode}
-            addMode={addMode}
-            collapsed={isPanelCollapsed("characters")}
-            onToggleCollapsed={() => toggleTrackerPanelSectionCollapsed("characters")}
-          />
+          <Fragment key="characters">
+            <CharacterTrackerPanel
+              key="characters"
+              activeChatId={activeChatId}
+              characters={presentCharacters}
+              featuredCharacterCards={featuredCharacterCards}
+              spriteExpressions={spriteExpressions}
+              expressionSpritesEnabled={expressionSpritesEnabled}
+              characterPictures={characterSpriteLookup.pictureById}
+              characterProfileColors={characterSpriteLookup.profileColorsById}
+              resolveSpriteCharacterId={resolveSpriteCharacterId}
+              trackerPanelSide={trackerPanelSide}
+              trackerPanelSizeProfile={trackerPanelSizeProfile}
+              thoughtBubbleDisplay={trackerPanelThoughtBubbleDisplay}
+              statDisplayMode={trackerStatDisplayMode}
+              resolveStatIcon={resolveStatIcon}
+              dockedThoughtsAlwaysVisible={trackerPanelDockedThoughtsAlwaysVisible}
+              action={renderCharacterHeaderAction()}
+              onUpdateCharacter={updateCharacter}
+              onRemoveCharacter={removeCharacter}
+              onAddCharacter={addCharacter}
+              onUploadAvatar={openAvatarUpload}
+              onToggleFeatured={toggleFeaturedCharacterCard}
+              deleteMode={deleteMode}
+              addMode={addMode}
+              collapsed={isPanelCollapsed("characters")}
+              onToggleCollapsed={() => toggleTrackerPanelSectionCollapsed("characters")}
+            />
+            {/* Fork: People, compact, where Marinara's Relationship Tracker would draw its web. */}
+            <ForkRelationshipsSection activeChatId={activeChatId} presentCharacters={presentCharacters} />
+          </Fragment>
         );
       case "quests":
         return (

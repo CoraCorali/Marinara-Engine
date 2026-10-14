@@ -238,8 +238,10 @@ import { bondsPromptBlock } from "../services/generation/fork-bonds-prompt.js";
 import {
   applyBondsAgentResult,
   listBondsBeforeTurn,
+  listPairsBeforeTurn,
   loadBondsAgentState,
 } from "../services/bonds/fork-bond-updates.js";
+import { pairsPromptBlock } from "../services/bonds/fork-bond-pairs.js";
 import { createAgentsStorage } from "../services/storage/agents.storage.js";
 import { createGameStateStorage, parseStoredRulesetLive } from "../services/storage/game-state.storage.js";
 import {
@@ -7761,6 +7763,10 @@ export async function generateRoutes(app: FastifyInstance, options: GenerateRout
                 await listBondsBeforeTurn(app.db, input.chatId, input.regenerateMessageId),
                 (characterId) => charInfo.find((character) => character.id === characterId)?.name ?? "",
                 personaName,
+              ),
+              pairsPromptBlock(
+                await listPairsBeforeTurn(app.db, input.chatId, input.regenerateMessageId),
+                (characterId) => charInfo.find((character) => character.id === characterId)?.name ?? "",
               ),
               boardPinsNoteLine(forkBoardPins, forkPinNameFor, forkMentionedPinIds),
               // The persona card's "Appearance today" note: hair up, last night's lashes, and so on.

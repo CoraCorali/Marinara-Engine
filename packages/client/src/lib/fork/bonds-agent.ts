@@ -13,6 +13,13 @@ export const BONDS_AGENT_RESULT_TYPE = "fork_bonds_update";
  */
 export const BONDS_AGENT_PROMPT = `You keep a dating-sim relationship tracker for this roleplay, told in words, never in numbers.
 
+Read the last few messages and report how each relationship with the user's character changed, using the format in <relationship_tracker_format> and starting from <current_relationships>. When the scene changes or reveals how two characters stand with each other, report that too, in "pairs", starting from <current_pairs>.
+
+Write every field as specific, lived detail from this story: name the places, objects, words and moments that happened on screen, and show feeling through what they do, avoid, remember or offer. Most scenes move nobody up or down a rung; when one does, name the moment in "turn". Only include a person the scene actually said something about, and only the fields that changed. Reply with JSON only.`;
+
+/** The prompt agents were made with before pairs; an agent still carrying it is upgraded too. */
+const PREVIOUS_BONDS_AGENT_PROMPT = `You keep a dating-sim relationship tracker for this roleplay, told in words, never in numbers.
+
 Read the last few messages and report how each relationship with the user's character changed, using the format in <relationship_tracker_format> and starting from <current_relationships>.
 
 Write every field as specific, lived detail from this story: name the places, objects, words and moments that happened on screen, and show feeling through what they do, avoid, remember or offer. Most scenes move nobody up or down a rung; when one does, name the moment in "turn". Only include a person the scene actually said something about, and only the fields that changed. Reply with JSON only.`;
@@ -26,9 +33,13 @@ export function findBondsAgent<T extends AgentRowLike>(configs: readonly T[] | n
   return configs?.find((row) => readAgentSettings(row.settings).resultType === BONDS_AGENT_RESULT_TYPE) ?? null;
 }
 
-/** True for an agent the first version made, which still asks for two numbers and a note. */
+/** True for an agent made from an older prompt: the first version's numbers, or today's without pairs. */
 export function hasLegacyBondsPrompt(agent: { promptTemplate?: unknown } | null | undefined): boolean {
-  return typeof agent?.promptTemplate === "string" && agent.promptTemplate.startsWith(LEGACY_BONDS_AGENT_PROMPT_START);
+  return (
+    typeof agent?.promptTemplate === "string" &&
+    (agent.promptTemplate.startsWith(LEGACY_BONDS_AGENT_PROMPT_START) ||
+      agent.promptTemplate === PREVIOUS_BONDS_AGENT_PROMPT)
+  );
 }
 
 /** A new agent row for it. The type gets a unique suffix, as every custom agent's does. */

@@ -5,6 +5,7 @@ import type { DB } from "../db/connection.js";
 import { createBoardPinsStorage } from "./board/fork-board-pins.js";
 import { removeForkBoardScope } from "./board/fork-board-cleanup.js";
 import { createBondsStorage } from "./bonds/fork-bonds.js";
+import { createBondPairsStorage } from "./bonds/fork-bond-pairs.js";
 import { readLorebookImageDataUrl, saveLorebookImage } from "./lorebook/lorebook-images.js";
 import { logger } from "../lib/logger.js";
 
@@ -14,6 +15,9 @@ export async function removeForkChatData(db: DB, chatId: string): Promise<void> 
   await createBondsStorage(db)
     .removeChat(chatId)
     .catch((error) => logger.warn(error, "[fork-bonds] Could not clear the relationships for chat %s", chatId));
+  await createBondPairsStorage(db)
+    .removeChat(chatId)
+    .catch((error) => logger.warn(error, "[fork-bonds] Could not clear the pairs for chat %s", chatId));
 }
 
 /**
@@ -56,5 +60,21 @@ export async function copyForkChatData(db: DB, fromChatId: string, toChatId: str
     }
   } catch (error) {
     logger.warn(error, "[fork-bonds] Could not copy the relationships from chat %s to %s", fromChatId, toChatId);
+  }
+  try {
+    const pairs = createBondPairsStorage(db);
+    for (const pair of await pairs.listForChat(fromChatId)) {
+      await pairs.create({
+        chatId: toChatId,
+        firstId: pair.aId,
+        secondId: pair.bId,
+        kind: pair.kind,
+        rung: pair.rung,
+        aLine: pair.aLine,
+        bLine: pair.bLine,
+      });
+    }
+  } catch (error) {
+    logger.warn(error, "[fork-bonds] Could not copy the pairs from chat %s to %s", fromChatId, toChatId);
   }
 }

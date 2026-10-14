@@ -23,6 +23,7 @@ import {
 } from "../services/generation/fork-director-context.js";
 import { cardPromptText } from "../services/prompt/card-text.js";
 import { createBondsStorage } from "../services/bonds/fork-bonds.js";
+import { createBondPairsStorage, pairsPromptBlock } from "../services/bonds/fork-bond-pairs.js";
 import { createBoardPinsStorage } from "../services/board/fork-board-pins.js";
 import { bondsPromptBlock } from "../services/generation/fork-bonds-prompt.js";
 import { boardPinsNoteLine, pinNameResolver } from "../services/generation/fork-board-prompt.js";
@@ -202,6 +203,9 @@ export async function forkDirectorRoutes(app: FastifyInstance) {
         await createBondsStorage(app.db).listForChat(chatId),
         (characterId) => String(cards[cardRows.findIndex((row) => row.id === characterId)]?.name ?? ""),
         persona?.name ?? "",
+      ),
+      pairsPromptBlock(await createBondPairsStorage(app.db).listForChat(chatId), (characterId) =>
+        String(cards[cardRows.findIndex((row) => row.id === characterId)]?.name ?? ""),
       ),
       boardPinsNoteLine(
         await createBoardPinsStorage(app.db).listForPrompt(chatId, identity?.source === "persona" ? identity.id : null),

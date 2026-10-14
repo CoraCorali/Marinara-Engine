@@ -5,6 +5,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type ReactNode,
   type RefObject,
 } from "react";
@@ -17,6 +18,7 @@ import {
   Circle,
   Clock,
   CloudSun,
+  HeartHandshake,
   ImagePlus,
   Lock,
   MapPin,
@@ -37,6 +39,12 @@ import {
 import { cn } from "../../lib/utils";
 import { api } from "../../lib/api-client";
 import { useAgentConfigs, useUpdateAgent, type AgentConfigRow } from "../../hooks/use-agents";
+// Fork: the persona card and Relationships list in the phone's Player & Tracker popup.
+import { useChat } from "../../hooks/use-chats";
+import { ForkPersonaCard } from "../../features/tracker-panel/components/character-card/ForkPersonaCard";
+import { ForkRelationshipsList } from "../../features/tracker-panel/components/sections/ForkRelationshipsSection";
+import { openForkPanel } from "../../lib/fork/open-panel";
+import { useBondPairs, useBonds } from "../../hooks/use-fork-bonds";
 import { NEUTRAL_PANEL_HEADER, NEUTRAL_PANEL_TITLE } from "../ui/neutral-surface-styles";
 import { coerceStatNumber, getStatPercent } from "../../features/tracker-panel/lib/tracker-stat-layout";
 import type {
@@ -289,6 +297,32 @@ function useHudFieldLockResolver() {
   );
 }
 
+// Fork: People at a glance; hides itself while nothing is tracked.
+function ForkHudRelationships({ chatId, characters }: { chatId: string; characters: PresentCharacter[] }) {
+  const { t: localizeUi } = useUiTranslation();
+  const { data: bonds } = useBonds(chatId);
+  const { data: pairs } = useBondPairs(chatId);
+  if ((bonds ?? []).length === 0 && (pairs ?? []).length === 0) return null;
+  return (
+    <div className="p-2">
+      <div className="flex items-center justify-between px-1 pb-1">
+        <span className={TRACKER_SECTION_TITLE}>
+          <HeartHandshake size="0.5625rem" className="text-[var(--marinara-chat-chrome-accent)]" />
+          {localizeUi("ui.trackerPanel.forkRelationships.title")}
+        </span>
+        <button
+          type="button"
+          onClick={() => openForkPanel("people")}
+          className="rounded-full px-2 py-0.5 text-[0.625rem] font-semibold text-[var(--marinara-chat-chrome-accent)] hover:bg-foreground/10"
+        >
+          {localizeUi("ui.trackerPanel.forkRelationships.openPeople")}
+        </button>
+      </div>
+      <ForkRelationshipsList activeChatId={chatId} presentCharacters={characters} />
+    </div>
+  );
+}
+
 function useHudFieldHiddenResolver() {
   const { hiddenTrackerFields } = useTrackerLockContext();
   return useCallback((key: string) => isTrackerFieldHidden(hiddenTrackerFields, key), [hiddenTrackerFields]);
@@ -437,6 +471,12 @@ export function CombinedPlayerPanel({
   const lockFor = useHudFieldLockResolver();
   const hiddenFor = useHudFieldHiddenResolver();
   const personaStatusLock = lockFor(personaStatusTrackerLockKey());
+  // Fork: with a persona attached, its card leads and Marinara's stat editor opens on request
+  // (lock mode always shows it, since the locks live there).
+  const { data: forkChat } = useChat(chatId);
+  const [forkEditingStats, setForkEditingStats] = useState(false);
+  const forkHasPersona = Boolean(forkChat?.personaId);
+  const forkShowStatEditor = !forkHasPersona || forkEditingStats || lockMode;
 
   return (
     <>
@@ -470,13 +510,55 @@ export function CombinedPlayerPanel({
                 title={localizeUi("ui.chat.combinedplayerpanel.reRunPersonaTrackerStatsInventory")}
               />
             </div>
-            <PersonaStatusField
-              value={personaStatus}
-              onSave={onUpdatePersonaStatus}
-              locked={personaStatusLock.locked}
-              onToggleLock={personaStatusLock.onToggle}
-            />
-            <div className="space-y-2">
+            {forkHasPersona && (
+              <div
+                className="flex flex-col gap-1.5 pb-1"
+                style={
+                  {
+                    "--tracker-profile-text": "var(--foreground)",
+                    "--tracker-profile-muted-text": "var(--muted-foreground)",
+                    "--tracker-profile-accent-solid": "var(--marinara-chat-chrome-accent, var(--primary))",
+                    "--tracker-profile-rule": "var(--border)",
+                    "--tracker-profile-dialogue-glow": "transparent",
+                    "--tracker-profile-material": "none",
+                    "--tracker-profile-material-blend": "normal",
+                  } as CSSProperties
+                }
+              >
+                <ForkPersonaCard
+                  activeChatId={chatId}
+                  status={personaStatus}
+                  onSaveStatus={(status) => onUpdatePersonaStatus?.(status)}
+                  personaStats={personaStats}
+                  holding={[...inventoryEquipped, ...inventory].map((row) => row.name).filter(Boolean)}
+                  presentCharacters={characters}
+                />
+                {!lockMode && (
+                  <button
+                    type="button"
+                    onClick={() => setForkEditingStats((value) => !value)}
+                    aria-expanded={forkEditingStats}
+                    className="flex min-h-8 items-center justify-center gap-1 self-end rounded-full px-2.5 text-[0.6875rem] font-semibold text-[var(--muted-foreground)] hover:bg-foreground/10 hover:text-[var(--foreground)]"
+                  >
+                    <Pencil size="0.625rem" />
+                    {localizeUi(
+                      forkEditingStats
+                        ? "ui.chat.combinedplayerpanel.forkDoneEditingStats"
+                        : "ui.chat.combinedplayerpanel.forkEditStats",
+                    )}
+                  </button>
+                )}
+              </div>
+            )}
+            {forkShowStatEditor && (
+              <PersonaStatusField
+                value={personaStatus}
+                onSave={onUpdatePersonaStatus}
+                locked={personaStatusLock.locked}
+                onToggleLock={personaStatusLock.onToggle}
+              />
+            )}
+            <div className={cn("space-y-2", !forkShowStatEditor && "hidden")}>
               {personaStats.length === 0 && (
                 <div className={EMPTY_STATE}>{localizeUi("ui.chat.combinedplayerpanel.noStatsTracked")}</div>
               )}
@@ -670,6 +752,9 @@ export function CombinedPlayerPanel({
             </div>
           </div>
         )}
+
+        {/* Fork: Relationships (People) in place of the downloadable Relationship Tracker. */}
+        <ForkHudRelationships chatId={chatId} characters={characters} />
 
         {showQuests && (
           <div className="p-2">

@@ -6,6 +6,7 @@ import { ChevronDown, Loader2, Plus, Trash2, Wand2, Check, X } from "lucide-reac
 import { toast } from "sonner";
 import { useTranslation as useUiTranslation } from "react-i18next";
 import { HelpTooltip } from "../ui/HelpTooltip";
+import { ForkBondPairs } from "./ForkBondPairs";
 import {
   FORK_BOND_CONDITIONS,
   FORK_BOND_DRIFTS,
@@ -39,6 +40,9 @@ import {
   type BondMoment,
   type BondPatch,
 } from "../../hooks/use-fork-bonds";
+
+/** The agent type of Marinara's downloadable Relationship Tracker, which this panel replaces. */
+const UPSTREAM_RELATIONSHIP_TRACKER = "relationship-tracker";
 
 const KIND_LABEL_KEYS: Record<ForkBondKind, string> = {
   love: "ui.chat.forkbonds.kindLove",
@@ -636,6 +640,17 @@ export function ForkBondsPanel({ chatId, cast }: Props) {
   const autoUpdating =
     Boolean(bondsAgent) && chatMeta.enableAgents === true && activeAgentIds.includes(bondsAgent!.type);
 
+  // Marinara's own Relationship Tracker (a downloadable agent) does this job too. Running both costs
+  // twice and tells the writer two different stories, so People offers to switch it off here.
+  const upstreamTrackerOn = chatMeta.enableAgents === true && activeAgentIds.includes(UPSTREAM_RELATIONSHIP_TRACKER);
+  const switchOffUpstream = () => {
+    if (!chatId) return;
+    updateMeta.mutate({
+      id: chatId,
+      activeAgentIds: activeAgentIds.filter((id) => id !== UPSTREAM_RELATIONSHIP_TRACKER),
+    });
+  };
+
   // One tap: make the agent if there is none yet, then switch it on for this chat.
   const handleAutoUpdate = async () => {
     if (!chatId || connecting) return;
@@ -666,6 +681,18 @@ export function ForkBondsPanel({ chatId, cast }: Props) {
     // window a few cards tall between the pinned intro and the pinned add row.
     <div className="fork-ui flex flex-col gap-3">
       <style>{TINT_STYLES}</style>
+      {upstreamTrackerOn && (
+        <div className="flex items-center gap-2 rounded-xl border border-[var(--primary)] bg-[color-mix(in_srgb,var(--primary)_12%,transparent)] px-3 py-2">
+          <p className="min-w-0 flex-1 text-xs text-foreground">{localizeUi("ui.chat.forkbonds.upstreamTrackerOn")}</p>
+          <button
+            type="button"
+            onClick={switchOffUpstream}
+            className="flex min-h-8 shrink-0 items-center rounded-full bg-[var(--primary)] px-3 text-xs font-semibold text-[var(--primary-foreground)]"
+          >
+            {localizeUi("ui.chat.forkbonds.upstreamTrackerOff")}
+          </button>
+        </div>
+      )}
       {/* The explanation lives behind the ?, the way Marinara's own panels keep theirs. */}
       <div className="flex items-center gap-2">
         {autoUpdating ? (
@@ -761,6 +788,9 @@ export function ForkBondsPanel({ chatId, cast }: Props) {
           {addBond.isPending ? <Loader2 size="0.875rem" className="animate-spin" /> : <Plus size="0.875rem" />}
         </button>
       </div>
+
+      {/* Fork: how the characters stand with each other, not only with you. */}
+      <ForkBondPairs chatId={chatId} cast={cast} />
     </div>
   );
 }
