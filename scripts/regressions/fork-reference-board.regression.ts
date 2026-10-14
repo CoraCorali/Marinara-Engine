@@ -135,6 +135,20 @@ assert.equal(
   "a full board refuses another pin instead of growing without limit",
 );
 
+// ── Deleting a chat or persona clears its board ──
+const { removeForkBoardScope } = await import("../../packages/server/src/services/board/fork-board-cleanup.js");
+assert.equal((await pins.listForScope("chat", "chat-2")).length, 1);
+const cleared = await pins.removeScope("chat", "chat-2");
+assert.deepEqual(cleared, ["/api/lorebooks/entry-images/d.png"], "the pictures to delete come back");
+assert.equal((await pins.listForScope("chat", "chat-2")).length, 0);
+// Other boards are untouched.
+assert.equal((await pins.listForScope("persona", "persona-1")).length, 1);
+// The cleanup wrapper tolerates a missing picture rather than blocking a delete.
+await removeForkBoardScope(db, "persona", "persona-1");
+assert.equal((await pins.listForScope("persona", "persona-1")).length, 0);
+// Clearing a scope that has no board is harmless.
+await removeForkBoardScope(db, "chat", "never-existed");
+
 await closeDB();
 rmSync(dir, { recursive: true, force: true });
 console.log("fork reference board: ok");

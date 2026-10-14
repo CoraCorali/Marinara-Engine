@@ -125,7 +125,8 @@ export async function forkDirectorRoutes(app: FastifyInstance) {
       .filter(Boolean)
       .join("\n\n");
 
-    const recent = (await chats.listMessages(chatId)).slice(-MAX_SCENE_MESSAGES);
+    // Only the tail matters here, and a long roleplay should not be read whole on every turn.
+    const recent = await chats.listMessagesPaginated(chatId, MAX_SCENE_MESSAGES);
     const sceneBlock = recent
       .map((message) => `${message.role === "assistant" ? "Story" : "Writer"}: ${clamp(message.content, 600)}`)
       .filter((line) => line.length > 8)

@@ -50,6 +50,16 @@ upstream file it touches, so conflicts after a sync are quick to find.
   note in the composer as a `/guided` command instead, so it steers your next reply. The
   conversation is kept per chat while the app is open.
 
+### Bug pass after the first build
+
+- Deleting a chat or a persona now clears its board and the pictures with it. The board is
+  registered storage, so Marinara's own delete cascade does not reach it.
+- **Rewrite reply** only offers itself while the newest message is the reply. With a message of
+  yours after it, rewriting an older reply would strand everything written since, so only
+  **Save for next** is available there.
+- **Save for next** refuses to overwrite a message you have already started typing.
+- The Director reads only the tail of a chat instead of loading every message on each turn.
+
 ## Upstream files touched
 
 Fork-only code lives in `packages/client/src/lib/fork/`, `packages/server/src/services/import/fork/`

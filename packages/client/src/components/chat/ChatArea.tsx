@@ -2469,15 +2469,22 @@ const LocalChatArea = memo(function LocalChatArea({
     },
     [activeChatId],
   );
+  // Rewrite only ever targets a reply that is still the newest message. With a user turn after it,
+  // regenerating an older reply would strand everything written since.
+  const directorRewriteTargetId = useMemo(() => {
+    const newest = messages?.[messages.length - 1];
+    return newest?.role === "assistant" ? newest.id : null;
+  }, [messages]);
+
   const handleDirectorRewrite = useCallback(
     async (note: string) => {
-      if (!activeChatId || !lastAssistantMessageId || !note.trim() || isStreaming) return;
+      if (!activeChatId || !directorRewriteTargetId || !note.trim() || isStreaming) return;
       setDirectorOpen(false);
       try {
         await generate({
           chatId: activeChatId,
           connectionId: null,
-          regenerateMessageId: lastAssistantMessageId,
+          regenerateMessageId: directorRewriteTargetId,
           generationGuide: buildGuidedGenerationInstructionMessage(note.trim()),
           generationGuideSource: "guide",
         });
@@ -2485,17 +2492,21 @@ const LocalChatArea = memo(function LocalChatArea({
         // The generate hook already shows the error toast.
       }
     },
-    [activeChatId, generate, isStreaming, lastAssistantMessageId],
+    [activeChatId, directorRewriteTargetId, generate, isStreaming],
   );
   const handleDirectorSaveForNext = useCallback(
     (note: string) => {
       if (!note.trim()) return;
       // The composer is where a guided direction already lives, so the next send carries it.
+      // A half-written message is never thrown away for it.
       const composer = document.querySelector<HTMLTextAreaElement>("textarea[data-chat-composer]");
-      if (composer) {
-        composer.value = `/guided ${note.trim()}`;
-        composer.dispatchEvent(new Event("input", { bubbles: true }));
+      if (!composer) return;
+      if (composer.value.trim().length > 0) {
+        toast.error(localizeUi("ui.chat.forkdirector.clearYourMessageBoxFirst"));
+        return;
       }
+      composer.value = `/guided ${note.trim()}`;
+      composer.dispatchEvent(new Event("input", { bubbles: true }));
       setDirectorOpen(false);
       toast.success(localizeUi("ui.chat.forkdirector.savedForNext"));
     },
@@ -3665,7 +3676,6 @@ const LocalChatArea = memo(function LocalChatArea({
         title={localizeUi("ui.chat.forkdirector.title")}
         width="max-w-md"
         mobileFullscreen
-        contentClassName="min-h-[26rem]"
       >
         {activeChatId && (
           <ForkDirectorPanel
@@ -3675,7 +3685,7 @@ const LocalChatArea = memo(function LocalChatArea({
             onChange={handleDirectorChange}
             onRewrite={handleDirectorRewrite}
             onSaveForNext={handleDirectorSaveForNext}
-            canRewrite={Boolean(lastAssistantMessageId)}
+            canRewrite={Boolean(directorRewriteTargetId)}
             busy={isStreaming}
           />
         )}

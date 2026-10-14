@@ -138,6 +138,13 @@ export function createBoardPinsStorage(db: DB) {
       await db.delete(boardPins).where(eq(boardPins.id, id));
     },
 
+    /** Every pin for a scope, with its picture, so deleting a chat or persona leaves nothing behind. */
+    async removeScope(scopeType: "chat" | "persona", scopeId: string): Promise<string[]> {
+      const pins = await this.listForScope(scopeType, scopeId);
+      for (const pin of pins) await this.remove(pin.id);
+      return pins.map((pin) => pin.imagePath);
+    },
+
     /** Pins a reply should carry: this chat's in-scene pins, then the persona's. */
     async listForPrompt(chatId: string, personaId: string | null): Promise<BoardPin[]> {
       const [chatPins, personaPins] = await Promise.all([

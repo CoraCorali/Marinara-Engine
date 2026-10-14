@@ -14,6 +14,7 @@ import {
   lorebooks,
   lorebookCharacterLinks,
 } from "../../db/schema/index.js";
+import { removeForkBoardScope } from "../board/fork-board-cleanup.js";
 import { newId, now } from "../../utils/id-generator.js";
 import {
   PROFESSOR_MARI_ID,
@@ -1033,6 +1034,8 @@ export function createCharactersStorage(db: DB) {
     },
 
     async removePersona(id: string) {
+      // Fork: the reference board is registered storage, so it is not part of the cascade below.
+      await removeForkBoardScope(db, "persona", id);
       await db.transaction(async (tx) => {
         await tx.delete(personas).where(eq(personas.id, id));
         const groups = await tx.select().from(personaGroups);

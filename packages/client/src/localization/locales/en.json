@@ -5779,6 +5779,7 @@
   "ui.chat.forkboard.value1InScene": "{{value1}} in scene · sent with every reply",
   "ui.chat.forkdirector.button": "Director",
   "ui.chat.forkdirector.buttonTitle": "Talk out the next reply off the record",
+  "ui.chat.forkdirector.clearYourMessageBoxFirst": "Clear your message box first, then save the note there.",
   "ui.chat.forkdirector.couldNotReachTheModel": "Could not reach the model",
   "ui.chat.forkdirector.emptyHint": "Say what the last reply got wrong, or what you want to happen next. Nothing here goes into the story.",
   "ui.chat.forkdirector.noReplyToRewriteYet": "There is no reply to rewrite yet",

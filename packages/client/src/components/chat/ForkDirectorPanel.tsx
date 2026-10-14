@@ -79,7 +79,7 @@ export function ForkDirectorPanel({
   );
 
   return (
-    <div className="flex h-full min-h-0 flex-col gap-3">
+    <div className="flex max-h-[70vh] min-h-[22rem] flex-col gap-3">
       <p className="text-xs text-[var(--muted-foreground)]">{localizeUi("ui.chat.forkdirector.offTheRecord")}</p>
 
       <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto">
