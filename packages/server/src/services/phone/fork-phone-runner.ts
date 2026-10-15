@@ -250,12 +250,19 @@ export function createPhoneRunner(db: DB) {
     return { date: field("date"), time: field("time"), location: field("location"), present };
   }
 
-  /** A reply that was deleted since takes its queued texts with it, so they never arrive. */
+  /**
+   * A reply that was deleted since takes its queued texts with it, so they never arrive; a call
+   * whose card was deleted (with its story message, a cleared conversation, a deleted contact) is
+   * over, or it would block every later call.
+   */
   async function withoutDeletedReplies(state: PhoneRunState) {
     for (const item of [...state.queue]) {
       if (item.fromReply && !(await chats.getMessage(item.fromReply))) state = rewindPhoneRun(state, [item.fromReply]);
     }
-    return state;
+    return withoutLostCall(state);
+  }
+  async function withoutLostCall(state: PhoneRunState) {
+    return state.call && !(await phones.getMessage(state.call.id)) ? { ...state, call: null } : state;
   }
 
   async function saveState(chatId: string, state: PhoneRunState) {
@@ -272,6 +279,13 @@ export function createPhoneRunner(db: DB) {
       const contact = people.outsider(side);
       const member = people.members.find((entry) => entry.id === side);
       if (!contact && !member) throw new PhoneError("They are not in your phone", 404);
+      // An unknown number is only on your phone once it has reached you.
+      if (
+        side.startsWith(PHONE_UNKNOWN) &&
+        !(await phones.listThreads(chatId)).some((entry) => entry.a === side || entry.b === side)
+      ) {
+        throw new PhoneError("That number is not in your phone", 404);
+      }
       const thread = await phones.ensureThread(chatId, PHONE_PERSONA, side);
       const texts = (await phones.listMessages(chatId)).filter(
         (message) => message.threadId === thread.id && (message.kind === "text" || message.kind === "photo"),
@@ -680,7 +694,7 @@ export function createPhoneRunner(db: DB) {
         const chat = await getChat(chatId);
         const meta = parseRecord(chat.metadata);
         if (!readForkPhoneSettings(meta).on) throw new PhoneError("The phone is off for this chat", 400);
-        const state = readPhoneRunState(meta);
+        const state = await withoutLostCall(readPhoneRunState(meta));
         if (state.call) throw new PhoneError("You are already on a call", 400);
         const people = await cast(chat);
         const known =
@@ -720,7 +734,10 @@ export function createPhoneRunner(db: DB) {
         const state = readPhoneRunState(parseRecord(chat.metadata));
         if (!state.call || state.call.state !== "live") throw new PhoneError("No call is on the line", 400);
         const card = await phones.getMessage(state.call.id);
-        if (!card) throw new PhoneError("The call is gone", 404);
+        if (!card) {
+          await saveState(chatId, { ...state, call: null });
+          throw new PhoneError("The call is gone", 404);
+        }
         const callLines = (await phones.listMessages(chatId)).filter((message) => message.callId === card.id);
         if (callLines.length >= CALL_LINES_MAX) throw new PhoneError("This call is long enough; hang up", 400);
         const mine = await phones.addMessage({

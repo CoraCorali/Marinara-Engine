@@ -1053,6 +1053,12 @@ From an audit of every fork switch (31 of them) and of features reading the same
   Renaming Deidra to Dee moved the conversation; clearing it left the contact. Theo, standing next
   to Kyli, left her text on read: "Read 8:30 PM" showed under it, under a "December 14, 2026" day
   line. In the browser, no ping on load and one ping when Jess answered.
+- Bug check after: a call whose card was deleted (its story message deleted, its conversation
+  cleared, its contact deleted) stayed "on the line", so the phone kept showing it and every later
+  call failed with "You are already on a call". The phone now treats such a call as over: the
+  screen drops it and calling out works. Asking an unknown number that never texted you to reply
+  no longer leaves an empty "Unknown number" row. Checked through the routes: a call to Theo, his
+  conversation cleared, then a call to Molly went through.
 - Regressions: `fork-phone`, `fork-phone-agent`, `fork-phone-contacts`.
 
 ## Upstream files touched

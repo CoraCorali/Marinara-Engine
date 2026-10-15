@@ -67,7 +67,7 @@ export async function forkPhoneRoutes(app: FastifyInstance) {
     const names: Record<string, string> = {};
     const characters = createCharactersStorage(app.db);
     for (const side of new Set(threads.flatMap((thread) => [thread.a, thread.b]))) {
-      if (side === PHONE_PERSONA || side.startsWith(PHONE_CONTACT)) continue;
+      if (side === PHONE_PERSONA || side.startsWith(PHONE_CONTACT) || side.startsWith(PHONE_UNKNOWN)) continue;
       const name = parseRecord((await characters.getById(side))?.data).name;
       if (typeof name === "string" && name.trim()) names[side] = name.trim();
     }
@@ -76,7 +76,8 @@ export async function forkPhoneRoutes(app: FastifyInstance) {
       threads,
       names,
       messages: await phones.listMessages(chat.id),
-      call: run.call,
+      // A call whose card is gone (deleted with its story message or its conversation) is over.
+      call: run.call && (await phones.getMessage(run.call.id)) ? run.call : null,
       waiting: run.queue.filter((item) => !item.deliveredAt).length,
       reachable: run.reachable,
       peeks: run.peeks,
