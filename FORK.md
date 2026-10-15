@@ -988,6 +988,21 @@ From an audit of every fork switch (31 of them) and of features reading the same
   the letter" (Opus 4.6) referred only to texts already on the phone and wrote no new one.
 - Regression: `fork-phone-contacts`.
 
+### Deleting story messages clears their texts
+
+- **Deleting story messages left their texts on the phone.** Only the AI's texts went; your texts
+  and the answers they got stayed. Deleting a story message (one or many) now removes every phone
+  message shown after it, yours included: that part of the story is gone. A swipe still keeps
+  your texts and only redoes the AI's.
+- Texts waiting to arrive later from a deleted reply are dropped before idle delivery too, not
+  only before the next story reply.
+- **Their texts can be deleted on the phone.** The delete button was only under your own texts; it
+  is under every text now. Deleting a call removes what was said on it too.
+- Checked through the real routes: deleting one story message removed the three texts after it
+  (yours, a contact's and Theo's); a bulk delete removed the rest. In the browser, Theo's text
+  showed a delete button and went after confirming.
+- Regression: `fork-phone`.
+
 ## Upstream files touched
 
 Fork-only code lives in `packages/client/src/lib/fork/`, `Fork*` components, `packages/shared/src/features/fork-bond-shapes.ts`, `packages/server/src/services/import/fork/`

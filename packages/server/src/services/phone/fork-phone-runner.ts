@@ -239,6 +239,14 @@ export function createPhoneRunner(db: DB) {
     return { date: field("date"), time: field("time"), location: field("location"), present };
   }
 
+  /** A reply that was deleted since takes its queued texts with it, so they never arrive. */
+  async function withoutDeletedReplies(state: PhoneRunState) {
+    for (const item of [...state.queue]) {
+      if (item.fromReply && !(await chats.getMessage(item.fromReply))) state = rewindPhoneRun(state, [item.fromReply]);
+    }
+    return state;
+  }
+
   async function saveState(chatId: string, state: PhoneRunState) {
     await chats.patchMetadata(chatId, () => phoneRunMetadata(state));
   }
@@ -480,12 +488,7 @@ export function createPhoneRunner(db: DB) {
         const meta = parseRecord(chat.metadata);
         if (!readForkPhoneSettings(meta).on) return { ran: false, added: [] as PhoneMessage[] };
         await phones.forgetAgentMessages(chatId, [replyId]);
-        let state = rewindPhoneRun(readPhoneRunState(meta), [replyId]);
-        // A reply that was deleted since takes its queued texts with it.
-        for (const item of [...state.queue]) {
-          if (item.fromReply && !(await chats.getMessage(item.fromReply)))
-            state = rewindPhoneRun(state, [item.fromReply]);
-        }
+        let state = await withoutDeletedReplies(rewindPhoneRun(readPhoneRunState(meta), [replyId]));
         // Saved now: the texts it took back are gone even if the model call below fails.
         await saveState(chatId, state);
         const people = await cast(chat);
@@ -589,7 +592,7 @@ export function createPhoneRunner(db: DB) {
         const chat = await getChat(chatId);
         const meta = parseRecord(chat.metadata);
         if (!readForkPhoneSettings(meta).on) return { added: [] as PhoneMessage[] };
-        const state = readPhoneRunState(meta);
+        const state = await withoutDeletedReplies(readPhoneRunState(meta));
         if (!state.queue.some((item) => !item.deliveredAt)) return { added: [] as PhoneMessage[] };
         const [latest] = (await chats.listMessagePreviews(chatId, 1)) as { id: string }[];
         if (!latest) return { added: [] as PhoneMessage[] };

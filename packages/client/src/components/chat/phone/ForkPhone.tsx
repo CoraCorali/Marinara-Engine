@@ -739,16 +739,14 @@ function PhoneThreadView({
                     <PencilLine size="0.6875rem" />
                   </button>
                 )}
-                {mine && (
-                  <button
-                    type="button"
-                    onClick={() => void removeText(message)}
-                    aria-label={localizeUi("ui.chat.forkphone.deleteText")}
-                    className="flex h-8 w-8 items-center justify-center opacity-80"
-                  >
-                    <Trash2 size="0.6875rem" />
-                  </button>
-                )}
+                <button
+                  type="button"
+                  onClick={() => void removeText(message)}
+                  aria-label={localizeUi("ui.chat.forkphone.deleteText")}
+                  className="flex h-8 w-8 items-center justify-center opacity-80"
+                >
+                  <Trash2 size="0.6875rem" />
+                </button>
               </span>
             </div>
           );

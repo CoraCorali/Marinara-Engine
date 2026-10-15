@@ -185,10 +185,10 @@ export async function forgetForkReplies(
   removed: readonly { id: string; chatId: string; createdAt: string }[],
 ): Promise<void> {
   await markForkChaptersStale(db, removed);
-  // What the AI put on the phones after a deleted reply goes with it; your own texts stay.
+  // Every phone message shown after a deleted story message goes with it, yours included.
   for (const chatId of new Set(removed.map((message) => message.chatId))) {
     await createPhoneStorage(db)
-      .forgetAgentMessages(
+      .forgetMessagesAfter(
         chatId,
         removed.filter((message) => message.chatId === chatId).map((message) => message.id),
       )

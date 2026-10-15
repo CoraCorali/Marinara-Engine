@@ -241,7 +241,13 @@ export function createPhoneStorage(db: DB) {
       return this.getMessage(id);
     },
 
+    /** One text, or a call with everything said on it. */
     async removeMessage(id: string): Promise<void> {
+      const lines = (await db
+        .select()
+        .from(phoneMessages)
+        .where(eq(phoneMessages.callId, id))) as unknown as MessageRow[];
+      for (const line of lines) await db.delete(phoneMessages).where(eq(phoneMessages.id, line.id));
       await db.delete(phoneMessages).where(eq(phoneMessages.id, id));
     },
 
@@ -266,6 +272,22 @@ export function createPhoneStorage(db: DB) {
       let removed = 0;
       for (const row of await messageRows(chatId)) {
         if (row.source !== "agent" || !ids.has(row.afterMessageId)) continue;
+        await db.delete(phoneMessages).where(eq(phoneMessages.id, row.id));
+        removed++;
+      }
+      return removed;
+    },
+
+    /**
+     * Deleted story messages take every phone message shown after them, yours included: that part
+     * of the story is gone. (A swipe keeps yours; see `forgetAgentMessages`.)
+     */
+    async forgetMessagesAfter(chatId: string, storyIds: readonly string[]): Promise<number> {
+      if (storyIds.length === 0) return 0;
+      const ids = new Set(storyIds);
+      let removed = 0;
+      for (const row of await messageRows(chatId)) {
+        if (!row.afterMessageId || !ids.has(row.afterMessageId)) continue;
         await db.delete(phoneMessages).where(eq(phoneMessages.id, row.id));
         removed++;
       }

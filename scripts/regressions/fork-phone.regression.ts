@@ -90,17 +90,41 @@ assert.doesNotMatch(
   /she kept it/,
 );
 
-// ── A deleted reply takes the AI's texts after it; yours stay ──
-await forgetForkReplies(db, [
-  { id: "m1", chatId: "c1", createdAt: "2026-10-14T10:00:00.000Z" },
-  { id: "m2", chatId: "c1", createdAt: "2026-10-14T10:01:00.000Z" },
-]);
+// ── A swipe takes back the AI's texts after the reply; yours stay ──
+const yoursAfterM2 = await store.addMessage({
+  chatId: "c1",
+  threadId: theo.id,
+  sender: "persona",
+  body: "ok bossy",
+  afterMessageId: "m2",
+});
+await store.forgetAgentMessages("c1", ["m2"]);
 let left = await store.listMessages("c1");
+assert.ok(!left.some((message) => message.body === "good. keep the umbrella"), "the AI's text after m2 goes");
+assert.ok(
+  left.some((message) => message.id === yoursAfterM2?.id),
+  "a swipe keeps your text",
+);
+
+// ── A deleted story message takes every phone message shown after it, yours too ──
+await store.addMessage({
+  chatId: "c1",
+  threadId: theo.id,
+  sender: "char-theo",
+  body: "answered you",
+  afterMessageId: "m2",
+  source: "user",
+});
+await forgetForkReplies(db, [{ id: "m2", chatId: "c1", createdAt: "2026-10-14T10:01:00.000Z" }]);
+left = await store.listMessages("c1");
+assert.ok(
+  !left.some((message) => ["ok bossy", "answered you"].includes(message.body)),
+  "your text and their answer after the deleted m2 go",
+);
 assert.ok(
   left.some((message) => message.body === "got home ok"),
-  "your text stays",
+  "the text after m1 stays",
 );
-assert.ok(!left.some((message) => message.body === "good. keep the umbrella"), "the AI's text after m2 goes");
 
 // ── Branches ──
 await store.addMessage({
@@ -162,6 +186,25 @@ assert.equal(
   "colours follow the skin",
 );
 assert.equal(shared.normalizeForkPhoneLook({ skin: "candybar", color: "silver", keys: "number" }).keys, "number");
+
+// ── Deleting a call takes what was said on it ──
+const ringCard = await store.addMessage({
+  chatId: "c9",
+  threadId: theo.id,
+  sender: "char-theo",
+  body: "",
+  kind: "call",
+});
+await store.addMessage({
+  chatId: "c9",
+  threadId: theo.id,
+  sender: "char-theo",
+  body: "hey",
+  kind: "call_line",
+  callId: ringCard!.id,
+});
+await store.removeMessage(ringCard!.id);
+assert.deepEqual(await store.listMessages("c9"), [], "the call and its lines are gone");
 
 await closeDB();
 rmSync(dir, { recursive: true, force: true });
