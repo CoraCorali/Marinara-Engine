@@ -130,7 +130,11 @@ function ForkPhonePeekApp({
     .sort((left, right) => right.last!.createdAt.localeCompare(left.last!.createdAt));
 
   useEffect(() => {
+    // What was opened is what the story is told: a conversation, or the drafts, calls or photos.
     if (view.name === "thread") markPeekSeen(chatId, ownerId, view.id);
+    else if (view.name === "drafts" || view.name === "calls" || view.name === "photos") {
+      markPeekSeen(chatId, ownerId, view.name);
+    }
   }, [chatId, ownerId, view]);
 
   const back = () => setView({ name: "home" });

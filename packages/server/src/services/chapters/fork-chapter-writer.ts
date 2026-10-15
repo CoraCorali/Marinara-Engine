@@ -70,6 +70,9 @@ function isStoryMessage(message: MessageRow): boolean {
   return extra.hiddenFromUser !== true && extra.commandOnly !== true;
 }
 
+/** One recap call may take this long before it is given up on. */
+const RECAP_CALL_TIMEOUT_MS = 300_000;
+
 /** Chapters that end inside one chat at a time, since a recap takes several model calls. */
 const busyChats = new Set<string>();
 
@@ -125,12 +128,16 @@ export function createChapterWriter(db: DB) {
     );
     // Streamed: a long recap can take a minute or more, and some gateways (LinkAPI among them)
     // drop a non-streamed request after about 30 seconds.
+    // A stream a gateway never closes would keep the chapter busy until a restart.
+    const signal = AbortSignal.timeout(RECAP_CALL_TIMEOUT_MS);
     const result = await resolved.provider.chatComplete(messages, {
       model: resolved.model,
       temperature: 0.4,
       maxTokens: 4096,
       stream: true,
+      signal,
     });
+    if (signal.aborted) throw new ChapterError("The model took too long to write the recap", 504);
     // A stream that broke part-way hands back what it had; a recap cut off mid-sentence is worse
     // than none, since it would quietly become the story's memory.
     if (result.finishReason === "error") throw new ChapterError("The model stopped partway through the recap", 502);

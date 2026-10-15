@@ -132,11 +132,17 @@ const block = peek.peekPromptBlock(state.peeks, threads, messages, "Kyli", names
 assert.match(block, /Kyli looked at Theo's phone at 9 PM without asking/);
 assert.match(block, /- Mira — Mira: and\?\?/, "the list shows each conversation's newest line");
 assert.match(block, /- Mom — Mom: did you eat/);
-assert.match(
-  block,
-  /- Kyli — Theo: \(unsent draft\) i keep thinking about/,
-  "an unsent draft to you shows in the list",
+assert.doesNotMatch(block, /i keep thinking about/, "drafts are only seen when Drafts is opened");
+const withScreens = peek.peekPromptBlock(
+  [{ ...state.peeks[0]!, threadIds: ["drafts", "photos"] }],
+  threads,
+  messages,
+  "Kyli",
+  names,
+  () => ["flour handprint on the counter"],
 );
+assert.match(withScreens, /Kyli opened Theo's unsent drafts:\n {2}to Kyli: i keep thinking about/);
+assert.match(withScreens, /Kyli opened Theo's photos:\n {2}flour handprint on the counter/);
 assert.match(
   block,
   /Kyli opened the conversation with Mira:\n {2}Theo: the umbrella girl came by again\n {2}Mira: and\?\?/,

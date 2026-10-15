@@ -18,6 +18,11 @@ export const WRITTEN_TEXTS_PER_THREAD = 8;
 export const WRITTEN_PHOTOS_MAX = 6;
 export const WRITTEN_DRAFTS_MAX = 3;
 export const WRITTEN_CALLS_MAX = 6;
+/** The phone's other screens, recorded in a look's opened list like conversations. */
+export const PEEK_DRAFTS = "drafts";
+export const PEEK_CALLS = "calls";
+export const PEEK_PHOTOS = "photos";
+
 /** Lines of each opened thread the writer is told about. */
 export const PEEK_LINES_PER_THREAD = 6;
 const MAX_TEXT = 600;
@@ -201,6 +206,8 @@ export function peekPromptBlock(
   messages: readonly PhoneMessage[],
   personaName: string,
   nameOf: (side: string) => string,
+  /** Each character's camera roll, for a look that opened Photos. */
+  photosOf: (characterId: string) => readonly string[] = () => [],
 ): string {
   const persona = personaName || "the user's character";
   // One section per phone: looking again adds what was opened, and moves "when" to the latest look.
@@ -215,19 +222,56 @@ export function peekPromptBlock(
   const sections = [...byOwner.values()].map((peek) => {
     const owner = nameOf(peek.characterId) || "someone";
     const theirs = threads.filter((thread) => thread.a === peek.characterId || thread.b === peek.characterId);
+    // Texts that came after the look were not on the screen.
+    const onScreen = (message: PhoneMessage) =>
+      (!peek.at || message.createdAt <= peek.at) && theirs.some((thread) => thread.id === message.threadId);
+    // What a conversation shows: texts and photos. Drafts and calls have their own screens.
     const linesOf = (thread: PhoneThread) =>
       messages.filter(
         (message) =>
-          message.threadId === thread.id &&
-          // Texts that came after the look were not on the screen.
-          (!peek.at || message.createdAt <= peek.at) &&
-          (message.kind === "text" ||
-            message.kind === "photo" ||
-            (message.kind === "draft" && message.sender === peek.characterId)),
+          message.threadId === thread.id && onScreen(message) && (message.kind === "text" || message.kind === "photo"),
       );
     const label = (side: string) => (side === peek.characterId ? owner : nameOf(side) || "someone");
     const say = (message: PhoneMessage) =>
-      `${label(message.sender)}: ${message.kind === "photo" ? `(a photo) ${message.body}` : message.kind === "draft" ? `(unsent draft) ${message.body}` : message.body}`;
+      `${label(message.sender)}: ${message.kind === "photo" ? `(a photo) ${message.body}` : message.body}`;
+    const otherIn = (threadId: string) => {
+      const thread = theirs.find((entry) => entry.id === threadId);
+      return thread ? label(thread.a === peek.characterId ? thread.b : thread.a) : "someone";
+    };
+    // The Drafts, Calls and Photos screens, only when they were opened.
+    const screens: string[] = [];
+    if (peek.threadIds.includes(PEEK_DRAFTS)) {
+      const drafts = messages.filter(
+        (message) => message.kind === "draft" && message.sender === peek.characterId && onScreen(message),
+      );
+      if (drafts.length)
+        screens.push(
+          [
+            `${persona} opened ${owner}'s unsent drafts:`,
+            ...drafts.map((draft) => `  to ${otherIn(draft.threadId)}: ${draft.body}`),
+          ].join("\n"),
+        );
+    }
+    if (peek.threadIds.includes(PEEK_CALLS)) {
+      const calls = messages
+        .filter((message) => message.kind === "call" && onScreen(message))
+        .slice(-PEEK_LINES_PER_THREAD);
+      if (calls.length)
+        screens.push(
+          [
+            `${persona} opened ${owner}'s calls:`,
+            ...calls.map(
+              (call) =>
+                `  ${call.sender === peek.characterId ? `${owner} called ${otherIn(call.threadId)}` : `${otherIn(call.threadId)} called ${owner}`}${call.storyTime ? ` (${call.storyTime})` : ""}${call.body ? `: ${call.body}` : ""}`,
+            ),
+          ].join("\n"),
+        );
+    }
+    if (peek.threadIds.includes(PEEK_PHOTOS)) {
+      const photos = photosOf(peek.characterId);
+      if (photos.length)
+        screens.push([`${persona} opened ${owner}'s photos:`, ...photos.map((photo) => `  ${photo}`)].join("\n"));
+    }
     const list = theirs.flatMap((thread) => {
       const other = thread.a === peek.characterId ? thread.b : thread.a;
       const last = linesOf(thread).at(-1);
@@ -248,6 +292,7 @@ export function peekPromptBlock(
       `${persona} looked at ${owner}'s phone${peek.storyTime ? ` at ${peek.storyTime}` : ""} without asking and saw the list of conversations:`,
       ...(list.length ? list : ["- (nothing much)"]),
       ...opened,
+      ...screens,
     ].join("\n");
   });
   if (sections.length === 0) return "";

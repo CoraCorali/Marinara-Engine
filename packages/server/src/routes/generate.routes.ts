@@ -246,7 +246,7 @@ import { pairsPromptBlock } from "../services/bonds/fork-bond-pairs.js";
 import { createPhoneStorage } from "../services/phone/fork-phone.js";
 import { contactLine, phonePromptBlock, phoneSideName } from "../services/phone/fork-phone-prompt.js";
 import { readPhoneRunState } from "../services/phone/fork-phone-agent.js";
-import { peekPromptBlock } from "../services/phone/fork-phone-peek.js";
+import { peekPromptBlock, readWrittenPhones } from "../services/phone/fork-phone-peek.js";
 import { storyNowFromScene } from "../services/board/fork-story-now.js";
 import {
   chaptersBefore,
@@ -7876,6 +7876,7 @@ export async function generateRoutes(app: FastifyInstance, options: GenerateRout
                     forkPhoneMessages,
                     personaName,
                     (side) => phoneSideName(side, personaName, forkNameFor),
+                    (id) => readWrittenPhones(chatMeta)[id]?.photos ?? [],
                   ),
                 ]
                   .filter(Boolean)

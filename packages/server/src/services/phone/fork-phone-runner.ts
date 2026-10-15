@@ -16,7 +16,14 @@ import { logDebugOverride, logger } from "../../lib/logger.js";
 import { newId } from "../../utils/id-generator.js";
 import { createPhoneStorage, PHONE_CONTACT, PHONE_PERSONA, type PhoneMessage } from "./fork-phone.js";
 import { contactLine, contactWho, phonePromptBlock, phoneSideName } from "./fork-phone-prompt.js";
-import { buildPhoneWriteMessages, readWrittenPhone, readWrittenPhones } from "./fork-phone-peek.js";
+import {
+  buildPhoneWriteMessages,
+  PEEK_CALLS,
+  PEEK_DRAFTS,
+  PEEK_PHOTOS,
+  readWrittenPhone,
+  readWrittenPhones,
+} from "./fork-phone-peek.js";
 import {
   applyTextSwipe,
   buildTextSwipeMessages,
@@ -81,6 +88,9 @@ const STORY_MESSAGES = 8;
 const STORY_MESSAGE_CHARS = 1200;
 const OTHER_THREAD_LINES = 4;
 const CALL_LINES_MAX = 60;
+/** How long one phone model call may take; writing a whole phone gets longer. */
+const PHONE_CALL_TIMEOUT_MS = 150_000;
+const PHONE_WRITE_TIMEOUT_MS = 240_000;
 /** Texts of a contact conversation the contact's answer is written from. */
 const CONTACT_TEXTS = 12;
 
@@ -160,12 +170,21 @@ export function createPhoneRunner(db: DB) {
       chat.id,
       messages.map((entry) => `[${entry.role}]\n${entry.content}`).join("\n\n"),
     );
+    // A gateway can leave a stream open forever; phone steps take turns per chat, so one stuck call
+    // would block every phone action in that chat. Both tries share one deadline.
+    const signal = AbortSignal.timeout(maxTokens > 4000 ? PHONE_WRITE_TIMEOUT_MS : PHONE_CALL_TIMEOUT_MS);
     const ask = (stream: boolean) =>
-      resolved.provider.chatComplete(messages, { model: resolved.model, temperature: 0.8, maxTokens, stream });
-    const result = await ask(true).then(
-      (answer) => (answer.finishReason === "error" ? ask(false) : answer),
-      () => ask(false),
-    );
+      resolved.provider.chatComplete(messages, { model: resolved.model, temperature: 0.8, maxTokens, stream, signal });
+    const result = await ask(true)
+      .then(
+        (answer) => (answer.finishReason === "error" && !signal.aborted ? ask(false) : answer),
+        (error) => (signal.aborted ? Promise.reject(error) : ask(false)),
+      )
+      .catch((error) => {
+        if (signal.aborted) throw new PhoneError("The model took too long to answer. Try again.", 504);
+        throw error;
+      });
+    if (signal.aborted) throw new PhoneError("The model took too long to answer. Try again.", 504);
     logDebugOverride(
       debug,
       "[debug/fork-phone] %s answer for chat %s (finish: %s):\n%s",
@@ -383,6 +402,8 @@ export function createPhoneRunner(db: DB) {
           if (item.fromReply && !(await chats.getMessage(item.fromReply)))
             state = rewindPhoneRun(state, [item.fromReply]);
         }
+        // Saved now: the texts it took back are gone even if the model call below fails.
+        await saveState(chatId, state);
         const people = await cast(chat);
         const where = await scene(chatId);
         const threads = await phones.listThreads(chatId);
@@ -701,8 +722,11 @@ export function createPhoneRunner(db: DB) {
       return withLock(chatId, async () => {
         const state = readPhoneRunState(parseRecord((await getChat(chatId)).metadata));
         const peek = [...state.peeks].reverse().find((entry) => entry.characterId === characterId);
-        const thread = await phones.getThread(threadId);
-        if (!peek || !thread || (thread.a !== characterId && thread.b !== characterId)) return { success: false };
+        const screen = [PEEK_DRAFTS, PEEK_CALLS, PEEK_PHOTOS].includes(threadId);
+        const thread = screen ? null : await phones.getThread(threadId);
+        if (!peek || (!screen && (!thread || (thread.a !== characterId && thread.b !== characterId)))) {
+          return { success: false };
+        }
         if (!peek.threadIds.includes(threadId)) peek.threadIds.push(threadId);
         peek.at = new Date().toISOString();
         await saveState(chatId, state);
