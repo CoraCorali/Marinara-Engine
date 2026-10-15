@@ -94,7 +94,7 @@ import { ForkPhonePeekChips } from "./phone/ForkPhonePeek";
 import { useForkPhone } from "../../hooks/use-fork-phone";
 import { useForkPhoneStore } from "../../stores/fork-phone.store";
 import { useForkSeason } from "../../hooks/use-fork-season";
-import { useChatWeatherPrefs } from "../../stores/fork-weather.store";
+import { useChatWeatherPrefs } from "../../hooks/use-fork-weather-prefs";
 import { effectiveWeatherInput } from "../../lib/fork/weather-prefs";
 import type { BoardScope } from "../../hooks/use-fork-board";
 import { CHAT_CONTROL_WINDOW_IDS, ChatConnectedChatWindow, ChatControlWindow } from "./ChatControlWindow";

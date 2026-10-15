@@ -1,20 +1,27 @@
 // ──────────────────────────────────────────────
 // Fork: the weather panel's choices (see FORK.md)
 // ──────────────────────────────────────────────
-// Weather picks are remembered per chat; the sound switches are one browser preference. Kept in
+// A chat's weather choices are saved with the chat (see use-fork-weather-prefs); this store holds
+// the ones being saved, and older choices that were kept only in this browser until they move
+// over. The sound switches and theme effects are one browser preference for every chat. Kept in
 // its own small store rather than in ui.store, so the fork touches one less upstream file.
-import { useMemo } from "react";
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
-import { DEFAULT_WEATHER_PREFS, type WeatherPrefs } from "../lib/fork/weather-prefs";
+import type { WeatherPrefs } from "../lib/fork/weather-prefs";
 
 interface ForkWeatherState {
+  /** Choices from before they were saved with the chat; moved over once, then dropped. */
   byChat: Record<string, Partial<WeatherPrefs>>;
+  /** Choices made in the last moment and not yet saved with the chat. Not kept. */
+  pending: Record<string, Partial<WeatherPrefs>>;
+  setPending: (chatId: string, patch: Partial<WeatherPrefs>) => void;
+  /** Forgets pending choices that were saved, keeping any made since. */
+  settlePending: (chatId: string, saved: Partial<WeatherPrefs>) => void;
+  clearPending: (chatId: string) => void;
+  dropLegacy: (chatId: string) => void;
   soundOn: boolean;
   volume: number;
   fireplace: boolean;
-  setChatPrefs: (chatId: string, patch: Partial<WeatherPrefs>) => void;
-  resetChatPrefs: (chatId: string) => void;
   setSoundOn: (on: boolean) => void;
   setVolume: (volume: number) => void;
   setFireplace: (on: boolean) => void;
@@ -36,9 +43,28 @@ export const useForkWeatherStore = create<ForkWeatherState>()(
       soundOn: false,
       volume: 0.5,
       fireplace: false,
-      setChatPrefs: (chatId, patch) =>
-        set((state) => ({ byChat: { ...state.byChat, [chatId]: { ...state.byChat[chatId], ...patch } } })),
-      resetChatPrefs: (chatId) =>
+      pending: {},
+      setPending: (chatId, patch) =>
+        set((state) => ({ pending: { ...state.pending, [chatId]: { ...state.pending[chatId], ...patch } } })),
+      settlePending: (chatId, saved) =>
+        set((state) => {
+          const left = Object.fromEntries(
+            Object.entries(state.pending[chatId] ?? {}).filter(
+              ([key, value]) => JSON.stringify(value) !== JSON.stringify((saved as Record<string, unknown>)[key]),
+            ),
+          );
+          const next = { ...state.pending };
+          if (Object.keys(left).length) next[chatId] = left;
+          else delete next[chatId];
+          return { pending: next };
+        }),
+      clearPending: (chatId) =>
+        set((state) => {
+          const next = { ...state.pending };
+          delete next[chatId];
+          return { pending: next };
+        }),
+      dropLegacy: (chatId) =>
         set((state) => {
           const next = { ...state.byChat };
           delete next[chatId];
@@ -68,15 +94,3 @@ export const useForkWeatherStore = create<ForkWeatherState>()(
     },
   ),
 );
-
-/** One chat's weather choices, with the defaults filled in. */
-export function useChatWeatherPrefs(chatId: string | null): WeatherPrefs {
-  const stored = useForkWeatherStore((state) => (chatId ? state.byChat[chatId] : undefined));
-  // Memoised on content: the weather canvas restarts whenever its config changes identity, and
-  // tapping an already-chosen chip saves an equal but new object.
-  const key = stored ? JSON.stringify(stored) : "";
-  return useMemo(
-    () => (key ? { ...DEFAULT_WEATHER_PREFS, ...(JSON.parse(key) as Partial<WeatherPrefs>) } : DEFAULT_WEATHER_PREFS),
-    [key],
-  );
-}

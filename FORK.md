@@ -909,6 +909,33 @@ contacts, peeking, branches, deletes), then fixed:
 - Regression: `fork-story-light` now checks the light against the sky at every hour, for word
   times, for the sun's place and for weather that hides it.
 
+### Settings that agree with each other
+
+From an audit of every fork switch (31 of them) and of features reading the same thing two ways:
+
+- **Weather choices are saved with the chat** (`forkWeather` in chat metadata) instead of only in
+  the browser, so a chat looks the same on the phone and the PC. A slider saves once it settles.
+  Choices kept in a browser before this move into the chat the first time its Weather panel opens,
+  and keep applying until then. Reset clears the chat's saved choices.
+- **"Swipe replies with your thumb"** now switches only Marinara's swipe navigation. It used to
+  switch "Reroll past the newest swipe" too, without showing it; that stays Marinara's own setting.
+- **Text swipes follow the swipe settings**: thumb swipes on a character's newest text work only
+  with swipe navigation on, and a new version past the last one only with reroll on, as for story
+  replies. The ‹ › ✦ buttons always work.
+- **"All chats"** beside the switches that are one setting for every chat (sounds, fireplace, swipe,
+  the seasons, theme effects), among the ones that are for this chat.
+- **The Weather panel says when Marinara's "Weather effects" are off** (nothing in the panel shows
+  then), with a button to turn them on.
+- **Season switches say what they show**: "Summer pollen" (golden motes, not fireflies; Marinara's
+  own fireflies come out at night) and "Winter flurries".
+- Not changed: "Wait until the reply is finished" for a regex script is still kept in the browser.
+  Keeping it with the script needs a new field in Marinara's regex storage and its import and
+  export format, which is a storage change.
+- Checked and already in step: the weather panel writes the world state, so the tracker, the
+  writer, the phone and the light read one weather and time; weather sounds come from the same
+  weather the screen draws.
+- Regression: `fork-weather-prefs-sync`.
+
 ## Upstream files touched
 
 Fork-only code lives in `packages/client/src/lib/fork/`, `Fork*` components, `packages/shared/src/features/fork-bond-shapes.ts`, `packages/server/src/services/import/fork/`

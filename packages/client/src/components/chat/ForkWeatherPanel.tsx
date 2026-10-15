@@ -27,7 +27,8 @@ import { isThemeEffectOn, parseThemeEffects } from "../../lib/fork/theme-effects
 import { useGameStateStore } from "../../stores/game-state.store";
 
 const WORLD_TIMES = ["dawn", "day", "dusk", "night"] as const;
-import { useChatWeatherPrefs, useForkWeatherStore } from "../../stores/fork-weather.store";
+import { useForkWeatherStore } from "../../stores/fork-weather.store";
+import { useChatWeatherPrefs, useSetChatWeatherPrefs } from "../../hooks/use-fork-weather-prefs";
 
 const CHIP =
   "flex min-h-8 items-center justify-center gap-1.5 rounded-full border px-3 text-xs font-semibold transition-colors disabled:opacity-40";
@@ -88,10 +89,29 @@ function Slider({
   );
 }
 
-function Switch({ label, checked, onChange }: { label: string; checked: boolean; onChange: (on: boolean) => void }) {
+function Switch({
+  label,
+  checked,
+  onChange,
+  allChats = false,
+}: {
+  label: string;
+  checked: boolean;
+  onChange: (on: boolean) => void;
+  /** One setting for every chat, among switches that are for this chat only. */
+  allChats?: boolean;
+}) {
+  const { t: localizeUi } = useUiTranslation();
   return (
     <label className="flex min-h-9 items-center justify-between gap-3 rounded-xl bg-[var(--secondary)] px-3 text-[0.8125rem] font-semibold text-foreground">
-      {label}
+      <span className="flex min-w-0 flex-wrap items-center gap-x-2">
+        {label}
+        {allChats && (
+          <span className="text-[0.625rem] font-semibold text-[var(--muted-foreground)]">
+            {localizeUi("ui.chat.forkweather.allChats")}
+          </span>
+        )}
+      </span>
       <input
         type="checkbox"
         role="switch"
@@ -106,15 +126,14 @@ function Switch({ label, checked, onChange }: { label: string; checked: boolean;
 export function ForkWeatherPanel({ chatId }: { chatId: string | null }) {
   const { t: localizeUi } = useUiTranslation();
   const prefs = useChatWeatherPrefs(chatId);
-  const setChatPrefs = useForkWeatherStore((s) => s.setChatPrefs);
-  const resetChatPrefs = useForkWeatherStore((s) => s.resetChatPrefs);
+  const { set: setPrefs, reset: resetPrefs } = useSetChatWeatherPrefs(chatId);
   const soundOn = useForkWeatherStore((s) => s.soundOn);
   const volume = useForkWeatherStore((s) => s.volume);
   const fireplace = useForkWeatherStore((s) => s.fireplace);
   const setSoundOn = useForkWeatherStore((s) => s.setSoundOn);
   const setVolume = useForkWeatherStore((s) => s.setVolume);
   const setFireplace = useForkWeatherStore((s) => s.setFireplace);
-  const set = (patch: Partial<WeatherPrefs>) => chatId && setChatPrefs(chatId, patch);
+  const set = (patch: Partial<WeatherPrefs>) => setPrefs(patch);
   const tintId = useId();
   // The active theme's own effects, each with a switch (one setting for every chat).
   const { data: themes = [] } = useThemes();
@@ -123,7 +142,8 @@ export function ForkWeatherPanel({ chatId }: { chatId: string | null }) {
   const themeChoices = useForkWeatherStore((s) => s.themeEffects);
   const swipeOn = useUIStore((s) => s.intuitiveSwipeNavigation);
   const setSwipeNavigation = useUIStore((s) => s.setIntuitiveSwipeNavigation);
-  const setSwipeReroll = useUIStore((s) => s.setIntuitiveSwipeRerollLatest);
+  const weatherShown = useUIStore((s) => s.weatherEffects);
+  const setWeatherEffects = useUIStore((s) => s.setWeatherEffects);
   const setThemeEffect = useForkWeatherStore((s) => s.setThemeEffect);
 
   // The story's own weather and time, from the world state the tracker shows.
@@ -157,8 +177,8 @@ export function ForkWeatherPanel({ chatId }: { chatId: string | null }) {
       patchGameStateField(chatId, "time", WORLD_TIME_FOR[prefs.time]);
       patch.time = "story";
     }
-    if (Object.keys(patch).length > 0) setChatPrefs(chatId, patch);
-  }, [chatId, prefs.follow, prefs.pick, prefs.time, setChatPrefs]);
+    if (Object.keys(patch).length > 0) setPrefs(patch);
+  }, [chatId, prefs.follow, prefs.pick, prefs.time, setPrefs]);
 
   if (!chatId)
     return (
@@ -167,6 +187,19 @@ export function ForkWeatherPanel({ chatId }: { chatId: string | null }) {
 
   return (
     <div className="fork-ui flex flex-col gap-4">
+      {/* Marinara's own "Weather effects" setting draws all of this; with it off, say so. */}
+      {!weatherShown && (
+        <div className="flex flex-wrap items-center gap-2 rounded-xl border border-[var(--primary)]/50 bg-[var(--secondary)] px-3 py-2 text-xs text-foreground/90">
+          <span className="min-w-0 flex-1">{localizeUi("ui.chat.forkweather.effectsOff")}</span>
+          <button
+            type="button"
+            onClick={() => setWeatherEffects(true)}
+            className="flex min-h-8 items-center rounded-full bg-[var(--primary)] px-3 font-semibold text-[var(--primary-foreground)]"
+          >
+            {localizeUi("ui.chat.forkweather.effectsTurnOn")}
+          </button>
+        </div>
+      )}
       {/* The weather and time live in the story's world state, so the tracker, the writer and the
           screen all agree. A chip here writes the world state; the story can change it on a later
           reply unless "Keep it this way" holds it with the tracker's own field locks. */}
@@ -210,7 +243,7 @@ export function ForkWeatherPanel({ chatId }: { chatId: string | null }) {
 
       {/* Sounds sit near the top, where a phone sees them without scrolling. */}
       <Section title={localizeUi("ui.chat.forkweather.sounds")} help={localizeUi("ui.chat.forkweather.soundHelp")}>
-        <Switch label={localizeUi("ui.chat.forkweather.soundOn")} checked={soundOn} onChange={setSoundOn} />
+        <Switch label={localizeUi("ui.chat.forkweather.soundOn")} checked={soundOn} onChange={setSoundOn} allChats />
         {soundOn && (
           <>
             <Slider
@@ -220,7 +253,12 @@ export function ForkWeatherPanel({ chatId }: { chatId: string | null }) {
               max={1}
               onCommit={setVolume}
             />
-            <Switch label={localizeUi("ui.chat.forkweather.fireplace")} checked={fireplace} onChange={setFireplace} />
+            <Switch
+              label={localizeUi("ui.chat.forkweather.fireplace")}
+              checked={fireplace}
+              onChange={setFireplace}
+              allChats
+            />
           </>
         )}
       </Section>
@@ -325,15 +363,13 @@ export function ForkWeatherPanel({ chatId }: { chatId: string | null }) {
           checked={prefs.light}
           onChange={(light) => set({ light })}
         />
-        {/* Marinara's own swipe navigation, both halves in one switch: swipe for the next or last
-            version of the newest reply, and a new one past the end. */}
+        {/* Marinara's own swipe navigation. Whether a swipe past the newest version makes a new
+            one is Marinara's separate "Reroll past the newest swipe" setting, left as it is. */}
         <Switch
           label={localizeUi("ui.chat.forkswipe.switch")}
           checked={swipeOn}
-          onChange={(on) => {
-            setSwipeNavigation(on);
-            setSwipeReroll(on);
-          }}
+          onChange={setSwipeNavigation}
+          allChats
         />
         {(Object.keys(SEASON_EFFECT_IDS) as (keyof typeof SEASON_EFFECT_IDS)[]).map((season) => (
           <Switch
@@ -341,6 +377,7 @@ export function ForkWeatherPanel({ chatId }: { chatId: string | null }) {
             label={localizeUi(`ui.chat.forkweather.season.${season}`)}
             checked={themeChoices[SEASON_EFFECT_IDS[season]] !== false}
             onChange={(on) => setThemeEffect(SEASON_EFFECT_IDS[season], on)}
+            allChats
           />
         ))}
       </Section>
@@ -366,6 +403,7 @@ export function ForkWeatherPanel({ chatId }: { chatId: string | null }) {
                     label={effect.label}
                     checked={isThemeEffectOn(effect, themeChoices)}
                     onChange={(on) => setThemeEffect(effect.id, on)}
+                    allChats
                   />
                 ))}
               </div>
@@ -376,7 +414,7 @@ export function ForkWeatherPanel({ chatId }: { chatId: string | null }) {
 
       <button
         type="button"
-        onClick={() => resetChatPrefs(chatId)}
+        onClick={resetPrefs}
         className="flex min-h-9 items-center justify-center gap-2 rounded-xl border-2 border-[var(--border)] text-[0.8125rem] font-semibold text-foreground"
       >
         <RotateCcw size="0.875rem" />

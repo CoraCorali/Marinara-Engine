@@ -4,7 +4,7 @@
 import { useEffect, useState } from "react";
 import { useGameStateStore } from "../../stores/game-state.store";
 import { useChatStore } from "../../stores/chat.store";
-import { useChatWeatherPrefs } from "../../stores/fork-weather.store";
+import { useChatWeatherPrefs } from "../../hooks/use-fork-weather-prefs";
 import { effectiveWeatherInput } from "../../lib/fork/weather-prefs";
 import { storyLightWash, storySky } from "../../lib/fork/story-light";
 
