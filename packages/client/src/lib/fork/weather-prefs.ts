@@ -101,6 +101,8 @@ export interface WeatherPrefs {
   celestial: "auto" | "hide" | "manual";
   /** 0 (left) to 1 (right), for "manual". */
   celestialX: number;
+  /** A soft wash of light that follows the story's time of day. */
+  light: boolean;
 }
 
 export const DEFAULT_WEATHER_PREFS: WeatherPrefs = {
@@ -117,6 +119,7 @@ export const DEFAULT_WEATHER_PREFS: WeatherPrefs = {
   aurora: false,
   celestial: "auto",
   celestialX: 0.75,
+  light: true,
 };
 
 /** The weather and time lines the renderer should read, after the panel has had its say. */

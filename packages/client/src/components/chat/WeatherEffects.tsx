@@ -16,6 +16,7 @@ import {
   weatherCelestialX,
   weatherCelestialY,
   type WeatherParticle,
+  type WeatherSeason,
 } from "../../lib/weather-renderer";
 import { applyWeatherTuning, weatherSoundScene, type WeatherPrefs } from "../../lib/fork/weather-prefs";
 import { useForkWeatherStore } from "../../stores/fork-weather.store";
@@ -30,6 +31,8 @@ interface WeatherEffectsProps {
   timeOfDay?: string | null;
   /** Fork: the scene's date, for the season's layer. */
   date?: string | null;
+  /** Fork: the season where the story is, when known; null for none; undefined to read the date. */
+  season?: WeatherSeason | null;
   showCelestial?: boolean;
   /** Freeze ambient rendering while local text generation needs the GPU. */
   paused?: boolean;
@@ -47,6 +50,7 @@ export function WeatherEffects({
   weather,
   timeOfDay,
   date,
+  season,
   showCelestial = true,
   paused = false,
   tuning,
@@ -72,11 +76,12 @@ export function WeatherEffects({
   // the tuning object's identity instead, an equal but new object would rerun the effect on the
   // same canvas, the second hand-over would throw, and the worker would be lost for the session.
   // Opacity, brightness and tint are CSS on top, so they are left out and cost no redraw.
-  const tuningKey = tuning ? JSON.stringify({ ...tuning, opacity: 1, brightness: 1, tint: "" }) : "";
+  // The story light is drawn elsewhere, so switching it never rebuilds the canvas either.
+  const tuningKey = tuning ? JSON.stringify({ ...tuning, opacity: 1, brightness: 1, tint: "", light: true }) : "";
   const config = useMemo(() => {
-    const resolved = resolveWeatherRenderConfig(weather, timeOfDay, date);
+    const resolved = resolveWeatherRenderConfig(weather, timeOfDay, date, season);
     return tuningKey ? applyWeatherTuning(resolved, JSON.parse(tuningKey) as WeatherPrefs) : resolved;
-  }, [weather, timeOfDay, date, tuningKey]);
+  }, [weather, timeOfDay, date, season, tuningKey]);
   const fireplace = useForkWeatherStore((s) => s.fireplace);
   const soundScene = useMemo(() => weatherSoundScene(config, fireplace), [config, fireplace]);
   const sound = withSound ? <ForkWeatherSound scene={soundScene} /> : null;
@@ -348,7 +353,7 @@ export function WeatherEffects({
     <>
       {sound}
       <canvas
-        key={`${weather ?? ""}:${timeOfDay ?? ""}:${date ?? ""}:${showCelestial ? "celestial" : "particles"}:${workerFailed ? "fallback" : "worker"}:${tuningKey}`}
+        key={`${weather ?? ""}:${timeOfDay ?? ""}:${date ?? ""}:${season === undefined ? "date" : (season ?? "none")}:${showCelestial ? "celestial" : "particles"}:${workerFailed ? "fallback" : "worker"}:${tuningKey}`}
         ref={canvasRef}
         className="pointer-events-none absolute inset-0 z-0 h-full w-full [contain:strict]"
         // Fork: opacity and brightness are the browser's job, so the sliders cost no drawing.

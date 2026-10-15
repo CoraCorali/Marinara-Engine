@@ -660,6 +660,29 @@ fields, its own way into the scene, and its own wording for the model.
   never declared, which broke the build).
 - Regression: `fork-board-grouping`. The board's own strings live under `ui.chat.forkboard.*`.
 
+### Light that follows the story, and seasons by place
+
+- **Story light**: a soft wash of colour over the chat background (under the messages) in five
+  phases from the story's time: dawn (5–8), day, golden hour (16–18), dusk (18–20) and night, which
+  adds a warm lamp glow in the bottom corner. Words work when there is no clock ("golden hour",
+  "sunset", "midnight"). It uses `mix-blend-mode: soft-light`, so the theme's own colours still
+  lead, and fades over 20 seconds by opacity alone (no repaint while you scroll); with reduced motion
+  it switches at once. No time recorded, no wash. Switch: "Light follows the story's time" under
+  **Cozy touches** in the weather panel, per chat, on by default. Roleplay only. It never rebuilds
+  the weather canvas when switched.
+- **Seasons by place**: the weather canvas used to take the season from the month, northern
+  hemisphere only. Now `POST /api/fork-weather/chats/:id/season` asks the chat summary's model once
+  which season it is at the story's date and place (Sydney in December is summer, Singapore has
+  none) and caches it in the chat (`forkSeason`, by place and month). A season named in the weather
+  line still wins ("autumn rain"). The question rides in one user turn, since through LinkAPI a
+  system turn was ignored; it is asked plainly first and streamed once if the gateway fails. If both
+  fail, the month is used and nothing is cached, so it is asked again next time. Each season has
+  its own switch under Cozy touches (spring petals, summer fireflies, autumn leaves, winter frost);
+  seasonal particles were already halved when rain or snow is falling.
+- Tested live with all three models: every answer the models gave was right; LinkAPI returned 502
+  on some calls, which fell back as designed.
+- Regressions: `fork-story-light`, `fork-season`.
+
 ## Upstream files touched
 
 Fork-only code lives in `packages/client/src/lib/fork/`, `Fork*` components, `packages/shared/src/features/fork-bond-shapes.ts`, `packages/server/src/services/import/fork/`
@@ -765,6 +788,10 @@ Edits to upstream files are marked with a `Fork:` comment.
 | `packages/server/src/routes/fork-board.routes.ts`                                          | Name and details on PATCH; the album's add and remove routes                                      |
 | `packages/server/src/services/board/fork-board-pins.ts`                                    | Name and details columns, the merge, and what follows the story                                   |
 | `packages/server/src/services/generation/fork-board-prompt.ts`                             | Per-category wording for the model                                                                |
+| `packages/client/src/components/chat/ChatRoleplaySurface.tsx`                              | Mounts the story light; passes the place's season to the weather                                  |
+| `packages/client/src/components/chat/WeatherEffects.tsx`                                   | Takes a season; the story light switch never rebuilds the canvas                                  |
+| `packages/client/src/lib/weather-renderer.ts`                                              | A season from the place, after one named in the weather line                                      |
+| `packages/server/src/routes/index.ts`                                                      | Registers the season route                                                                        |
 
 ## Known upstream issue kept as is
 

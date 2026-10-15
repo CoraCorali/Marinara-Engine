@@ -87,6 +87,8 @@ import {
   type ForkChapter,
 } from "../../hooks/use-fork-chapters";
 import { ForkFixPart } from "./ForkFixPart";
+import { ForkStoryLight } from "./ForkStoryLight";
+import { useForkSeason } from "../../hooks/use-fork-season";
 import { useChatWeatherPrefs } from "../../stores/fork-weather.store";
 import { effectiveWeatherInput } from "../../lib/fork/weather-prefs";
 import type { BoardScope } from "../../hooks/use-fork-board";
@@ -192,12 +194,16 @@ function WeatherEffectsConnected({ paused }: { paused: boolean }) {
   const chatId = useChatStore((s) => s.activeChatId);
   const tuning = useChatWeatherPrefs(chatId);
   const { weather, time: timeOfDay } = effectiveWeatherInput(tuning, { weather: storyWeather, time: storyTime });
+  // Fork: the season where the story is, asked once per place and month.
+  const location = useGameStateStore((s) => s.current?.location ?? null);
+  const season = useForkSeason(chatId, date, location);
   return (
     <Suspense fallback={null}>
       <WeatherEffects
         weather={weather}
         timeOfDay={timeOfDay}
         date={date}
+        season={season}
         paused={paused}
         tuning={tuning}
         showCelestial={tuning.celestial !== "hide"}
@@ -1867,6 +1873,8 @@ export function ChatRoleplaySurface({
         <ForkFixPart chatId={activeChatId} messages={messages} onEdit={onEdit} busy={isStreaming} />
         <div className="rpg-overlay absolute inset-0" />
         <div className="rpg-vignette pointer-events-none absolute inset-0" />
+        {/* Fork: the light follows the story's time of day. */}
+        {chatMode === "roleplay" && <ForkStoryLight />}
         {weatherEffects && <WeatherEffectsConnected paused={weatherEffectsPaused} />}
         {visualNovel && !vnHistoryOpen && (
           <div

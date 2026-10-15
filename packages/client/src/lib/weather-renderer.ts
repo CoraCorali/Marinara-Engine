@@ -369,10 +369,14 @@ export function resolveWeatherRenderConfig(
   weather?: string | null,
   timeOfDay?: string | null,
   date?: string | null,
+  // Fork: the season where the story is, worked out by place (null for none); undefined reads the date.
+  seasonHere?: WeatherSeason | null,
 ): WeatherRenderConfig {
   const weatherConfig = parseWeather(weather);
   const timeConfig = parseTime(timeOfDay, weatherConfig.type);
-  const season = parseWeatherSeason(weather, date);
+  // A season named in the weather line still wins ("autumn rain"); otherwise the place's answer.
+  const named = parseWeatherSeason(weather, null);
+  const season = named ?? (seasonHere === undefined ? parseWeatherSeason(weather, date) : seasonHere);
   const isClearSky =
     !weather ||
     /clear|sunny|bright/i.test(weather) ||

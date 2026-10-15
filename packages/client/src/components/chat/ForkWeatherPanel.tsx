@@ -21,6 +21,7 @@ import {
 } from "../../lib/fork/weather-prefs";
 import { patchGameStateField } from "../../hooks/use-game-state-patcher";
 import { useThemes } from "../../hooks/use-themes";
+import { SEASON_EFFECT_IDS } from "../../hooks/use-fork-season";
 import { isThemeEffectOn, parseThemeEffects } from "../../lib/fork/theme-effects";
 import { useGameStateStore } from "../../stores/game-state.store";
 
@@ -311,6 +312,23 @@ export function ForkWeatherPanel({ chatId }: { chatId: string | null }) {
             onCommit={(celestialX) => set({ celestialX })}
           />
         )}
+      </Section>
+
+      {/* Fork: cozy touches that follow the story rather than the weather. */}
+      <Section title={localizeUi("ui.chat.forkweather.cozy")} help={localizeUi("ui.chat.forkweather.cozyHelp")}>
+        <Switch
+          label={localizeUi("ui.chat.forkweather.storyLight")}
+          checked={prefs.light}
+          onChange={(light) => set({ light })}
+        />
+        {(Object.keys(SEASON_EFFECT_IDS) as (keyof typeof SEASON_EFFECT_IDS)[]).map((season) => (
+          <Switch
+            key={season}
+            label={localizeUi(`ui.chat.forkweather.season.${season}`)}
+            checked={themeChoices[SEASON_EFFECT_IDS[season]] !== false}
+            onChange={(on) => setThemeEffect(SEASON_EFFECT_IDS[season], on)}
+          />
+        ))}
       </Section>
 
       {themeEffects.length > 0 && (
