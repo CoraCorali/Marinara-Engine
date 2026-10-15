@@ -968,6 +968,26 @@ From an audit of every fork switch (31 of them) and of features reading the same
   answered in his voice from that moment. In the browser, the dots showed and his texts arrived.
 - Regression: `fork-phone-agent`.
 
+### Phone and story agree (from real-use screenshots)
+
+- **The story wrote texts the phone never had.** A reply narrated "her phone buzzed" and wrote
+  out a new text from Deidra that was not on the phone, so Deidra never knew she had sent it and
+  her next answer did not fit. While the phone is on, the writer is now told texts and calls happen
+  on the phones: the story may say a phone buzzed or someone is typing, and quote texts already
+  there, but never writes out a new one. The phone agent, which reads that reply, sends the text.
+- **A contact forgot their own letter.** Deidra's letter said she got the address from someone at
+  the club; her text said she got it from Kyli's mom. Contacts were given no story at all (so they
+  could not leak it), which also hid their own part. They now get up to three recent story
+  passages that name them (a first name is enough, so "Deidra cousin" finds "Deidra"), with the
+  rule that from those they know only what they did, wrote or said, never what anyone else did,
+  saw or found out. A contact the story never names, like Molly, still gets no story.
+- **An empty name on phone cards** ("Molly → :") when the chat has no persona; it now reads "You".
+- Live check (Opus 5.5, Fable 5.1, Opus 4.6 via LinkAPI): asked "how did you get my address?",
+  Deidra answered "someone you worked with at the club" on all three; Molly, texted in the same
+  chat, never mentioned the letter. A story reply to "her phone buzzes, a text from the number in
+  the letter" (Opus 4.6) referred only to texts already on the phone and wrote no new one.
+- Regression: `fork-phone-contacts`.
+
 ## Upstream files touched
 
 Fork-only code lives in `packages/client/src/lib/fork/`, `Fork*` components, `packages/shared/src/features/fork-bond-shapes.ts`, `packages/server/src/services/import/fork/`

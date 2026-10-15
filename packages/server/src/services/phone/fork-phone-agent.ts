@@ -547,6 +547,8 @@ export function buildCallLineMessages(input: {
   personaName: string;
   story: string;
   lines: { name: string; text: string }[];
+  /** For a contact: `contactStoryBlock`, their own part in the story. */
+  knows?: string;
 }): { role: "user"; content: string }[] {
   const persona = input.personaName || "the user's character";
   return [
@@ -555,6 +557,7 @@ export function buildCallLineMessages(input: {
       content: [
         `${input.characterName} is on a phone call with ${persona} in an ongoing roleplay story.${input.about ? ` The call is about: ${input.about}.` : ""}`,
         input.who ? `${input.characterName} is ${input.who}. They only know what ${persona} has told them.` : "",
+        input.knows ?? "",
         input.story ? `\nThe latest story (oldest first):\n${input.story}` : "",
         `\nThe call so far:\n${input.lines.map((line) => `${line.name}: ${line.text}`).join("\n") || "(just picked up)"}`,
         `\nWrite ${input.characterName}'s next spoken line only, in their own voice: one to three short sentences, the way people talk on the phone. No narration, no name label, no quotation marks. Never write ${persona}'s words.`,
@@ -574,6 +577,30 @@ export function cleanSpokenLine(raw: string, name: string): string {
   return line.slice(0, MAX_AGENT_TEXT);
 }
 
+/** Story passages that name a contact, newest last: "Deidra cousin" is found as "Deidra" too. */
+export function passagesNaming(name: string, passages: readonly string[], max = 3): string[] {
+  const escape = (word: string) => word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const first = name.trim().split(/\s+/)[0] ?? "";
+  const words = [name.trim(), ...(first.length >= 3 && first !== name.trim() ? [first] : [])].filter(Boolean);
+  if (words.length === 0) return [];
+  const named = new RegExp(`(^|[^\\p{L}])(${words.map(escape).join("|")})(?![\\p{L}])`, "iu");
+  return passages.filter((passage) => named.test(passage)).slice(-max);
+}
+
+/**
+ * The story a contact took part in from afar: passages that name them, with the rule that they
+ * know only their own part (a letter they wrote, a call they made), never the rest of the scene.
+ */
+export function contactStoryBlock(name: string, personaName: string, passages: readonly string[]): string {
+  if (passages.length === 0) return "";
+  const persona = personaName || "the user's character";
+  return [
+    `\nStory passages that mention ${name} (oldest first). ${name} was not there. From these, ${name} knows only their own part: what they themselves did, wrote or said (a letter or message they sent, a call they made), and must stay true to it. Everything else in them (what ${persona} or anyone else did, saw, thought or found out) ${name} does not know.`,
+    ...passages.map((passage) => `---\n${passage}`),
+    "---",
+  ].join("\n");
+}
+
 /**
  * A contact's answer to your texts. They were not in the story's scenes: they know only what you
  * have told them, plus their own life.
@@ -585,14 +612,17 @@ export function buildContactReplyMessages(input: {
   personaName: string;
   storyTime: string;
   texts: { name: string; text: string; time: string }[];
+  /** `contactStoryBlock`: their own part in the story, when it names them. */
+  knows?: string;
 }): { role: "user"; content: string }[] {
   const persona = input.personaName || "the user's character";
   return [
     {
       role: "user",
       content: [
-        `${input.name} is ${input.who}, texting with ${persona}. ${input.name} is not in ${persona}'s scenes and knows nothing about ${persona}'s day except what ${persona} has texted them below, plus their own life.`,
+        `${input.name} is ${input.who}, texting with ${persona}. ${input.name} is not in ${persona}'s scenes and knows nothing about ${persona}'s day except what ${persona} has texted them below, plus their own life${input.knows ? " and their own part in the passages below" : ""}.`,
         input.storyTime ? `Time now: ${input.storyTime}.` : "",
+        input.knows ?? "",
         `\nTheir texts so far (oldest first):\n${input.texts.map((text) => `- ${text.time ? `[${text.time}] ` : ""}${text.name}: ${text.text}`).join("\n")}`,
         `\nWrite ${input.name}'s reply: one to three short texts in their own voice, the way they would really text ${persona}. Only mention things ${persona} has texted about or that are part of ${input.name}'s own life; never anything else that happened to ${persona}. No narration, no quotation marks. Never write ${persona}'s texts.`,
         'Reply with JSON only: {"texts":["text","text"]}',

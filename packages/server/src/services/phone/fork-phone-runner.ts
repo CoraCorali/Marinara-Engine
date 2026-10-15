@@ -37,8 +37,10 @@ import {
   buildContactReplyMessages,
   buildPhoneAgentMessages,
   cleanSpokenLine,
+  contactStoryBlock,
   dueQueueItems,
   owedReplies,
+  passagesNaming,
   phoneRunMetadata,
   phoneSideResolver,
   planIdleDelivery,
@@ -94,6 +96,8 @@ const PHONE_CALL_TIMEOUT_MS = 150_000;
 const PHONE_WRITE_TIMEOUT_MS = 240_000;
 /** Texts of a contact conversation the contact's answer is written from. */
 const CONTACT_TEXTS = 12;
+/** Story messages searched for a contact's name (a letter they sent a while back). */
+const CONTACT_STORY_MESSAGES = 30;
 
 /** One phone run per chat at a time; a second reply's run waits its turn. */
 const chatLocks = new Map<string, Promise<unknown>>();
@@ -217,6 +221,15 @@ export function createPhoneRunner(db: DB) {
     return { text, latestId: recent[recent.length - 1]?.id ?? "" };
   }
 
+  /** A contact's own part in the story: recent passages that name them, under their rule. */
+  async function contactKnows(chat: ChatRow, contactName: string, personaName: string) {
+    const recent = (await chats.listMessagePreviews(chat.id, CONTACT_STORY_MESSAGES)) as { content: string }[];
+    const passages = recent
+      .map((message) => plainMessageText(String(message.content ?? "")).slice(0, STORY_MESSAGE_CHARS * 2))
+      .filter(Boolean);
+    return contactStoryBlock(contactName, personaName, passagesNaming(contactName, passages));
+  }
+
   async function scene(chatId: string) {
     const latest = (await createGameStateStorage(db).getLatest(chatId)) as Record<string, unknown> | null;
     const present = parseList(latest?.presentCharacters)
@@ -251,7 +264,7 @@ export function createPhoneRunner(db: DB) {
       const lines = texts
         .slice(-CONTACT_TEXTS)
         .map((text) => ({ name: people.side(text.sender), text: text.body, time: text.storyTime }));
-      // No story for a contact: they were not in the scenes and know only what you texted them.
+      // A contact was not in the scenes: they know your texts, and their own part where the story names them.
       const messages = contact
         ? buildContactReplyMessages({
             name: contact.name,
@@ -259,6 +272,7 @@ export function createPhoneRunner(db: DB) {
             personaName: people.personaName,
             storyTime: where.time,
             texts: lines,
+            knows: await contactKnows(chat, contact.name, people.personaName),
           })
         : buildCharacterReplyMessages({
             name: member!.name,
@@ -711,6 +725,9 @@ export function createPhoneRunner(db: DB) {
             about: state.call.about,
             personaName: people.personaName,
             story: people.contactOf(state.call.from) ? "" : story,
+            knows: people.contactOf(state.call.from)
+              ? await contactKnows(chat, people.contactOf(state.call.from)!.name, people.personaName)
+              : undefined,
             lines: [...callLines, mine].map((entry) => ({ name: people.side(entry.sender), text: entry.body })),
           }),
           "call line",
@@ -861,6 +878,7 @@ export function createPhoneRunner(db: DB) {
               .slice(-8)
               .map((entry) => ({ name: people.side(entry.sender), text: entry.body })),
             versions: message.swipes.length ? message.swipes : [message.body],
+            knows: contact ? await contactKnows(chat, contact.name, people.personaName) : undefined,
           }),
           "text swipe",
           debug,

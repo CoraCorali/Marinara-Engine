@@ -2,7 +2,7 @@
  * Fork: Pocket Phone contacts. Contacts keep unique names and an approved label; the phone agent
  * matches a saved contact whatever the case and lets them text you, while an unsaved name cannot;
  * a contact's answer is read safely; the prompts tell who they are and that they only know what you
- * told them; the writer's phone block lists them; deleting a contact's thread removes its texts.
+ * told them, plus their own part in story passages that name them; the writer's phone block lists them; deleting a contact's thread removes its texts.
  */
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -100,6 +100,40 @@ assert.deepEqual(agent.readContactReply('{"texts":["GOOD", " \\"call me tomorrow
   "x",
 ]);
 assert.deepEqual(agent.readContactReply("ok sweetie\nlove you"), ["ok sweetie", "love you"], "plain lines work too");
+// ── What a contact knows from the story: only passages naming them, and only their own part ──
+const passages = [
+  "Kyli opened a letter. It was from Deidra, her cousin. I got your address from someone at the club.",
+  "Kyli texted Molly about her day.",
+  "Maria brought in the mail.",
+  "Deidrasaurus is not a name.",
+];
+assert.deepEqual(
+  agent.passagesNaming("Deidra cousin", passages),
+  [passages[0]],
+  "a contact is found by first name too",
+);
+assert.deepEqual(agent.passagesNaming("Mom", passages), [], "no passage names Mom");
+assert.deepEqual(agent.passagesNaming("Molly", ["Molly 1", "Molly 2", "Molly 3", "Molly 4"]), [
+  "Molly 2",
+  "Molly 3",
+  "Molly 4",
+]);
+const knows = agent.contactStoryBlock("Deidra", "Kyli", [passages[0]!]);
+assert.match(knows, /Deidra knows only their own part: what they themselves did, wrote or said/);
+assert.match(knows, /what Kyli or anyone else did, saw, thought or found out\) Deidra does not know/);
+assert.match(knows, /someone at the club/);
+assert.equal(agent.contactStoryBlock("Deidra", "Kyli", []), "", "nothing when the story never names them");
+const knowing = agent.buildContactReplyMessages({
+  name: "Deidra",
+  who: "Kyli's family",
+  personaName: "Kyli",
+  storyTime: "",
+  texts: [{ name: "Kyli", text: "how did you get my address?", time: "" }],
+  knows,
+})[0]!.content;
+assert.match(knowing, /plus their own life and their own part in the passages below/);
+assert.match(knowing, /someone at the club/);
+
 const call = agent.buildCallLineMessages({
   characterName: "Mom",
   who: prompt.contactWho(contacts[0]!, "Kyli"),

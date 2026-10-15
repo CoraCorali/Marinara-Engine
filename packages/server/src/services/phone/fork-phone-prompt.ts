@@ -79,6 +79,13 @@ export function phonePromptBlock(
   ].join("\n\n");
 }
 
+/**
+ * For the story's writer while the phone is on: texts live on the phone, so a text written out in
+ * the narration would be one the phone never shows and its sender never remembers.
+ */
+export const PHONE_WRITER_RULE =
+  "Texts and calls happen on the phones, not in the narration: never write out the words of a new text, call or message in the story. The story can say a phone buzzed or someone is typing; the text itself arrives on the phone. Characters can quote or react to texts already on the phones.";
+
 /** "Mom (family): worries a lot", for the lists the models read. */
 export function contactLine(contact: ForkPhoneContact): string {
   return `${contact.name} (${FORK_PHONE_RELATION_WORDS[contact.relation]})${contact.note ? `: ${contact.note}` : ""}`;

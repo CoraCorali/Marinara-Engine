@@ -49,6 +49,8 @@ export function buildTextSwipeMessages(input: {
   story: string;
   earlier: { name: string; text: string }[];
   versions: string[];
+  /** For a contact: `contactStoryBlock`, their own part in the story. */
+  knows?: string;
 }): { role: "user"; content: string }[] {
   const persona = input.personaName || "the user's character";
   return [
@@ -57,6 +59,7 @@ export function buildTextSwipeMessages(input: {
       content: [
         `${input.name} is texting ${persona} in an ongoing roleplay story.${input.who ? ` ${input.name}: ${input.who}` : ""}`,
         input.story ? `\nThe latest story (oldest first, for context):\n${input.story}` : "",
+        input.knows ?? "",
         input.earlier.length
           ? `\nTheir texts before this one (oldest first):\n${input.earlier.map((line) => `${line.name}: ${line.text}`).join("\n")}`
           : "",

@@ -1562,7 +1562,8 @@ export function ChatRoleplaySurface({
       }),
     [characterMap, chatCharIds],
   );
-  const forkPersonaName = personaInfo?.name ?? "";
+  // Fork: with no persona picked, your side of the phone still has a name.
+  const forkPersonaName = personaInfo?.name || t("ui.chat.forkphone.you");
   const { data: forkPhone } = useForkPhone(forkChaptersChatId);
   const forkPhoneByMessage = useMemo(() => {
     const byMessage = new Map<string, NonNullable<typeof forkPhone>["messages"]>();
