@@ -32,11 +32,11 @@ export function storyLightPhase(time: string | null | undefined): StoryLightPhas
  * still lead. Day is nearly nothing; night adds a warm lamp glow in the bottom corner.
  */
 export const STORY_LIGHT_WASH: Record<StoryLightPhase, string> = {
-  dawn: "radial-gradient(120% 80% at 50% 110%, rgba(255,170,150,0.55), transparent 70%), linear-gradient(180deg, rgba(190,170,255,0.25), rgba(255,200,170,0.3))",
-  day: "linear-gradient(180deg, rgba(255,250,235,0.18), rgba(255,245,225,0.08))",
+  dawn: "radial-gradient(120% 70% at 50% 115%, rgba(255,170,150,0.5), transparent 70%), linear-gradient(180deg, rgba(190,170,255,0.12), rgba(255,200,170,0.15))",
+  day: "linear-gradient(180deg, rgba(255,250,235,0.14), rgba(255,245,225,0.05))",
   golden:
-    "radial-gradient(120% 90% at 100% 20%, rgba(255,190,90,0.6), transparent 70%), linear-gradient(180deg, rgba(255,210,140,0.25), rgba(255,170,90,0.2))",
-  dusk: "radial-gradient(130% 80% at 50% 105%, rgba(255,120,110,0.5), transparent 70%), linear-gradient(180deg, rgba(110,80,190,0.45), rgba(220,110,150,0.3))",
+    "radial-gradient(110% 80% at 100% 15%, rgba(255,190,90,0.55), transparent 70%), linear-gradient(180deg, rgba(255,210,140,0.1), rgba(255,170,90,0.12))",
+  dusk: "radial-gradient(130% 70% at 50% 110%, rgba(255,120,110,0.45), transparent 70%), linear-gradient(180deg, rgba(110,80,190,0.3), rgba(220,110,150,0.18))",
   night:
-    "radial-gradient(60% 45% at 0% 100%, rgba(255,170,90,0.45), transparent 70%), linear-gradient(180deg, rgba(30,40,110,0.6), rgba(20,25,70,0.5))",
+    "radial-gradient(60% 40% at 0% 100%, rgba(255,170,90,0.4), transparent 70%), linear-gradient(180deg, rgba(30,40,110,0.5), rgba(20,25,70,0.4))",
 };

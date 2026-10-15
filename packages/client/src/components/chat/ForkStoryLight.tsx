@@ -50,7 +50,7 @@ export function ForkStoryLight() {
         <div
           key={entry}
           className="absolute inset-0 mix-blend-soft-light transition-opacity duration-[20000ms] ease-in-out motion-reduce:transition-none"
-          style={{ backgroundImage: STORY_LIGHT_WASH[entry], opacity: entry === shown ? 0.7 : 0 }}
+          style={{ backgroundImage: STORY_LIGHT_WASH[entry], opacity: entry === shown ? STORY_LIGHT_STRENGTH : 0 }}
         />
       ))}
     </div>
@@ -58,3 +58,5 @@ export function ForkStoryLight() {
 }
 
 const FADE_MS = 20_000;
+/** How strongly the wash shows: a hint of the hour, never a haze over the theme. */
+const STORY_LIGHT_STRENGTH = 0.4;

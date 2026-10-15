@@ -891,6 +891,14 @@ contacts, peeking, branches, deletes), then fixed:
   had the phone turned face-down again, the writer receiving the peek block, no console errors or
   sideways overflow at 432×860 in Pink Singularity and Sapphire Nocturne.
 
+### Softer story light
+
+- The time-of-day wash read as a haze over dark themes (70% strength, with a strong flat tint at
+  dawn and golden hour, on top of Marinara's own faint time-of-day tint). It now shows at 40%, with
+  the colour kept in the glow (the low sun at dawn, the warm corner at golden hour, the lamp at
+  night) and the flat tint over the whole screen cut back, so the theme's own background shows
+  through. Seasons were never a tint: they only add a few petals, pollen, leaves or flurries.
+
 ## Upstream files touched
 
 Fork-only code lives in `packages/client/src/lib/fork/`, `Fork*` components, `packages/shared/src/features/fork-bond-shapes.ts`, `packages/server/src/services/import/fork/`
