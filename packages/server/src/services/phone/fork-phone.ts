@@ -168,8 +168,13 @@ export function createPhoneStorage(db: DB) {
     }): Promise<PhoneMessage | null> {
       const body = input.body.trim().slice(0, MAX_PHONE_TEXT);
       if (!body && input.kind !== "call") return null;
-      if ((await messageRows(input.chatId)).length >= MAX_PHONE_MESSAGES_PER_CHAT) return null;
-      const timestamp = now();
+      const existing = await messageRows(input.chatId);
+      if (existing.length >= MAX_PHONE_MESSAGES_PER_CHAT) return null;
+      // Texts sent together (a two-text answer) share a millisecond; order is by time, so each one
+      // gets a time strictly after the last, or they would show out of order.
+      const newest = existing.reduce((latest, row) => (row.createdAt > latest ? row.createdAt : latest), "");
+      const clock = now();
+      const timestamp = clock > newest ? clock : new Date(Date.parse(newest) + 1).toISOString();
       const row: MessageRow = {
         id: newId(),
         threadId: input.threadId,
@@ -201,6 +206,37 @@ export function createPhoneStorage(db: DB) {
       await db
         .update(phoneMessages)
         .set({ body: clean, updatedAt: now() } as never)
+        .where(eq(phoneMessages.id, id));
+      return this.getMessage(id);
+    },
+
+    /**
+     * A text's words changed (your edit, or a fix of theirs). An AI text's shown version changes
+     * with it, so swiping away and back keeps the fix.
+     */
+    async setText(id: string, body: string): Promise<PhoneMessage | null> {
+      const message = await this.getMessage(id);
+      const clean = body.trim().slice(0, MAX_PHONE_TEXT);
+      if (!message || !clean) return null;
+      const swipes = message.swipes.length ? [...message.swipes] : [];
+      if (swipes.length) swipes[Math.min(message.activeSwipe, swipes.length - 1)] = clean;
+      await db
+        .update(phoneMessages)
+        .set({ body: clean, swipes: JSON.stringify(swipes), updatedAt: now() } as never)
+        .where(eq(phoneMessages.id, id));
+      return this.getMessage(id);
+    },
+
+    /** A text's versions after a swipe. */
+    async setVersions(id: string, versions: { swipes: string[]; activeSwipe: number; body: string }) {
+      await db
+        .update(phoneMessages)
+        .set({
+          body: versions.body.slice(0, MAX_PHONE_TEXT),
+          swipes: JSON.stringify(versions.swipes.map((swipe) => swipe.slice(0, MAX_PHONE_TEXT))),
+          activeSwipe: versions.activeSwipe,
+          updatedAt: now(),
+        } as never)
         .where(eq(phoneMessages.id, id));
       return this.getMessage(id);
     },

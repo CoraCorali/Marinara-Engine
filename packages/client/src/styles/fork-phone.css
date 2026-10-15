@@ -491,6 +491,59 @@
   }
 }
 
+/* ── Text tools: fix, edit ── */
+.fork-phone .fp-bubble.is-picked {
+  outline: 2px solid var(--ps-me);
+  outline-offset: 2px;
+}
+.fork-phone .fp-tools {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: 0.5rem;
+  border-top: 1px solid var(--ps-line);
+  font-size: 0.75rem;
+}
+.fork-phone .fp-tools-quote {
+  padding: 0.35rem 0.6rem;
+  border-radius: 0.75rem;
+  background: var(--ps-them);
+  color: var(--ps-them-ink);
+  white-space: pre-wrap;
+  max-height: 6rem;
+  overflow-y: auto;
+}
+.fork-phone .fp-tools-input {
+  min-height: 2rem;
+  padding: 0.35rem 0.6rem;
+  border-radius: 0.75rem;
+  background: var(--ps-them);
+  color: var(--ps-them-ink);
+  outline: none;
+}
+.fork-phone .fp-tools-input::placeholder {
+  color: currentColor;
+  opacity: 0.55;
+}
+.fork-phone .fp-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  min-height: 2rem;
+  padding: 0 0.7rem;
+  border-radius: 999px;
+  border: 1px solid var(--ps-line);
+  font-weight: 700;
+}
+.fork-phone .fp-chip.is-on {
+  background: var(--ps-me);
+  color: var(--ps-me-ink);
+  border-color: transparent;
+}
+.fork-phone .fp-chip:disabled {
+  opacity: 0.45;
+}
+
 /* ── Bling ── */
 .fork-phone .fp-gem {
   position: absolute;

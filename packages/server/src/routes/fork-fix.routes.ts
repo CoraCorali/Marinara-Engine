@@ -11,6 +11,9 @@ import { resolveForkChatProvider } from "../services/generation/fork-chat-provid
 import { buildFixPartMessages, isValidFixRange, readFixPartReply } from "../services/generation/fork-fix-part.js";
 import { isDebugAgentsEnabled } from "../config/runtime-config.js";
 import { logDebugOverride, logger } from "../lib/logger.js";
+// Fork: Pocket Phone — a phone text can be fixed too.
+import { createPhoneStorage, PHONE_PERSONA } from "../services/phone/fork-phone.js";
+import { textItAnswered } from "../services/phone/fork-phone-texts.js";
 
 export async function forkFixRoutes(app: FastifyInstance) {
   const chats = createChatsStorage(app.db);
@@ -26,21 +29,38 @@ export async function forkFixRoutes(app: FastifyInstance) {
       instruction?: unknown;
       avoid?: unknown;
       debugMode?: unknown;
+      phoneMessageId?: unknown;
     };
     const chatId = typeof body.chatId === "string" ? body.chatId : "";
-    const messageId = typeof body.messageId === "string" ? body.messageId : "";
-    const start = typeof body.start === "number" ? body.start : -1;
-    const end = typeof body.end === "number" ? body.end : -1;
+    const phoneMessageId = typeof body.phoneMessageId === "string" ? body.phoneMessageId : "";
+    const messageId = typeof body.messageId === "string" ? body.messageId : phoneMessageId;
     if (!chatId || !messageId) return reply.status(400).send({ error: "chatId and messageId are required" });
 
     const chat = await chats.getById(chatId);
     if (!chat) return reply.status(404).send({ error: "Chat not found" });
-    const message = await chats.getMessage(messageId);
-    if (!message || message.chatId !== chatId) return reply.status(404).send({ error: "Message not found" });
-    if (message.role !== "assistant" && message.role !== "narrator") {
-      return reply.status(400).send({ error: "Only a reply can be fixed this way" });
+    // Fork: the second target, a character's text on the phone: the whole text unless a part is picked.
+    let content: string;
+    let phoneAnswered: string | null = null;
+    if (phoneMessageId) {
+      const phones = createPhoneStorage(app.db);
+      const text = await phones.getMessage(phoneMessageId);
+      if (!text || text.chatId !== chatId) return reply.status(404).send({ error: "Text not found" });
+      if (text.kind !== "text" || text.sender === PHONE_PERSONA) {
+        return reply.status(400).send({ error: "Only their texts can be fixed; yours can be edited" });
+      }
+      content = text.body;
+      const thread = (await phones.listMessages(chatId)).filter((entry) => entry.threadId === text.threadId);
+      phoneAnswered = textItAnswered(text, thread);
+    } else {
+      const message = await chats.getMessage(messageId);
+      if (!message || message.chatId !== chatId) return reply.status(404).send({ error: "Message not found" });
+      if (message.role !== "assistant" && message.role !== "narrator") {
+        return reply.status(400).send({ error: "Only a reply can be fixed this way" });
+      }
+      content = String(message.content ?? "");
     }
-    const content = String(message.content ?? "");
+    const start = typeof body.start === "number" ? body.start : phoneMessageId ? 0 : -1;
+    const end = typeof body.end === "number" ? body.end : phoneMessageId ? content.length : -1;
     if (!isValidFixRange(content, start, end))
       return reply.status(400).send({ error: "That passage is not in the reply" });
     // The reply may have changed since the passage was picked; never rewrite the wrong words.
@@ -52,10 +72,11 @@ export async function forkFixRoutes(app: FastifyInstance) {
     if (!resolved.ok) return reply.status(400).send({ error: resolved.error });
 
     // The writer's turn just before this reply, so the rewrite answers the same thing.
-    const recent = await chats.listMessagePreviews(chatId, 30);
+    const recent = phoneMessageId ? [] : await chats.listMessagePreviews(chatId, 30);
     const index = recent.findIndex((row) => row.id === messageId);
     const previousTurn =
-      index > 0 ? ([...recent.slice(0, index)].reverse().find((row) => row.role === "user")?.content ?? null) : null;
+      phoneAnswered ??
+      (index > 0 ? ([...recent.slice(0, index)].reverse().find((row) => row.role === "user")?.content ?? null) : null);
     const identity = await resolveChatUserIdentity(characters, chat).catch(() => null);
 
     const messages = buildFixPartMessages({

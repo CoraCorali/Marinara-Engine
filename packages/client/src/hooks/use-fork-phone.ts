@@ -279,3 +279,31 @@ export function useContactReply(chatId: string | null) {
     onSettled: () => void qc.invalidateQueries({ queryKey: phoneKeys.chat(chatId) }),
   });
 }
+
+/** Their newest text: another version (`fresh`), or a version by number (`to`). */
+export function useSwipeText(chatId: string | null) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { id: string; to?: number }) =>
+      api.post<PhoneMessage>(`/fork-phone/messages/${input.id}/swipe`, {
+        ...(typeof input.to === "number" ? { to: input.to } : { fresh: true }),
+        debugMode: useUIStore.getState().debugMode,
+      }),
+    onError: failed,
+    onSettled: () => void qc.invalidateQueries({ queryKey: phoneKeys.chat(chatId) }),
+  });
+}
+
+/** A rewrite of their text from Fix this part. Nothing is saved until it is kept. */
+export function useFixText(chatId: string | null) {
+  return useMutation({
+    mutationFn: (input: { id: string; instruction: string }) =>
+      api.post<{ replacement: string }>("/fork-fix/part", {
+        chatId,
+        phoneMessageId: input.id,
+        instruction: input.instruction,
+        debugMode: useUIStore.getState().debugMode,
+      }),
+    onError: failed,
+  });
+}

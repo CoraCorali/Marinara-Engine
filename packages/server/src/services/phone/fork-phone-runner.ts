@@ -18,6 +18,13 @@ import { createPhoneStorage, PHONE_CONTACT, PHONE_PERSONA, type PhoneMessage } f
 import { contactLine, contactWho, phonePromptBlock, phoneSideName } from "./fork-phone-prompt.js";
 import { buildPhoneWriteMessages, readWrittenPhone, readWrittenPhones } from "./fork-phone-peek.js";
 import {
+  applyTextSwipe,
+  buildTextSwipeMessages,
+  canSwipePhoneText,
+  MAX_TEXT_SWIPES,
+  readTextSwipe,
+} from "./fork-phone-texts.js";
+import {
   buildCallLineMessages,
   buildContactReplyMessages,
   buildPhoneAgentMessages,
@@ -764,6 +771,56 @@ export function createPhoneRunner(db: DB) {
           if (message) added.push(message);
         }
         return { added };
+      });
+    },
+
+    /**
+     * Another version of a character's (or contact's) newest text, or back to an earlier one.
+     * Only the newest text in its conversation: older texts were already answered.
+     */
+    async swipeText(chatId: string, messageId: string, change: { to: number } | { fresh: true }, debug: boolean) {
+      return withLock(chatId, async () => {
+        const chat = await getChat(chatId);
+        const message = await phones.getMessage(messageId);
+        if (!message || message.chatId !== chatId) throw new PhoneError("Text not found", 404);
+        const thread = (await phones.listMessages(chatId)).filter((entry) => entry.threadId === message.threadId);
+        if (!canSwipePhoneText(message, thread)) {
+          throw new PhoneError("Only their newest text can be swiped", 400);
+        }
+        if ("to" in change) return phones.setVersions(message.id, applyTextSwipe(message, change));
+        if (message.swipes.length >= MAX_TEXT_SWIPES) throw new PhoneError("That text has enough versions", 400);
+        const people = await cast(chat);
+        const name = people.side(message.sender);
+        const contact = people.contactOf(message.sender);
+        const { text: story } = await storyTranscript(chat, (entry) =>
+          entry.role === "user"
+            ? people.personaName
+            : entry.role === "narrator"
+              ? "Narrator"
+              : people.nameFor(entry.characterId ?? "") || "Character",
+        );
+        const raw = await complete(
+          chat,
+          buildTextSwipeMessages({
+            name,
+            who: contact
+              ? contactWho(contact, people.personaName)
+              : (people.members.find((member) => member.id === message.sender)?.about ?? ""),
+            personaName: people.personaName,
+            story,
+            earlier: thread
+              .filter((entry) => entry.id !== message.id && (entry.kind === "text" || entry.kind === "photo"))
+              .slice(-8)
+              .map((entry) => ({ name: people.side(entry.sender), text: entry.body })),
+            versions: message.swipes.length ? message.swipes : [message.body],
+          }),
+          "text swipe",
+          debug,
+          600,
+        );
+        const fresh = readTextSwipe(raw, name);
+        if (!fresh) throw new PhoneError("The model returned an empty text", 502);
+        return phones.setVersions(message.id, applyTextSwipe(message, { added: fresh }));
       });
     },
 

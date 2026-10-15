@@ -44,6 +44,7 @@ import {
   useDeleteText,
   useForkPhone,
   useMarkThreadRead,
+  useSwipeText,
   useSendText,
   useUpdatePhoneSettings,
   type PhoneCall,
@@ -58,6 +59,7 @@ import { cn } from "../../../lib/utils";
 import { HelpTooltip } from "../../ui/HelpTooltip";
 import { Modal } from "../../ui/Modal";
 import { ForkPhoneShell } from "./ForkPhoneShell";
+import { PhoneBubble, PhoneEditPanel, PhoneFixPanel, SwipeRow, swipeText } from "./ForkPhoneTexts";
 import { useForkPhoneStore } from "../../../stores/fork-phone.store";
 
 export type PhoneCastMember = { id: string; name: string; avatarUrl?: string | null };
@@ -631,6 +633,10 @@ function PhoneThreadView({
     endRef.current?.scrollIntoView({ block: "end" });
   }, [shown.length, replying]);
 
+  const [tool, setTool] = useState<{ kind: "fix" | "edit"; message: PhoneMessage } | null>(null);
+  const swipe = useSwipeText(chatId);
+  const newestId = [...shown].reverse().find((message) => message.kind === "text" || message.kind === "photo")?.id;
+
   const removeText = async (message: PhoneMessage) => {
     if (
       !(await showConfirmDialog({
@@ -706,11 +712,33 @@ function PhoneThreadView({
               </details>
             );
           }
+          const isText = message.kind === "text";
+          // Their newest text swipes like a story reply; long-press fixes theirs or edits yours.
+          const swipeable = isText && !mine && message.id === newestId;
           return (
             <div key={message.id} className={cn("flex flex-col", mine ? "items-end" : "items-start")}>
-              <div className={cn("fp-bubble", mine ? "is-me" : "is-them")}>{message.body}</div>
+              <PhoneBubble
+                className={cn("fp-bubble", mine ? "is-me" : "is-them", tool?.message.id === message.id && "is-picked")}
+                onSwipe={swipeable ? (dx) => swipeText(swipe, message, dx) : undefined}
+                onLongPress={isText ? () => setTool({ kind: mine ? "edit" : "fix", message }) : undefined}
+              >
+                {message.body}
+              </PhoneBubble>
               <span className="fp-time flex items-center gap-1">
                 {message.storyTime || ""}
+                {swipeable && (
+                  <SwipeRow swipe={swipe} message={message} onFix={() => setTool({ kind: "fix", message })} />
+                )}
+                {mine && isText && (
+                  <button
+                    type="button"
+                    onClick={() => setTool({ kind: "edit", message })}
+                    aria-label={localizeUi("ui.chat.forkphone.editText")}
+                    className="flex h-8 w-8 items-center justify-center opacity-80"
+                  >
+                    <PencilLine size="0.6875rem" />
+                  </button>
+                )}
                 {mine && (
                   <button
                     type="button"
@@ -734,7 +762,13 @@ function PhoneThreadView({
         )}
         <div ref={endRef} />
       </div>
-      {left ? (
+      {tool ? (
+        tool.kind === "fix" ? (
+          <PhoneFixPanel chatId={chatId} message={tool.message} onClose={() => setTool(null)} />
+        ) : (
+          <PhoneEditPanel chatId={chatId} message={tool.message} onClose={() => setTool(null)} />
+        )
+      ) : left ? (
         <p className="m-0 border-t border-[var(--ps-line)] p-2 text-center text-[0.6875rem] opacity-75">
           {localizeUi("ui.chat.forkphone.leftChat", { name })}
         </p>

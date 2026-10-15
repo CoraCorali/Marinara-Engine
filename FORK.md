@@ -838,6 +838,31 @@ fields, its own way into the scene, and its own wording for the model.
   outfit question carried across all three. 7–11 s each.
 - Regression: `fork-phone-contacts`.
 
+### Pocket Phone, part 4: swipes and Fix this part on texts
+
+- **Their newest text swipes** like a story reply: drag it left for a new version (it follows your
+  thumb, the same rules and thresholds as story swipes), right to go back. Under it, a small
+  ‹ 1/2 › row does the same with taps (✦ at the end makes a new version), plus a 🪄 to fix it. Only
+  the newest text in the conversation, from a character or a contact; never your own, and never one
+  already answered. A new version is one streamed model call (summary connection, prompt logged in
+  debug) that keeps the moment and the meaning in their voice; up to 12 versions are kept.
+- **Fix this text**: long-press (or right-click) any of their texts, or tap 🪄, to open the fixer in
+  the phone: quick picks (less cliché, more in character, shorter) or your own words, Rewrite, see
+  it, Keep it or Try again. It uses Fix this part's own rewriter with a second target: the fix
+  endpoint takes `phoneMessageId` instead of a story message, fixes the whole text, and is told the
+  text it answered. Nothing is saved until you keep it.
+- **Your own texts** have a ✏️ (and long-press) to edit them. The writer's phone block reads every
+  text as it is now, so an edit or a kept fix is what the story remembers. A kept fix replaces the
+  shown version, so swiping away and back keeps it.
+- **Order fix**: texts sent together (a contact's three-text answer, a written phone) could share a
+  millisecond and show out of order; each new text in a chat now gets a time strictly after the
+  last.
+- Live check (LinkAPI, Jess's newest text): Fable 5.1, Opus 5.5 and Opus 4.6 each wrote a new
+  version in her voice ("okay but the SIGN and the OUTFIT are two separate emergencies and you're
+  only answering the fun one 🪧🪧"), and each fixed it shorter ("still no outfit. three times, K.
+  THREE. sign's its own crisis 🪧"). 4–9 s, one at 43 s.
+- Regression: `fork-phone-texts`.
+
 ## Upstream files touched
 
 Fork-only code lives in `packages/client/src/lib/fork/`, `Fork*` components, `packages/shared/src/features/fork-bond-shapes.ts`, `packages/server/src/services/import/fork/`
@@ -954,6 +979,7 @@ Edits to upstream files are marked with a `Fork:` comment.
 | `packages/client/src/components/chat/ChatRoleplaySurface.tsx`                              | The Peek chip under the reply that left a phone within reach                                      |
 | `packages/server/src/routes/generate.routes.ts`                                            | What you saw on a character's phone, in the phone block                                           |
 | `packages/server/src/routes/generate.routes.ts`                                            | Your phone contacts, in the phone block                                                           |
+| `packages/server/src/routes/fork-fix.routes.ts`                                            | Fix this part takes a phone text as its target                                                    |
 
 ## Known upstream issue kept as is
 

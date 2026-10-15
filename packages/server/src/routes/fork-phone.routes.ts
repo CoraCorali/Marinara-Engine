@@ -138,14 +138,28 @@ export async function forkPhoneRoutes(app: FastifyInstance) {
     return message;
   });
 
-  /** Your own text, corrected; the writer is told the new version. */
+  /**
+   * A text's new words: your own text corrected, or a fix kept for theirs. The writer is told the
+   * new version from then on.
+   */
   app.patch<{ Params: { id: string } }>("/messages/:id", async (req, reply) => {
     const message = await phones.getMessage(req.params.id);
     if (!message) return reply.status(404).send({ error: "Text not found" });
-    if (message.sender !== PHONE_PERSONA) return reply.status(400).send({ error: "Only your own texts can be edited" });
-    const updated = await phones.editMessage(message.id, String(parseRecord(req.body).body ?? ""));
+    if (message.kind !== "text") return reply.status(400).send({ error: "Only a text can be changed" });
+    const updated = await phones.setText(message.id, String(parseRecord(req.body).body ?? ""));
     if (!updated) return reply.status(400).send({ error: "The text is empty" });
     return updated;
+  });
+
+  /** Their newest text: another version ({ fresh: true }), or a version by number ({ to }). */
+  app.post<{ Params: { id: string } }>("/messages/:id/swipe", async (req, reply) => {
+    const body = parseRecord(req.body);
+    const message = await phones.getMessage(req.params.id);
+    if (!message) return reply.status(404).send({ error: "Text not found" });
+    const change = typeof body.to === "number" ? { to: body.to } : { fresh: true as const };
+    return step(reply, message.chatId, "A text swipe", () =>
+      runner.swipeText(message.chatId, message.id, change, debugOf(req.body)),
+    );
   });
 
   app.delete<{ Params: { id: string } }>("/messages/:id", async (req, reply) => {
