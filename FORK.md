@@ -863,6 +863,34 @@ fields, its own way into the scene, and its own wording for the model.
   THREE. sign's its own crisis 🪧"). 4–9 s, one at 43 s.
 - Regression: `fork-phone-texts`.
 
+### Bug sweep after the phone (live)
+
+Found by running the whole thing live through LinkAPI at phone size (story replies, the phone agent,
+contacts, peeking, branches, deletes), then fixed:
+
+- **A stuck model call locked the phone.** LinkAPI left one stream open with no answer; since phone
+  steps take turns per chat, every phone action in that chat (texts, calls, peeks) waited forever
+  until a restart. Phone calls now give up after 2½ minutes (4 for writing a whole phone) with "The
+  model took too long", and chapter recaps after 5.
+- **A failed phone run after a swipe** left the queue and a ringing call pointing at texts it had
+  already taken back; the rewound state is now saved before the model is asked.
+- **What a peek tells the writer**: unsent drafts were reported as seen in the conversation list,
+  though they only show on the Drafts screen. Now the writer hears about drafts, calls or photos
+  only when those screens were opened.
+- **Branches**: a branch copied the source's phone memory as is, so a look at a phone, a queued text
+  or a phone left in reach from after the branch point carried over, and the branch's writer was
+  told about a peek that never happened there. The branch now keeps only what came from its own
+  replies, mapped onto its copies (Marinara writes the branch's metadata after the fork data is
+  copied, so the mapped memory is handed back and written with it). A call's transcript lines also
+  pointed at the source's call card; they now point at the branch's copy.
+- **Lighting cost**: the story light kept five full-screen blend layers over the weather canvas
+  (four invisible). It now keeps only the current one, plus the one fading out during a change, so
+  less is blended on every frame of rain.
+- Checked and fine: a chat with no characters (only contacts, the agent skips quietly), deleting a
+  reply (the AI's texts after it go, yours stay), the phone agent not offering a peek when the story
+  had the phone turned face-down again, the writer receiving the peek block, no console errors or
+  sideways overflow at 432×860 in Pink Singularity and Sapphire Nocturne.
+
 ## Upstream files touched
 
 Fork-only code lives in `packages/client/src/lib/fork/`, `Fork*` components, `packages/shared/src/features/fork-bond-shapes.ts`, `packages/server/src/services/import/fork/`
@@ -980,6 +1008,7 @@ Edits to upstream files are marked with a `Fork:` comment.
 | `packages/server/src/routes/generate.routes.ts`                                            | What you saw on a character's phone, in the phone block                                           |
 | `packages/server/src/routes/generate.routes.ts`                                            | Your phone contacts, in the phone block                                                           |
 | `packages/server/src/routes/fork-fix.routes.ts`                                            | Fix this part takes a phone text as its target                                                    |
+| `packages/server/src/routes/chats.routes.ts`                                               | A branch writes the phone's memory of its own replies                                             |
 
 ## Known upstream issue kept as is
 
