@@ -14,11 +14,12 @@ import { pairsPromptBlock } from "../bonds/fork-bond-pairs.js";
 import { plainMessageText } from "../chapters/fork-chapter-recap.js";
 import { logDebugOverride, logger } from "../../lib/logger.js";
 import { newId } from "../../utils/id-generator.js";
-import { createPhoneStorage, PHONE_PERSONA, type PhoneMessage } from "./fork-phone.js";
-import { phonePromptBlock, phoneSideName } from "./fork-phone-prompt.js";
+import { createPhoneStorage, PHONE_CONTACT, PHONE_PERSONA, type PhoneMessage } from "./fork-phone.js";
+import { contactLine, contactWho, phonePromptBlock, phoneSideName } from "./fork-phone-prompt.js";
 import { buildPhoneWriteMessages, readWrittenPhone, readWrittenPhones } from "./fork-phone-peek.js";
 import {
   buildCallLineMessages,
+  buildContactReplyMessages,
   buildPhoneAgentMessages,
   cleanSpokenLine,
   dueQueueItems,
@@ -27,6 +28,7 @@ import {
   phoneSideResolver,
   planIdleDelivery,
   planPhoneRun,
+  readContactReply,
   readPhoneAgentAnswer,
   readPhoneRunState,
   rewindPhoneRun,
@@ -72,6 +74,8 @@ const STORY_MESSAGES = 8;
 const STORY_MESSAGE_CHARS = 1200;
 const OTHER_THREAD_LINES = 4;
 const CALL_LINES_MAX = 60;
+/** Texts of a contact conversation the contact's answer is written from. */
+const CONTACT_TEXTS = 12;
 
 /** One phone run per chat at a time; a second reply's run waits its turn. */
 const chatLocks = new Map<string, Promise<unknown>>();
@@ -110,7 +114,15 @@ export function createPhoneRunner(db: DB) {
     const identity = await resolveChatUserIdentity(characters, chat).catch(() => null);
     const personaName = identity?.name?.trim() || "User";
     const nameFor = (id: string) => members.find((member) => member.id === id)?.name ?? "";
-    return { members, personaName, nameFor, side: (side: string) => phoneSideName(side, personaName, nameFor) };
+    const contacts = readForkPhoneSettings(parseRecord(chat.metadata)).contacts;
+    return {
+      members,
+      personaName,
+      nameFor,
+      contacts,
+      contactOf: (side: string) => contacts.find((contact) => `${PHONE_CONTACT}${contact.name}` === side),
+      side: (side: string) => phoneSideName(side, personaName, nameFor),
+    };
   }
 
   async function provider(chat: ChatRow) {
@@ -406,6 +418,7 @@ export function createPhoneRunner(db: DB) {
           ? `${people.side(state.call.from)} is ${state.call.state === "ringing" ? `calling ${people.personaName} right now (ringing)` : `on a call with ${people.personaName}`}.`
           : "";
         const prompt = buildPhoneAgentMessages({
+          contacts: people.contacts.map(contactLine),
           personaName: people.personaName,
           // No one listed as present means the world state is not tracking it, not that everyone left.
           cast: people.members.map((member) => ({
@@ -438,7 +451,15 @@ export function createPhoneRunner(db: DB) {
           call,
         });
         const raw = await complete(chat, prompt, "agent", debug, 1500);
-        const answer = readPhoneAgentAnswer(raw, phoneSideResolver(people.personaName, people.members));
+        const answer = readPhoneAgentAnswer(
+          raw,
+          phoneSideResolver(
+            people.personaName,
+            people.members,
+            people.contacts.map((contact) => contact.name),
+          ),
+          new Set(people.contacts.map((contact) => `${PHONE_CONTACT}${contact.name}`)),
+        );
         const plan = planPhoneRun({ state, answer, replyId, day: where.date, owed, newId });
         plan.state.reachable = answer.reachable.length ? { reply: replyId, ids: answer.reachable } : null;
         // The phone may have been switched off while the agent was thinking.
@@ -525,7 +546,9 @@ export function createPhoneRunner(db: DB) {
         const state = readPhoneRunState(meta);
         if (state.call) throw new PhoneError("You are already on a call", 400);
         const people = await cast(chat);
-        if (!people.members.some((member) => member.id === to)) throw new PhoneError("Who are you calling?", 400);
+        if (!people.members.some((member) => member.id === to) && !people.contactOf(to)) {
+          throw new PhoneError("Who are you calling?", 400);
+        }
         const [latest] = (await chats.listMessagePreviews(chatId, 1)) as { id: string }[];
         const where = await scene(chatId);
         const thread = await phones.ensureThread(chatId, PHONE_PERSONA, to);
@@ -583,6 +606,10 @@ export function createPhoneRunner(db: DB) {
           chat,
           buildCallLineMessages({
             characterName,
+            who: (() => {
+              const contact = people.contactOf(state.call.from);
+              return contact ? contactWho(contact, people.personaName) : undefined;
+            })(),
             about: state.call.about,
             personaName: people.personaName,
             story,
@@ -673,6 +700,70 @@ export function createPhoneRunner(db: DB) {
         peek.at = new Date().toISOString();
         await saveState(chatId, state);
         return { success: true };
+      });
+    },
+
+    /**
+     * A contact answers your texts: one to three texts in their voice. They were not in the
+     * scenes, so they are told only your conversation, with the story for tone.
+     */
+    async contactReply(chatId: string, name: string, debug: boolean) {
+      return withLock(chatId, async () => {
+        const chat = await getChat(chatId);
+        const meta = parseRecord(chat.metadata);
+        if (!readForkPhoneSettings(meta).on) throw new PhoneError("The phone is off for this chat", 400);
+        const people = await cast(chat);
+        const side = `${PHONE_CONTACT}${name}`;
+        const contact = people.contactOf(side);
+        if (!contact) throw new PhoneError("That contact is not in your phone", 404);
+        const thread = await phones.ensureThread(chatId, PHONE_PERSONA, side);
+        const texts = (await phones.listMessages(chatId)).filter(
+          (message) => message.threadId === thread.id && (message.kind === "text" || message.kind === "photo"),
+        );
+        const last = texts[texts.length - 1];
+        // Only when your text is the newest: they have nothing to answer otherwise.
+        if (!last || last.sender !== PHONE_PERSONA) return { added: [] as PhoneMessage[] };
+        const { text: story } = await storyTranscript(chat, (message) =>
+          message.role === "user"
+            ? people.personaName
+            : message.role === "narrator"
+              ? "Narrator"
+              : people.nameFor(message.characterId ?? "") || "Character",
+        );
+        const where = await scene(chatId);
+        const raw = await complete(
+          chat,
+          buildContactReplyMessages({
+            name: contact.name,
+            who: contactWho(contact, people.personaName),
+            personaName: people.personaName,
+            storyTime: where.time,
+            story,
+            texts: texts
+              .slice(-CONTACT_TEXTS)
+              .map((text) => ({ name: people.side(text.sender), text: text.body, time: text.storyTime })),
+          }),
+          "contact reply",
+          debug,
+          800,
+        );
+        const added: PhoneMessage[] = [];
+        for (const body of readContactReply(raw)) {
+          const message = await phones.addMessage({
+            chatId,
+            threadId: thread.id,
+            sender: side,
+            body,
+            storyTime: where.time,
+            // Shown in the chat with your text, after the same story message.
+            // ponytail: a swipe of that story message takes the answer back, like any AI text after
+            // it, while your text stays; the next text you send gets a fresh answer.
+            afterMessageId: last.afterMessageId,
+            source: "agent",
+          });
+          if (message) added.push(message);
+        }
+        return { added };
       });
     },
 

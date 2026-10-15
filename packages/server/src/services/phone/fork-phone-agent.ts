@@ -220,7 +220,12 @@ export type PhoneAgentAnswer = {
 };
 
 /** Who a name in the agent's answer is: the persona, a card character's id, or a side contact. */
-export function phoneSideResolver(personaName: string, cast: readonly { id: string; name: string }[]) {
+export function phoneSideResolver(
+  personaName: string,
+  cast: readonly { id: string; name: string }[],
+  /** Your saved contacts' names, matched whatever their case. */
+  contacts: readonly string[] = [],
+) {
   const persona = personaName.trim().toLowerCase();
   return (raw: unknown): string => {
     const name = str(raw, 60);
@@ -229,6 +234,8 @@ export function phoneSideResolver(personaName: string, cast: readonly { id: stri
     if (lower === persona || ["you", "user", "persona", "{{user}}"].includes(lower)) return PHONE_PERSONA;
     const exact = cast.find((member) => member.name.trim().toLowerCase() === lower);
     if (exact) return exact.id;
+    const saved = contacts.find((contact) => contact.toLowerCase() === lower);
+    if (saved) return `${PHONE_CONTACT}${saved}`;
     // "Theo" for "Theo Marchetti", and the other way round.
     const first = cast.find((member) => {
       const own = member.name.trim().toLowerCase();
@@ -239,7 +246,12 @@ export function phoneSideResolver(personaName: string, cast: readonly { id: stri
 }
 
 /** The agent's JSON, with names turned into sides. Anything malformed is left out. */
-export function readPhoneAgentAnswer(raw: string, sideFor: (name: unknown) => string): PhoneAgentAnswer {
+export function readPhoneAgentAnswer(
+  raw: string,
+  sideFor: (name: unknown) => string,
+  /** Your saved contacts (as sides): they may text you too. */
+  contactSides: ReadonlySet<string> = new Set(),
+): PhoneAgentAnswer {
   const empty: PhoneAgentAnswer = { texts: [], calls: [], threads: [], drafts: [], send: [], drop: [], reachable: [] };
   const start = raw.indexOf("{");
   const end = raw.lastIndexOf("}");
@@ -263,7 +275,7 @@ export function readPhoneAgentAnswer(raw: string, sideFor: (name: unknown) => st
     texts: list(parsed.texts)
       .map(record)
       .map((item) => ({ from: sideFor(item.from), body: str(item.body), ...timing(item) }))
-      .filter((item) => isCast(item.from) && item.body),
+      .filter((item) => (isCast(item.from) || contactSides.has(item.from)) && item.body),
     calls: list(parsed.calls)
       .map(record)
       .map((item) => ({
@@ -438,6 +450,8 @@ export type PhoneAgentContext = {
   owed: string[];
   queue: { id: string; who: string; kind: string; body: string; status: string }[];
   call: string;
+  /** The persona's own contacts: "Mom (family): worries a lot". */
+  contacts?: string[];
 };
 
 /**
@@ -458,6 +472,9 @@ export function buildPhoneAgentMessages(context: PhoneAgentContext): { role: "us
     `Only ${persona} (the user's character) and these card characters have phones:`,
     ...castLines,
     "Anyone else (Mom, a coworker, a supplier) is a side contact who exists only inside a card character's phone.",
+    context.contacts?.length
+      ? `${persona}'s own contacts (people with no card, who can text ${persona} too, rarely, about their own lives or what ${persona} told them; they only know what ${persona} has told them):\n${context.contacts.map((line) => `- ${line}`).join("\n")}`
+      : "",
     context.cast.some((member) => member.present === null) ? "Judge from the story who is in the scene." : "",
     "",
     `Story time: ${[context.date, context.time].filter(Boolean).join(", ") || "unknown"}. Place: ${context.location || "unknown"}.`,
@@ -490,6 +507,8 @@ export function buildPhoneAgentMessages(context: PhoneAgentContext): { role: "us
 /** One turn: the character's next line on a call, nothing else. */
 export function buildCallLineMessages(input: {
   characterName: string;
+  /** Who they are, for a contact with no card: "Kyli's family: worries a lot". */
+  who?: string;
   about: string;
   personaName: string;
   story: string;
@@ -501,10 +520,13 @@ export function buildCallLineMessages(input: {
       role: "user",
       content: [
         `${input.characterName} is on a phone call with ${persona} in an ongoing roleplay story.${input.about ? ` The call is about: ${input.about}.` : ""}`,
+        input.who ? `${input.characterName} is ${input.who}. They only know what ${persona} has told them.` : "",
         `\nThe latest story (oldest first):\n${input.story || "(nothing yet)"}`,
         `\nThe call so far:\n${input.lines.map((line) => `${line.name}: ${line.text}`).join("\n") || "(just picked up)"}`,
         `\nWrite ${input.characterName}'s next spoken line only, in their own voice: one to three short sentences, the way people talk on the phone. No narration, no name label, no quotation marks. Never write ${persona}'s words.`,
-      ].join("\n"),
+      ]
+        .filter(Boolean)
+        .join("\n"),
     },
   ];
 }
@@ -516,4 +538,54 @@ export function cleanSpokenLine(raw: string, name: string): string {
   if (line.toLowerCase().startsWith(label.toLowerCase())) line = line.slice(label.length).trim();
   if (/^["“].*["”]$/s.test(line)) line = line.slice(1, -1).trim();
   return line.slice(0, MAX_AGENT_TEXT);
+}
+
+/**
+ * A contact's answer to your texts. They were not in the story's scenes: they know only what you
+ * have told them, plus their own life.
+ */
+export function buildContactReplyMessages(input: {
+  name: string;
+  /** "Kyli's family: worries a lot, texts in all caps". */
+  who: string;
+  personaName: string;
+  storyTime: string;
+  story: string;
+  texts: { name: string; text: string; time: string }[];
+}): { role: "user"; content: string }[] {
+  const persona = input.personaName || "the user's character";
+  return [
+    {
+      role: "user",
+      content: [
+        `${input.name} is ${input.who}, texting with ${persona} in an ongoing roleplay story. ${input.name} has no part in the story's scenes and knows only what ${persona} has told them, plus their own life.`,
+        input.storyTime ? `Story time now: ${input.storyTime}.` : "",
+        `\nWhat is happening in ${persona}'s story (for tone only; ${input.name} was not there):\n${input.story || "(nothing yet)"}`,
+        `\nTheir texts so far (oldest first):\n${input.texts.map((text) => `- ${text.time ? `[${text.time}] ` : ""}${text.name}: ${text.text}`).join("\n")}`,
+        `\nWrite ${input.name}'s reply: one to three short texts in their own voice, the way they would really text ${persona}. No narration, no quotation marks. Never write ${persona}'s texts.`,
+        'Reply with JSON only: {"texts":["text","text"]}',
+      ]
+        .filter(Boolean)
+        .join("\n"),
+    },
+  ];
+}
+
+/** The contact's texts, from JSON or, failing that, one text per line. At most three. */
+export function readContactReply(raw: string): string[] {
+  const start = raw.indexOf("{");
+  const end = raw.lastIndexOf("}");
+  let texts: unknown[] = [];
+  if (start >= 0 && end > start) {
+    try {
+      texts = list(record(JSON.parse(raw.slice(start, end + 1))).texts);
+    } catch {
+      texts = [];
+    }
+  }
+  if (texts.length === 0 && start < 0) texts = raw.split(/\n+/);
+  return texts
+    .map((text) => str(text).replace(/^["“]|["”]$/g, ""))
+    .filter(Boolean)
+    .slice(0, 3);
 }

@@ -31,11 +31,63 @@ export type ForkPhoneLook = {
   wallpaper: string;
 };
 
+/** What a contact is to you, like the label on a real phone's contact card. */
+export const FORK_PHONE_RELATIONS = ["family", "bestFriend", "closeFriend", "friend", "other"] as const;
+export type ForkPhoneRelation = (typeof FORK_PHONE_RELATIONS)[number];
+
+/** How the models are told each label. */
+export const FORK_PHONE_RELATION_WORDS: Record<ForkPhoneRelation, string> = {
+  family: "family",
+  bestFriend: "best friend",
+  closeFriend: "close friend",
+  friend: "friend",
+  other: "contact",
+};
+
+/**
+ * Someone in your phone who is not a card character: Mom, a coworker, an ex. They have no phone of
+ * their own; you text them and the AI answers as them.
+ */
+export type ForkPhoneContact = {
+  name: string;
+  relation: ForkPhoneRelation;
+  /** Who they are, in your words, for the AI ("my mom, worries a lot, texts in all caps"). */
+  note: string;
+};
+
+export const MAX_FORK_PHONE_CONTACTS = 30;
+export const MAX_FORK_PHONE_CONTACT_NOTE = 300;
+
 export type ForkPhoneSettings = ForkPhoneLook & {
   on: boolean;
   /** Each character's phone look, by character id (the AI picks one, you can change it). */
   characterLooks: Record<string, Partial<ForkPhoneLook>>;
+  /** Your contacts, oldest first. */
+  contacts: ForkPhoneContact[];
 };
+
+/** A contact's name as stored: single spaces, at most 60 characters. */
+export function forkPhoneContactName(raw: unknown): string {
+  return typeof raw === "string" ? raw.replace(/\s+/g, " ").trim().slice(0, 60) : "";
+}
+
+export function normalizeForkPhoneContacts(raw: unknown): ForkPhoneContact[] {
+  const contacts: ForkPhoneContact[] = [];
+  for (const entry of Array.isArray(raw) ? raw : []) {
+    const input = entry && typeof entry === "object" ? (entry as Record<string, unknown>) : {};
+    const name = forkPhoneContactName(input.name);
+    // Names are unique whatever their case, since a contact's thread is found by name.
+    if (!name || contacts.some((contact) => contact.name.toLowerCase() === name.toLowerCase())) continue;
+    contacts.push({
+      name,
+      relation: (FORK_PHONE_RELATIONS as readonly string[]).includes(input.relation as string)
+        ? (input.relation as ForkPhoneRelation)
+        : "other",
+      note: typeof input.note === "string" ? input.note.trim().slice(0, MAX_FORK_PHONE_CONTACT_NOTE) : "",
+    });
+  }
+  return contacts.slice(0, MAX_FORK_PHONE_CONTACTS);
+}
 
 export const DEFAULT_FORK_PHONE_LOOK: ForkPhoneLook = {
   skin: "slider",
@@ -80,5 +132,10 @@ export function readForkPhoneSettings(metadata: Record<string, unknown> | null |
       looks[id] = normalizeForkPhoneLook(look);
     }
   }
-  return { ...normalizeForkPhoneLook(raw), on: raw.on === true, characterLooks: looks };
+  return {
+    ...normalizeForkPhoneLook(raw),
+    on: raw.on === true,
+    characterLooks: looks,
+    contacts: normalizeForkPhoneContacts(raw.contacts),
+  };
 }

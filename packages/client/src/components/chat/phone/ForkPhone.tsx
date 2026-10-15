@@ -7,18 +7,35 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Loader2, Palette, Phone, PhoneOff, SendHorizontal, Smartphone, Trash2 } from "lucide-react";
+import {
+  ArrowLeft,
+  Loader2,
+  Palette,
+  PencilLine,
+  Phone,
+  PhoneOff,
+  SendHorizontal,
+  Smartphone,
+  Trash2,
+  UserPlus,
+} from "lucide-react";
 import { useTranslation as useUiTranslation } from "react-i18next";
 import {
   DEFAULT_FORK_PHONE_LOOK,
   FORK_PHONE_COLORS,
+  FORK_PHONE_RELATIONS,
   FORK_PHONE_SKINS,
+  type ForkPhoneContact,
+  type ForkPhoneRelation,
   type ForkPhoneLook,
   type ForkPhoneSkin,
 } from "@marinara-engine/shared";
 import {
+  PHONE_CONTACT,
   PHONE_PERSONA,
   callMinutes,
+  useContactReply,
+  useContacts,
   deliverIdlePhone,
   otherSide,
   phoneNames,
@@ -50,7 +67,13 @@ const CHIP =
 const CHIP_ON = "border-[var(--primary)] bg-[var(--primary)] text-[var(--primary-foreground)]";
 const CHIP_OFF = "border-[var(--border)] text-foreground/85 hover:bg-foreground/10";
 
-type View = { name: "home" } | { name: "thread"; to: string } | { name: "look" } | { name: "call" };
+type View =
+  | { name: "home" }
+  | { name: "thread"; to: string }
+  | { name: "look" }
+  | { name: "call" }
+  /** A new contact, or changing one (by name). */
+  | { name: "contact"; edit?: string };
 
 /**
  * Texts waiting to arrive come in after this long in the chat without writing.
@@ -279,14 +302,28 @@ export function ForkPhoneApp({
   const caseKeys = look.skin === "candybar" && look.keys === "qwerty";
   const nameOf = phoneNameOf(cast, personaName, data?.names);
   const inCast = (side: string) => cast.some((member) => member.id === side);
+  const contacts = data?.settings.contacts ?? [];
+  const contactOf = (side: string) => contacts.find((contact) => PHONE_CONTACT + contact.name === side);
+  const reply = useContactReply(chatId);
 
   const threadFor = (to: string): PhoneThread | undefined =>
     data?.threads.find(
       (thread) => (thread.a === PHONE_PERSONA && thread.b === to) || (thread.b === PHONE_PERSONA && thread.a === to),
     );
   const sendDraft = () => {
-    if (view.name !== "thread" || !inCast(view.to) || !draft.trim() || send.isPending) return;
-    send.mutate({ to: view.to, body: draft }, { onSuccess: () => setDraft("") });
+    if (view.name !== "thread" || !draft.trim() || send.isPending) return;
+    const contact = contactOf(view.to);
+    if (!inCast(view.to) && !contact) return;
+    send.mutate(
+      { to: view.to, body: draft },
+      {
+        onSuccess: () => {
+          setDraft("");
+          // A contact answers right away; a card character answers through the story's phone agent.
+          if (contact) reply.mutate(contact.name);
+        },
+      },
+    );
   };
   const sayLine = () => {
     if (!call || !callLine.trim() || callAction.isPending) return;
@@ -310,10 +347,12 @@ export function ForkPhoneApp({
           threads={data?.threads ?? []}
           nameOf={nameOf}
           threadFor={threadFor}
+          contacts={contacts}
+          onNewContact={() => setView({ name: "contact" })}
           onOpen={(to) => setView({ name: "thread", to })}
           onLook={() => setView({ name: "look" })}
           call={call}
-          callName={call ? (cast.find((member) => member.id === call.from)?.name ?? call.from) : ""}
+          callName={call ? nameOf(call.from) : ""}
           onCall={() => setView({ name: "call" })}
         />
       )}
@@ -323,7 +362,10 @@ export function ForkPhoneApp({
           to={view.to}
           member={cast.find((member) => member.id === view.to)}
           name={nameOf(view.to)}
-          left={!inCast(view.to)}
+          left={!inCast(view.to) && !contactOf(view.to)}
+          contact={contactOf(view.to)}
+          onEditContact={() => setView({ name: "contact", edit: contactOf(view.to)?.name })}
+          replying={reply.isPending}
           caseKeys={caseKeys}
           personaName={personaName}
           thread={threadFor(view.to)}
@@ -335,7 +377,7 @@ export function ForkPhoneApp({
           sending={send.isPending}
           onBack={() => setView({ name: "home" })}
           onCall={
-            inCast(view.to) && !data?.call
+            (inCast(view.to) || contactOf(view.to)) && !data?.call
               ? () => callAction.mutate({ action: "call", to: view.to }, { onSuccess: () => setView({ name: "call" }) })
               : undefined
           }
@@ -348,6 +390,7 @@ export function ForkPhoneApp({
           chatId={chatId}
           call={call}
           member={call ? cast.find((member) => member.id === call.from) : undefined}
+          name={call ? nameOf(call.from) : ""}
           personaName={personaName}
           messages={data?.messages ?? []}
           line={callLine}
@@ -359,6 +402,13 @@ export function ForkPhoneApp({
         />
       )}
       {view.name === "look" && <PhoneLook chatId={chatId} look={look} onBack={() => setView({ name: "home" })} />}
+      {view.name === "contact" && (
+        <ContactForm
+          chatId={chatId}
+          contact={view.edit ? contacts.find((contact) => contact.name === view.edit) : undefined}
+          onDone={(name) => setView(name ? { name: "thread", to: PHONE_CONTACT + name } : { name: "home" })}
+        />
+      )}
     </div>
   );
 
@@ -399,6 +449,8 @@ function PhoneHome({
   threads,
   nameOf,
   threadFor,
+  contacts,
+  onNewContact,
   onOpen,
   onLook,
   call,
@@ -410,6 +462,8 @@ function PhoneHome({
   threads: readonly PhoneThread[];
   nameOf: (side: string) => string;
   threadFor: (to: string) => PhoneThread | undefined;
+  contacts: readonly ForkPhoneContact[];
+  onNewContact: () => void;
   onOpen: (to: string) => void;
   onLook: () => void;
   call: PhoneCall | null;
@@ -423,7 +477,14 @@ function PhoneHome({
     .map((thread) => otherSide(thread))
     .filter((side) => !side.startsWith("contact:") && !cast.some((member) => member.id === side))
     .map((side) => ({ id: side, name: nameOf(side), left: true }));
-  const rows = [...cast.map((member) => ({ ...member, left: false })), ...former]
+  type Row = PhoneCastMember & { left: boolean; relation?: ForkPhoneRelation };
+  const people: Row[] = contacts.map((contact) => ({
+    id: PHONE_CONTACT + contact.name,
+    name: contact.name,
+    left: false,
+    relation: contact.relation,
+  }));
+  const rows = ([...cast.map((member) => ({ ...member, left: false })), ...people, ...former] as Row[])
     .map((member) => {
       const thread = threadFor(member.id);
       const own = thread ? messages.filter((message) => message.threadId === thread.id) : [];
@@ -437,6 +498,9 @@ function PhoneHome({
     <>
       <div className="fp-bar">
         <span className="flex-1">{localizeUi("ui.chat.forkphone.messages")}</span>
+        <button type="button" onClick={onNewContact} aria-label={localizeUi("ui.chat.forkphone.newContact")}>
+          <UserPlus size="0.875rem" />
+        </button>
         <button type="button" onClick={onLook} aria-label={localizeUi("ui.chat.forkphone.look")}>
           <Palette size="0.875rem" />
         </button>
@@ -462,8 +526,13 @@ function PhoneHome({
           >
             <Avatar member={member} />
             <span className="min-w-0 flex-1">
-              <span className="block truncate text-[0.8125rem] font-bold">
-                {member.left ? localizeUi("ui.chat.forkphone.leftName", { name: member.name }) : member.name}
+              <span className="flex min-w-0 items-center gap-1.5">
+                <span className="truncate text-[0.8125rem] font-bold">
+                  {member.left ? localizeUi("ui.chat.forkphone.leftName", { name: member.name }) : member.name}
+                </span>
+                {member.relation && (
+                  <span className="fp-tag">{localizeUi(`ui.chat.forkphone.relation.${member.relation}`)}</span>
+                )}
               </span>
               <span className="block truncate text-[0.6875rem] opacity-75">
                 {last
@@ -478,6 +547,12 @@ function PhoneHome({
             {unread > 0 && <span className="fp-unread" aria-label={localizeUi("ui.chat.forkphone.unread")} />}
           </button>
         ))}
+        <button type="button" className="fp-row fp-row-add" onClick={onNewContact}>
+          <UserPlus size="0.875rem" className="shrink-0" />
+          <span className="min-w-0 flex-1 truncate text-[0.8125rem] font-bold">
+            {localizeUi("ui.chat.forkphone.newContact")}
+          </span>
+        </button>
       </div>
     </>
   );
@@ -489,6 +564,9 @@ function PhoneThreadView({
   member,
   name,
   left,
+  contact,
+  onEditContact,
+  replying,
   caseKeys,
   personaName,
   thread,
@@ -510,6 +588,11 @@ function PhoneThreadView({
   name: string;
   /** They left the chat: the thread can be read but not written to. */
   left: boolean;
+  /** One of your contacts (not a card character). */
+  contact?: ForkPhoneContact;
+  onEditContact: () => void;
+  /** A contact is writing back. */
+  replying: boolean;
   /** The case's own keys do the typing. */
   caseKeys: boolean;
   personaName: string;
@@ -546,7 +629,7 @@ function PhoneThreadView({
   }, [thread?.id, unread]);
   useEffect(() => {
     endRef.current?.scrollIntoView({ block: "end" });
-  }, [shown.length]);
+  }, [shown.length, replying]);
 
   const removeText = async (message: PhoneMessage) => {
     if (
@@ -569,6 +652,18 @@ function PhoneThreadView({
         </button>
         <Avatar member={member ?? { id: to, name }} />
         <span className="min-w-0 flex-1 truncate">{name}</span>
+        {contact && (
+          <>
+            <span className="fp-tag">{localizeUi(`ui.chat.forkphone.relation.${contact.relation}`)}</span>
+            <button
+              type="button"
+              onClick={onEditContact}
+              aria-label={localizeUi("ui.chat.forkphone.editContact", { name })}
+            >
+              <PencilLine size="0.875rem" />
+            </button>
+          </>
+        )}
         {onCall && (
           <button
             type="button"
@@ -630,6 +725,13 @@ function PhoneThreadView({
             </div>
           );
         })}
+        {replying && (
+          <div className="fp-bubble is-them fp-typing" aria-label={localizeUi("ui.chat.forkphone.typing", { name })}>
+            <i />
+            <i />
+            <i />
+          </div>
+        )}
         <div ref={endRef} />
       </div>
       {left ? (
@@ -687,6 +789,7 @@ function PhoneCallView({
   chatId,
   call,
   member,
+  name,
   personaName,
   messages,
   line,
@@ -699,6 +802,7 @@ function PhoneCallView({
   chatId: string;
   call: PhoneCall | null;
   member?: PhoneCastMember;
+  name: string;
   personaName: string;
   messages: readonly PhoneMessage[];
   line: string;
@@ -718,14 +822,13 @@ function PhoneCallView({
   useEffect(() => {
     endRef.current?.scrollIntoView({ block: "end" });
   }, [lines.length, saying]);
-  const name = member?.name ?? call?.from ?? "";
   return (
     <>
       <div className="fp-bar">
         <button type="button" onClick={onBack} aria-label={localizeUi("ui.chat.forkphone.back")}>
           <ArrowLeft size="0.875rem" />
         </button>
-        <Avatar member={member} />
+        <Avatar member={member ?? { id: call?.from ?? "", name }} />
         <span className="min-w-0 flex-1 truncate">
           {call ? localizeUi("ui.chat.forkphone.onCall", { name }) : localizeUi("ui.chat.forkphone.callEnded")}
         </span>
@@ -786,6 +889,123 @@ function PhoneCallView({
           </button>
         </div>
       )}
+    </>
+  );
+}
+
+/** Adding a contact, or changing what they are to you. Their name stays once saved. */
+function ContactForm({
+  chatId,
+  contact,
+  onDone,
+}: {
+  chatId: string;
+  contact?: ForkPhoneContact;
+  /** Back to their conversation (a name), or home. */
+  onDone: (name?: string) => void;
+}) {
+  const { t: localizeUi } = useUiTranslation();
+  const { add, edit, remove } = useContacts(chatId);
+  const [name, setName] = useState(contact?.name ?? "");
+  const [relation, setRelation] = useState<ForkPhoneRelation>(contact?.relation ?? "friend");
+  const [note, setNote] = useState(contact?.note ?? "");
+  const busy = add.isPending || edit.isPending || remove.isPending;
+  const save = () => {
+    if (!name.trim() || busy) return;
+    const input = { name: name.trim(), relation, note };
+    if (contact) edit.mutate(input, { onSuccess: () => onDone(contact.name) });
+    else add.mutate(input, { onSuccess: () => onDone(input.name.replace(/\s+/g, " ")) });
+  };
+  const removeContact = async () => {
+    if (!contact) return;
+    if (
+      !(await showConfirmDialog({
+        title: localizeUi("ui.chat.forkphone.deleteContact", { name: contact.name }),
+        message: localizeUi("ui.chat.forkphone.deleteContactBody", { name: contact.name }),
+        confirmLabel: localizeUi("ui.chat.forkphone.delete"),
+        chatStyle: true,
+      }))
+    )
+      return;
+    remove.mutate(contact.name, { onSuccess: () => onDone() });
+  };
+  return (
+    <>
+      <div className="fp-bar">
+        <button type="button" onClick={() => onDone(contact?.name)} aria-label={localizeUi("ui.chat.forkphone.back")}>
+          <ArrowLeft size="0.875rem" />
+        </button>
+        <span className="flex-1">
+          {localizeUi(contact ? "ui.chat.forkphone.editContactTitle" : "ui.chat.forkphone.newContact")}
+        </span>
+        <HelpTooltip
+          buttonClassName="-m-2 p-2"
+          text={localizeUi("ui.chat.forkphone.contactHelp")}
+          side="bottom"
+          wide
+          size="0.8125rem"
+        />
+      </div>
+      <div className="fp-scroll">
+        <div className="flex flex-col gap-2 rounded-xl bg-[var(--card)] p-2 text-[0.75rem] text-foreground">
+          <label className="flex flex-col gap-1 font-bold">
+            {localizeUi("ui.chat.forkphone.contactName")}
+            <input
+              value={name}
+              disabled={Boolean(contact)}
+              maxLength={60}
+              onChange={(event) => setName(event.target.value)}
+              placeholder={localizeUi("ui.chat.forkphone.contactNamePlaceholder")}
+              className="min-h-9 rounded-lg border border-[var(--border)] bg-[var(--secondary)] px-2 font-normal disabled:opacity-70"
+            />
+          </label>
+          <p className="m-0 font-bold">{localizeUi("ui.chat.forkphone.contactRelation")}</p>
+          <div className="flex flex-wrap gap-1.5">
+            {FORK_PHONE_RELATIONS.map((option) => (
+              <button
+                key={option}
+                type="button"
+                onClick={() => setRelation(option)}
+                aria-pressed={relation === option}
+                className={cn(CHIP, relation === option ? CHIP_ON : CHIP_OFF)}
+              >
+                {localizeUi(`ui.chat.forkphone.relation.${option}`)}
+              </button>
+            ))}
+          </div>
+          <label className="flex flex-col gap-1 font-bold">
+            {localizeUi("ui.chat.forkphone.contactNote")}
+            <textarea
+              value={note}
+              rows={3}
+              maxLength={300}
+              onChange={(event) => setNote(event.target.value)}
+              placeholder={localizeUi("ui.chat.forkphone.contactNotePlaceholder")}
+              className="fork-keep-size resize-none rounded-lg border border-[var(--border)] bg-[var(--secondary)] p-2 font-normal"
+            />
+          </label>
+          <button
+            type="button"
+            onClick={save}
+            disabled={!name.trim() || busy}
+            className="flex min-h-9 items-center justify-center gap-1.5 rounded-xl bg-[var(--primary)] font-semibold text-[var(--primary-foreground)] disabled:opacity-50"
+          >
+            {(add.isPending || edit.isPending) && <Loader2 size="0.875rem" className="animate-spin" />}
+            {localizeUi("ui.chat.forkphone.saveContact")}
+          </button>
+          {contact && (
+            <button
+              type="button"
+              onClick={() => void removeContact()}
+              disabled={busy}
+              className="flex min-h-9 items-center justify-center gap-1.5 rounded-xl border border-[var(--border)] font-semibold text-foreground/80"
+            >
+              <Trash2 size="0.8125rem" />
+              {localizeUi("ui.chat.forkphone.deleteContact", { name: contact.name })}
+            </button>
+          )}
+        </div>
+      </div>
     </>
   );
 }

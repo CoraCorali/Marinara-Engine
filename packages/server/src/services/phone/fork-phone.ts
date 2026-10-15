@@ -236,6 +236,16 @@ export function createPhoneStorage(db: DB) {
       return removed;
     },
 
+    /** A whole conversation and its thread (a deleted contact). */
+    async removeThread(threadId: string): Promise<void> {
+      const rows = (await db
+        .select()
+        .from(phoneMessages)
+        .where(eq(phoneMessages.threadId, threadId))) as unknown as MessageRow[];
+      for (const row of rows) await db.delete(phoneMessages).where(eq(phoneMessages.id, row.id));
+      await db.delete(phoneThreads).where(eq(phoneThreads.id, threadId));
+    },
+
     async removeChat(chatId: string): Promise<void> {
       for (const row of await messageRows(chatId)) await db.delete(phoneMessages).where(eq(phoneMessages.id, row.id));
       for (const row of await threadRows(chatId)) await db.delete(phoneThreads).where(eq(phoneThreads.id, row.id));

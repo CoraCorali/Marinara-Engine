@@ -1,4 +1,5 @@
 // Fork feature: what the story's writer is told about the phones (see FORK.md).
+import { FORK_PHONE_RELATION_WORDS, type ForkPhoneContact } from "@marinara-engine/shared";
 import { PHONE_CONTACT, PHONE_PERSONA, type PhoneMessage, type PhoneThread } from "./fork-phone.js";
 
 export const PHONE_TEXTS_PER_THREAD = 8;
@@ -23,6 +24,8 @@ export function phonePromptBlock(
   messages: readonly PhoneMessage[],
   personaName: string,
   nameFor: (id: string) => string,
+  /** The persona's saved contacts: "Mom (family): worries a lot". */
+  contacts: readonly string[] = [],
 ): string {
   const name = (side: string) => phoneSideName(side, personaName, nameFor);
   const sections: string[] = [];
@@ -61,9 +64,27 @@ export function phonePromptBlock(
       return [`- ${who}${call.storyTime ? ` at ${call.storyTime}` : ""}${call.body ? `: ${call.body}` : ""}`, ...lines];
     });
   if (calls.length) sections.push(["Recent calls:", ...calls].join("\n"));
+  if (contacts.length) {
+    sections.push(
+      [
+        `${name(PHONE_PERSONA)}'s contacts (no part in the scenes; they know only what ${name(PHONE_PERSONA)} tells them):`,
+        ...contacts.map((line) => `- ${line}`),
+      ].join("\n"),
+    );
+  }
   if (sections.length === 0) return "";
   return [
     "On the phones (these texts and calls really happened in the story; the characters remember them and can bring them up):",
     ...sections,
   ].join("\n\n");
+}
+
+/** "Mom (family): worries a lot", for the lists the models read. */
+export function contactLine(contact: ForkPhoneContact): string {
+  return `${contact.name} (${FORK_PHONE_RELATION_WORDS[contact.relation]})${contact.note ? `: ${contact.note}` : ""}`;
+}
+
+/** "Kyli's family (worries a lot)", for a contact speaking for themselves. */
+export function contactWho(contact: ForkPhoneContact, personaName: string): string {
+  return `${personaName || "the user's character"}'s ${FORK_PHONE_RELATION_WORDS[contact.relation]}${contact.note ? ` (${contact.note})` : ""}`;
 }

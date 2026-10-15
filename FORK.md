@@ -811,6 +811,33 @@ fields, its own way into the scene, and its own wording for the model.
 - Regression: `fork-phone-peek` (reading a written phone safely, the writer's block, looking twice,
   texts after the look, undo, the write prompt).
 
+### Pocket Phone contacts: texting people without a card
+
+- **Contacts on your phone** for people with no character card: Mom, a coworker, an ex. "+ New
+  contact" (a button in the Messages bar and a row under your conversations) asks for a **name**, what
+  they are to you (**Family, Best friend, Close friend, Friend, Other**, like a real phone's contact
+  card) and an optional **who they are** ("worries a lot, texts in all caps"). The label shows as a
+  small tag; the pencil in their conversation changes the label or note; deleting asks first and takes
+  your texts with them. A name stays once saved, since their texts are found by it. At most 30, names
+  unique whatever their case. Stored in the chat's `forkPhone.contacts`.
+- **They answer as themselves.** Your text to a contact gets their answer right away (one streamed
+  model call on the summary connection, prompt logged in debug), with a "typing…" bubble meanwhile:
+  one to three texts in their voice, written from the label, the note, your last 12 texts with them
+  and the story for tone only. They were not in the scenes, so they are told they know only what you
+  have told them. The answer shows in the chat after the same story message as your text.
+- **The AI knows them.** The phone agent sees your contacts and may let one text you now and then on
+  its own (same daily cap and cooldown; only contacts you saved, never a name it made up), and the
+  writer's phone block lists them with their labels. You can call a contact too; they speak from the
+  same label and note.
+- ponytail: a swipe of the story message your text followed takes the contact's answer back (like any
+  AI text after it) while your text stays; the next text you send gets a fresh answer.
+- Live check (LinkAPI, "Jess", best friend, "my roommate, chaotic, lives for gossip, uses way too many
+  emojis"): Fable 5.1 "WAIT WHAT. THEO?? THEO THEO?? 😭😭😭 … also what are you wearing. this matters";
+  Opus 5.5 "A CROISSANT AGAIN???? K. K. that's not a thing that's a WHOLE THING 🥐🥐🥐"; Opus 4.6
+  "BRING THE SIGN … you're still not answering me about the outfit. I've asked THREE times 🔪🔪". The
+  outfit question carried across all three. 7–11 s each.
+- Regression: `fork-phone-contacts`.
+
 ## Upstream files touched
 
 Fork-only code lives in `packages/client/src/lib/fork/`, `Fork*` components, `packages/shared/src/features/fork-bond-shapes.ts`, `packages/server/src/services/import/fork/`
@@ -926,6 +953,7 @@ Edits to upstream files are marked with a `Fork:` comment.
 | `packages/client/src/components/chat/ChatRoleplaySurface.tsx`                              | Only your own phone's texts and calls show in the chat                                            |
 | `packages/client/src/components/chat/ChatRoleplaySurface.tsx`                              | The Peek chip under the reply that left a phone within reach                                      |
 | `packages/server/src/routes/generate.routes.ts`                                            | What you saw on a character's phone, in the phone block                                           |
+| `packages/server/src/routes/generate.routes.ts`                                            | Your phone contacts, in the phone block                                                           |
 
 ## Known upstream issue kept as is
 

@@ -1,6 +1,15 @@
 // Fork feature: the Pocket Phone API (see FORK.md).
 import type { FastifyInstance } from "fastify";
-import { normalizeForkPhoneLook, readForkPhoneSettings } from "@marinara-engine/shared";
+import {
+  forkPhoneContactName,
+  FORK_PHONE_RELATIONS,
+  MAX_FORK_PHONE_CONTACTS,
+  MAX_FORK_PHONE_CONTACT_NOTE,
+  normalizeForkPhoneLook,
+  readForkPhoneSettings,
+  type ForkPhoneContact,
+  type ForkPhoneRelation,
+} from "@marinara-engine/shared";
 import { createChatsStorage } from "../services/storage/chats.storage.js";
 import { createCharactersStorage } from "../services/storage/characters.storage.js";
 import { createGameStateStorage } from "../services/storage/game-state.storage.js";
@@ -84,7 +93,14 @@ export async function forkPhoneRoutes(app: FastifyInstance) {
           normalizeForkPhoneLook(characterLooks[lookFor.id]),
         );
       }
-      return { forkPhone: { ...look, on: typeof body.on === "boolean" ? body.on : current.on, characterLooks } };
+      return {
+        forkPhone: {
+          ...look,
+          on: typeof body.on === "boolean" ? body.on : current.on,
+          characterLooks,
+          contacts: current.contacts,
+        },
+      };
     });
     if (!updated) return reply.status(404).send({ error: "Chat not found" });
     // Switched off mid-story: what was waiting to arrive is dropped, not delivered later.
@@ -101,8 +117,10 @@ export async function forkPhoneRoutes(app: FastifyInstance) {
     if (!text.trim()) return reply.status(400).send({ error: "The text is empty" });
     const chat = await chats.getById(req.params.chatId);
     if (!chat) return reply.status(404).send({ error: "Chat not found" });
-    if (!readForkPhoneSettings(parseRecord(chat.metadata)).on) {
-      return reply.status(400).send({ error: "The phone is off for this chat" });
+    const settings = readForkPhoneSettings(parseRecord(chat.metadata));
+    if (!settings.on) return reply.status(400).send({ error: "The phone is off for this chat" });
+    if (to.startsWith(PHONE_CONTACT) && !settings.contacts.some((contact) => PHONE_CONTACT + contact.name === to)) {
+      return reply.status(400).send({ error: "That contact is not in your phone" });
     }
     const [latest] = (await chats.listMessagePreviews(chat.id, 1)) as { id: string }[];
     const scene = await createGameStateStorage(app.db).getLatest(chat.id);
@@ -189,4 +207,79 @@ export async function forkPhoneRoutes(app: FastifyInstance) {
       runner.peekSeen(req.params.chatId, String(body.characterId ?? ""), String(body.threadId ?? "")),
     );
   });
+
+  /** Changes your contacts list. Returns the list, or an error message for the person. */
+  async function editContacts(
+    chatId: string,
+    change: (contacts: ForkPhoneContact[]) => ForkPhoneContact[] | string,
+  ): Promise<{ contacts: ForkPhoneContact[] } | { error: string; status: number }> {
+    let failure = "";
+    const updated = await chats.patchMetadata(chatId, (meta) => {
+      const current = readForkPhoneSettings(meta);
+      const next = change(current.contacts.map((contact) => ({ ...contact })));
+      if (typeof next === "string") {
+        failure = next;
+        return {};
+      }
+      return { forkPhone: { ...parseRecord(meta.forkPhone), contacts: next } };
+    });
+    if (!updated) return { error: "Chat not found", status: 404 };
+    if (failure) return { error: failure, status: 400 };
+    return { contacts: readForkPhoneSettings(parseRecord(updated.metadata)).contacts };
+  }
+  const relationOf = (value: unknown): ForkPhoneRelation | null =>
+    (FORK_PHONE_RELATIONS as readonly string[]).includes(value as string) ? (value as ForkPhoneRelation) : null;
+  const noteOf = (value: unknown) =>
+    typeof value === "string" ? value.trim().slice(0, MAX_FORK_PHONE_CONTACT_NOTE) : "";
+
+  /** A new contact: someone without a card you can text, like Mom or a coworker. */
+  app.post<{ Params: { chatId: string } }>("/chats/:chatId/contacts", async (req, reply) => {
+    const body = parseRecord(req.body);
+    const name = forkPhoneContactName(body.name);
+    const result = await editContacts(req.params.chatId, (contacts) => {
+      if (!name) return "Give the contact a name";
+      if (contacts.some((contact) => contact.name.toLowerCase() === name.toLowerCase()))
+        return "You already have a contact with that name";
+      if (contacts.length >= MAX_FORK_PHONE_CONTACTS) return "Your phone is full of contacts";
+      return [...contacts, { name, relation: relationOf(body.relation) ?? "other", note: noteOf(body.note) }];
+    });
+    return "error" in result ? reply.status(result.status).send({ error: result.error }) : result;
+  });
+
+  /** What they are to you, or who they are. A name stays, since their texts are found by it. */
+  app.patch<{ Params: { chatId: string; name: string } }>("/chats/:chatId/contacts/:name", async (req, reply) => {
+    const body = parseRecord(req.body);
+    const result = await editContacts(req.params.chatId, (contacts) => {
+      const contact = contacts.find((entry) => entry.name === req.params.name);
+      if (!contact) return "That contact is not in your phone";
+      if (body.relation !== undefined) contact.relation = relationOf(body.relation) ?? contact.relation;
+      if (body.note !== undefined) contact.note = noteOf(body.note);
+      return contacts;
+    });
+    return "error" in result ? reply.status(result.status).send({ error: result.error }) : result;
+  });
+
+  /** Deletes a contact and your texts with them. */
+  app.delete<{ Params: { chatId: string; name: string } }>("/chats/:chatId/contacts/:name", async (req, reply) => {
+    const result = await editContacts(req.params.chatId, (contacts) =>
+      contacts.some((contact) => contact.name === req.params.name)
+        ? contacts.filter((contact) => contact.name !== req.params.name)
+        : "That contact is not in your phone",
+    );
+    if ("error" in result) return reply.status(result.status).send({ error: result.error });
+    const side = PHONE_CONTACT + req.params.name;
+    for (const thread of await phones.listThreads(req.params.chatId)) {
+      if ((thread.a === PHONE_PERSONA && thread.b === side) || (thread.b === PHONE_PERSONA && thread.a === side)) {
+        await phones.removeThread(thread.id);
+      }
+    }
+    return result;
+  });
+
+  /** A contact answers your newest text. */
+  app.post<{ Params: { chatId: string; name: string } }>("/chats/:chatId/contacts/:name/reply", async (req, reply) =>
+    step(reply, req.params.chatId, "A contact's reply", () =>
+      runner.contactReply(req.params.chatId, req.params.name, debugOf(req.body)),
+    ),
+  );
 }

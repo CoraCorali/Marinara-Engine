@@ -244,7 +244,7 @@ import {
 } from "../services/bonds/fork-bond-updates.js";
 import { pairsPromptBlock } from "../services/bonds/fork-bond-pairs.js";
 import { createPhoneStorage } from "../services/phone/fork-phone.js";
-import { phonePromptBlock, phoneSideName } from "../services/phone/fork-phone-prompt.js";
+import { contactLine, phonePromptBlock, phoneSideName } from "../services/phone/fork-phone-prompt.js";
 import { readPhoneRunState } from "../services/phone/fork-phone-agent.js";
 import { peekPromptBlock } from "../services/phone/fork-phone-peek.js";
 import { storyNowFromScene } from "../services/board/fork-story-now.js";
@@ -7862,7 +7862,13 @@ export async function generateRoutes(app: FastifyInstance, options: GenerateRout
             const forkPhoneMessages = forkPhoneOn ? await createPhoneStorage(app.db).listMessages(input.chatId) : [];
             const forkPhoneBlock = forkPhoneOn
               ? [
-                  phonePromptBlock(forkPhoneThreads, forkPhoneMessages, personaName, forkNameFor),
+                  phonePromptBlock(
+                    forkPhoneThreads,
+                    forkPhoneMessages,
+                    personaName,
+                    forkNameFor,
+                    readForkPhoneSettings(chatMeta).contacts.map(contactLine),
+                  ),
                   // What the persona saw on a character's phone.
                   peekPromptBlock(
                     readPhoneRunState(chatMeta).peeks,

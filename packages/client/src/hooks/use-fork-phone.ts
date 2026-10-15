@@ -2,7 +2,7 @@
 // Fork: Pocket Phone (React Query)
 // ──────────────────────────────────────────────
 import { useMutation, useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
-import type { ForkPhoneLook, ForkPhoneSettings } from "@marinara-engine/shared";
+import type { ForkPhoneContact, ForkPhoneLook, ForkPhoneRelation, ForkPhoneSettings } from "@marinara-engine/shared";
 import { toast } from "sonner";
 import { api } from "../lib/api-client";
 import { translate } from "../localization/i18n";
@@ -237,4 +237,45 @@ export function usePeek(chatId: string | null) {
 /** Tells the story you opened one of their conversations while peeking. */
 export function markPeekSeen(chatId: string, characterId: string, threadId: string) {
   void api.post(`/fork-phone/chats/${chatId}/peek/seen`, { characterId, threadId }).catch(() => undefined);
+}
+
+export const PHONE_CONTACT = "contact:";
+
+/** Add, change or delete one of your contacts. */
+export function useContacts(chatId: string | null) {
+  const qc = useQueryClient();
+  const done = () => void qc.invalidateQueries({ queryKey: phoneKeys.chat(chatId) });
+  const base = `/fork-phone/chats/${chatId}/contacts`;
+  return {
+    add: useMutation({
+      mutationFn: (input: { name: string; relation: ForkPhoneRelation; note: string }) =>
+        api.post<{ contacts: ForkPhoneContact[] }>(base, input),
+      onError: failed,
+      onSettled: done,
+    }),
+    edit: useMutation({
+      mutationFn: (input: { name: string; relation: ForkPhoneRelation; note: string }) =>
+        api.patch<{ contacts: ForkPhoneContact[] }>(`${base}/${encodeURIComponent(input.name)}`, input),
+      onError: failed,
+      onSettled: done,
+    }),
+    remove: useMutation({
+      mutationFn: (name: string) => api.delete<{ contacts: ForkPhoneContact[] }>(`${base}/${encodeURIComponent(name)}`),
+      onError: failed,
+      onSettled: done,
+    }),
+  };
+}
+
+/** A contact answers your newest text (one model call). */
+export function useContactReply(chatId: string | null) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (name: string) =>
+      api.post<{ added: PhoneMessage[] }>(`/fork-phone/chats/${chatId}/contacts/${encodeURIComponent(name)}/reply`, {
+        debugMode: useUIStore.getState().debugMode,
+      }),
+    onError: failed,
+    onSettled: () => void qc.invalidateQueries({ queryKey: phoneKeys.chat(chatId) }),
+  });
 }
