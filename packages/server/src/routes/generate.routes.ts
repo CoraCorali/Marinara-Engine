@@ -137,6 +137,7 @@ import {
   mergeChatVariableChanges,
   undoChatVariableChanges,
   readForkPhoneSettings,
+  FORK_PHONE_CONTACT_PERSONA,
   type APIProvider,
   type MacroContext,
   type RulesetCatalogEntriesById,
@@ -7873,7 +7874,9 @@ export async function generateRoutes(app: FastifyInstance, options: GenerateRout
                     forkPhoneMessages,
                     personaName,
                     forkNameFor,
-                    readForkPhoneSettings(chatMeta).contacts.map(contactLine),
+                    readForkPhoneSettings(chatMeta).contacts.map((contact) =>
+                      contactLine(contact, (id) => (id === FORK_PHONE_CONTACT_PERSONA ? personaName : forkNameFor(id))),
+                    ),
                   ),
                   // What the persona saw on a character's phone.
                   peekPromptBlock(

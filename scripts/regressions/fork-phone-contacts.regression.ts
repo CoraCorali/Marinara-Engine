@@ -29,10 +29,91 @@ const contacts = shared.normalizeForkPhoneContacts([
   { name: "" },
   "nope",
 ]);
-assert.deepEqual(contacts, [
-  { name: "Mom", relation: "family", note: "worries a lot" },
-  { name: "Jess", relation: "other", note: "" },
-]);
+const blank = { label: "", shownAs: "", personality: "", texting: "", closeWith: ["persona"] };
+assert.deepEqual(
+  contacts,
+  [
+    { name: "Mom", relation: "family", note: "worries a lot", ...blank },
+    { name: "Jess", relation: "other", note: "", ...blank },
+  ],
+  "older contacts get the newer fields empty, close with you",
+);
+
+// ── A fuller contact: their own label, how they show, who they are close with ──
+const theo = shared.normalizeForkPhoneContact({
+  name: "Theo",
+  relation: "custom",
+  label: "  gardener ",
+  shownAs: " Theo  (Gardener) ",
+  note: "on staff three years; Kyli and Charles trust him",
+  personality: "hard-working, quiet, kind",
+  texting: "after work, or when he arrives on the property",
+  closeWith: ["persona", "charles", "charles", ""],
+})!;
+assert.equal(theo.label, "gardener");
+assert.equal(theo.shownAs, "Theo (Gardener)");
+assert.deepEqual(theo.closeWith, ["persona", "charles"]);
+assert.equal(shared.forkPhoneRelationWord(theo), "gardener");
+assert.equal(shared.forkPhoneRelationWord({ relation: "staff", label: "" }), "staff");
+assert.equal(
+  shared.forkPhoneRelationWord({ relation: "custom", label: "" }),
+  "contact",
+  "an empty own label reads as contact",
+);
+const closeName = (id: string) => ({ persona: "Kyli", charles: "Charles" })[id] ?? "";
+assert.equal(
+  prompt.contactLine(theo, closeName),
+  "Theo (gardener): on staff three years; Kyli and Charles trust him Personality: hard-working, quiet, kind. How they text: after work, or when he arrives on the property. Close with: Kyli, Charles.",
+);
+assert.equal(
+  prompt.contactLine(contacts[0]!, closeName),
+  "Mom (family): worries a lot",
+  "close with only you is not spelled out",
+);
+assert.match(
+  prompt.contactWho(theo, "Kyli", closeName),
+  /^Kyli's gardener \(on staff.*\); personality: hard-working, quiet, kind; how they text: after work.*; close with Kyli, Charles$/,
+);
+
+// ── They reach only the people they are close with ──
+const closeAnswer = agent.readPhoneAgentAnswer(
+  JSON.stringify({
+    texts: [
+      { from: "Theo", body: "heading out, gate's locked" },
+      { from: "Mom", body: "call me" },
+      { from: "Mom", body: "the story said I did", story: true },
+    ],
+    threads: [
+      { from: "Theo", to: "Charles", body: "payroll question" },
+      { from: "Mom", to: "Charles", body: "close with him" },
+      { from: "Rosa", to: "Charles", body: "not close with him" },
+    ],
+  }),
+  agent.phoneSideResolver("Kyli", [{ id: "charles", name: "Charles" }], ["Theo", "Mom", "Rosa"]),
+  new Set(["contact:Theo", "contact:Mom", "contact:Rosa"]),
+  new Set(),
+  new Map([
+    ["contact:Theo", new Set(["persona", "charles"])],
+    ["contact:Mom", new Set(["charles"])],
+    ["contact:Rosa", new Set(["persona"])],
+  ]),
+);
+assert.deepEqual(
+  closeAnswer.texts.map((text) => [text.from, text.body]),
+  [
+    ["contact:Theo", "heading out, gate's locked"],
+    ["contact:Mom", "the story said I did"],
+  ],
+  "Mom is not close with Kyli, so she only texts when the story says she did",
+);
+assert.deepEqual(
+  closeAnswer.threads.map((thread) => [thread.from, thread.to]),
+  [
+    ["contact:Theo", "charles"],
+    ["contact:Mom", "charles"],
+  ],
+  "contacts close with Charles can text him; Rosa, close only with Kyli, cannot",
+);
 assert.deepEqual(shared.readForkPhoneSettings({}).contacts, [], "no contacts by default");
 assert.equal(shared.readForkPhoneSettings({ forkPhone: { contacts } }).contacts.length, 2);
 assert.equal(
@@ -83,7 +164,7 @@ const agentPrompt = agent.buildPhoneAgentMessages({
 })[0]!.content;
 assert.match(
   agentPrompt,
-  /Kyli's own contacts .*they know only what Kyli texted them and what they themselves did, wrote or said in the story, like a letter they sent\):\n- Mom \(family\): worries a lot\n- Jess \(contact\)/,
+  /Kyli's own contacts .*they know only what Kyli texted them and what they themselves did, wrote or said in the story, like a letter they sent\. One listed as close with card characters can also text those characters in threads; they reach only the people they are close with, and follow how they text\):\n- Mom \(family\): worries a lot\n- Jess \(contact\)/,
 );
 
 // ── A contact's answer ──

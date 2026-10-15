@@ -1,5 +1,5 @@
 // Fork feature: what the story's writer is told about the phones (see FORK.md).
-import { FORK_PHONE_RELATION_WORDS, type ForkPhoneContact } from "@marinara-engine/shared";
+import { FORK_PHONE_CONTACT_PERSONA, forkPhoneRelationWord, type ForkPhoneContact } from "@marinara-engine/shared";
 import { PHONE_CONTACT, PHONE_PERSONA, PHONE_UNKNOWN, type PhoneMessage, type PhoneThread } from "./fork-phone.js";
 
 export const PHONE_TEXTS_PER_THREAD = 8;
@@ -91,14 +91,36 @@ export function phonePromptBlock(
  * the narration would be one the phone never shows and its sender never remembers.
  */
 export const PHONE_WRITER_RULE =
-  "Texts and calls happen on the phones, not in the narration: never write out the words of a new text, call or message in the story. The story can say a phone buzzed or someone is typing; the text itself arrives on the phone. Characters can quote or react to texts already on the phones.";
+  "Texts and calls happen on the phones, not in the narration: never write out the words of a new text, call or message in the story. The story can say a phone buzzed or someone is typing; the text itself arrives on the phone. Characters can quote or react to texts already on the phones. This holds over any other instruction to show phone screens, chat bubbles or texts in the reply.";
 
-/** "Mom (family): worries a lot", for the lists the models read. */
-export function contactLine(contact: ForkPhoneContact): string {
-  return `${contact.name} (${FORK_PHONE_RELATION_WORDS[contact.relation]})${contact.note ? `: ${contact.note}` : ""}`;
+/**
+ * Who a contact is close to, by name, when that is more than just the persona (the default):
+ * "Kyli, Charles". `nameOf` turns "persona" and character ids into names.
+ */
+function closeWithNames(contact: ForkPhoneContact, nameOf?: (id: string) => string): string {
+  if (!nameOf) return "";
+  if (contact.closeWith.length === 1 && contact.closeWith[0] === FORK_PHONE_CONTACT_PERSONA) return "";
+  return contact.closeWith.map(nameOf).filter(Boolean).join(", ");
+}
+
+/** "Mom (family): worries a lot. Personality: …", for the lists the models read. */
+export function contactLine(contact: ForkPhoneContact, nameOf?: (id: string) => string): string {
+  const close = closeWithNames(contact, nameOf);
+  return [
+    `${contact.name} (${forkPhoneRelationWord(contact)})${contact.note ? `: ${contact.note}` : ""}`,
+    contact.personality ? ` Personality: ${contact.personality}.` : "",
+    contact.texting ? ` How they text: ${contact.texting}.` : "",
+    close ? ` Close with: ${close}.` : "",
+  ].join("");
 }
 
 /** "Kyli's family (worries a lot)", for a contact speaking for themselves. */
-export function contactWho(contact: ForkPhoneContact, personaName: string): string {
-  return `${personaName || "the user's character"}'s ${FORK_PHONE_RELATION_WORDS[contact.relation]}${contact.note ? ` (${contact.note})` : ""}`;
+export function contactWho(contact: ForkPhoneContact, personaName: string, nameOf?: (id: string) => string): string {
+  const close = closeWithNames(contact, nameOf);
+  return [
+    `${personaName || "the user's character"}'s ${forkPhoneRelationWord(contact)}${contact.note ? ` (${contact.note})` : ""}`,
+    contact.personality ? `; personality: ${contact.personality}` : "",
+    contact.texting ? `; how they text: ${contact.texting}` : "",
+    close ? `; close with ${close}` : "",
+  ].join("");
 }

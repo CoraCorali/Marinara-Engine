@@ -24,6 +24,7 @@ import { useTranslation as useUiTranslation } from "react-i18next";
 import {
   DEFAULT_FORK_PHONE_LOOK,
   FORK_PHONE_COLORS,
+  FORK_PHONE_CONTACT_PERSONA,
   FORK_PHONE_RELATIONS,
   FORK_PHONE_SKINS,
   type ForkPhoneContact,
@@ -109,7 +110,10 @@ export function ForkPhonePill({
   const { t: localizeUi } = useUiTranslation();
   const { data } = useForkPhone(chatId);
   const qc = useQueryClient();
-  const nameOf = useMemo(() => phoneNameOf(cast, personaName, data?.names), [cast, personaName, data?.names]);
+  const nameOf = useMemo(
+    () => phoneNameOf(cast, personaName, data?.names, data?.settings.contacts),
+    [cast, personaName, data?.names, data?.settings.contacts],
+  );
   useEffect(() => {
     phoneNames.set(chatId, nameOf);
   }, [chatId, nameOf]);
@@ -209,13 +213,29 @@ export function ForkPhonePill({
   );
 }
 
-export function phoneNameOf(cast: readonly PhoneCastMember[], personaName: string, names: Record<string, string> = {}) {
+export function phoneNameOf(
+  cast: readonly PhoneCastMember[],
+  personaName: string,
+  names: Record<string, string> = {},
+  /** Your contacts, so one saved as "Theo (Gardener)" shows that way. */
+  contacts: readonly ForkPhoneContact[] = [],
+) {
   return (side: string) =>
     side === PHONE_PERSONA
       ? personaName
       : side.startsWith(PHONE_UNKNOWN)
         ? translate("ui.chat.forkphone.unknownNumber")
-        : (cast.find((member) => member.id === side)?.name ?? names[side] ?? side.replace(/^contact:/, ""));
+        : (cast.find((member) => member.id === side)?.name ??
+          names[side] ??
+          (contacts.find((contact) => PHONE_CONTACT + contact.name === side)?.shownAs ||
+            side.replace(/^contact:/, "")));
+}
+
+/** The label on a contact: your own word, or the chosen one. */
+function relationTag(contact: ForkPhoneContact, localizeUi: (key: string) => string): string {
+  return contact.relation === "custom" && contact.label
+    ? contact.label
+    : localizeUi(`ui.chat.forkphone.relation.${contact.relation}`);
 }
 
 /** Someone is calling: a card over the chat, with Answer and Decline. */
@@ -340,7 +360,7 @@ export function ForkPhoneApp({
   const look: ForkPhoneLook = data?.settings ?? DEFAULT_FORK_PHONE_LOOK;
   // With the candybar's QWERTY keys showing, your own keyboard stays down so the two don't stack.
   const caseKeys = look.skin === "candybar" && look.keys === "qwerty";
-  const nameOf = phoneNameOf(cast, personaName, data?.names);
+  const nameOf = phoneNameOf(cast, personaName, data?.names, data?.settings.contacts);
   const inCast = (side: string) => cast.some((member) => member.id === side);
   const contacts = data?.settings.contacts ?? [];
   const contactOf = (side: string) => contacts.find((contact) => PHONE_CONTACT + contact.name === side);
@@ -450,6 +470,8 @@ export function ForkPhoneApp({
           chatId={chatId}
           contact={view.edit ? contacts.find((contact) => contact.name === view.edit) : undefined}
           from={view.from}
+          cast={cast}
+          personaName={personaName}
           onDone={(name) =>
             setView(
               name
@@ -540,12 +562,12 @@ function PhoneHome({
     .map((thread) => otherSide(thread))
     .filter((side) => side.startsWith(PHONE_UNKNOWN))
     .map((side) => ({ id: side, name: nameOf(side), left: false }));
-  type Row = PhoneCastMember & { left: boolean; relation?: ForkPhoneRelation };
+  type Row = PhoneCastMember & { left: boolean; tag?: string };
   const people: Row[] = contacts.map((contact) => ({
     id: PHONE_CONTACT + contact.name,
-    name: contact.name,
+    name: contact.shownAs || contact.name,
     left: false,
-    relation: contact.relation,
+    tag: relationTag(contact, localizeUi),
   }));
   const rows = ([...cast.map((member) => ({ ...member, left: false })), ...people, ...unknown, ...former] as Row[])
     .map((member) => {
@@ -593,9 +615,7 @@ function PhoneHome({
                 <span className="truncate text-[0.8125rem] font-bold">
                   {member.left ? localizeUi("ui.chat.forkphone.leftName", { name: member.name }) : member.name}
                 </span>
-                {member.relation && (
-                  <span className="fp-tag">{localizeUi(`ui.chat.forkphone.relation.${member.relation}`)}</span>
-                )}
+                {member.tag && <span className="fp-tag">{member.tag}</span>}
               </span>
               <span className="block truncate text-[0.6875rem] opacity-75">
                 {last
@@ -821,7 +841,7 @@ function PhoneThreadView({
         <span className="min-w-0 flex-1 truncate">{name}</span>
         {contact && (
           <>
-            <span className="fp-tag">{localizeUi(`ui.chat.forkphone.relation.${contact.relation}`)}</span>
+            <span className="fp-tag">{relationTag(contact, localizeUi)}</span>
             <button
               type="button"
               onClick={onEditContact}
@@ -1048,24 +1068,36 @@ function ContactForm({
   chatId,
   contact,
   from,
+  cast,
+  personaName,
   onDone,
 }: {
   chatId: string;
   contact?: ForkPhoneContact;
   /** Saving an unknown number: its texts move to the new contact. */
   from?: string;
+  /** Who the contact can be close with, besides you. */
+  cast: readonly PhoneCastMember[];
+  personaName: string;
   /** Back to their conversation (a name), or home. */
   onDone: (name?: string) => void;
 }) {
   const { t: localizeUi } = useUiTranslation();
   const { add, edit, remove } = useContacts(chatId);
   const [name, setName] = useState(contact?.name ?? "");
+  const [shownAs, setShownAs] = useState(contact?.shownAs ?? "");
   const [relation, setRelation] = useState<ForkPhoneRelation>(contact?.relation ?? "friend");
+  const [label, setLabel] = useState(contact?.label ?? "");
   const [note, setNote] = useState(contact?.note ?? "");
+  const [personality, setPersonality] = useState(contact?.personality ?? "");
+  const [texting, setTexting] = useState(contact?.texting ?? "");
+  const [closeWith, setCloseWith] = useState<string[]>(contact?.closeWith ?? [FORK_PHONE_CONTACT_PERSONA]);
   const busy = add.isPending || edit.isPending || remove.isPending;
+  const toggleClose = (id: string) =>
+    setCloseWith((current) => (current.includes(id) ? current.filter((entry) => entry !== id) : [...current, id]));
   const save = () => {
     if (!name.trim() || busy) return;
-    const input = { name: name.trim(), relation, note };
+    const input = { name: name.trim(), relation, label, shownAs, note, personality, texting, closeWith };
     if (contact) {
       const renamed = input.name.replace(/\s+/g, " ");
       edit.mutate(
@@ -1087,6 +1119,9 @@ function ContactForm({
       return;
     remove.mutate(contact.name, { onSuccess: () => onDone() });
   };
+  const FIELD = "min-h-9 rounded-lg border border-[var(--border)] bg-[var(--secondary)] px-2 font-normal";
+  const AREA =
+    "fork-keep-size resize-none rounded-lg border border-[var(--border)] bg-[var(--secondary)] p-2 font-normal";
   return (
     <>
       <div className="fp-bar">
@@ -1113,7 +1148,17 @@ function ContactForm({
               maxLength={60}
               onChange={(event) => setName(event.target.value)}
               placeholder={localizeUi("ui.chat.forkphone.contactNamePlaceholder")}
-              className="min-h-9 rounded-lg border border-[var(--border)] bg-[var(--secondary)] px-2 font-normal disabled:opacity-70"
+              className={FIELD}
+            />
+          </label>
+          <label className="flex flex-col gap-1 font-bold">
+            {localizeUi("ui.chat.forkphone.contactShownAs")}
+            <input
+              value={shownAs}
+              maxLength={60}
+              onChange={(event) => setShownAs(event.target.value)}
+              placeholder={localizeUi("ui.chat.forkphone.contactShownAsPlaceholder")}
+              className={FIELD}
             />
           </label>
           <p className="m-0 font-bold">{localizeUi("ui.chat.forkphone.contactRelation")}</p>
@@ -1130,6 +1175,30 @@ function ContactForm({
               </button>
             ))}
           </div>
+          {relation === "custom" && (
+            <input
+              value={label}
+              maxLength={40}
+              onChange={(event) => setLabel(event.target.value)}
+              aria-label={localizeUi("ui.chat.forkphone.contactLabel")}
+              placeholder={localizeUi("ui.chat.forkphone.contactLabelPlaceholder")}
+              className={FIELD}
+            />
+          )}
+          <p className="m-0 font-bold">{localizeUi("ui.chat.forkphone.contactCloseWith")}</p>
+          <div className="flex flex-wrap gap-1.5">
+            {[{ id: FORK_PHONE_CONTACT_PERSONA, name: personaName }, ...cast].map((person) => (
+              <button
+                key={person.id}
+                type="button"
+                onClick={() => toggleClose(person.id)}
+                aria-pressed={closeWith.includes(person.id)}
+                className={cn(CHIP, closeWith.includes(person.id) ? CHIP_ON : CHIP_OFF)}
+              >
+                {person.name}
+              </button>
+            ))}
+          </div>
           <label className="flex flex-col gap-1 font-bold">
             {localizeUi("ui.chat.forkphone.contactNote")}
             <textarea
@@ -1138,7 +1207,28 @@ function ContactForm({
               maxLength={300}
               onChange={(event) => setNote(event.target.value)}
               placeholder={localizeUi("ui.chat.forkphone.contactNotePlaceholder")}
-              className="fork-keep-size resize-none rounded-lg border border-[var(--border)] bg-[var(--secondary)] p-2 font-normal"
+              className={AREA}
+            />
+          </label>
+          <label className="flex flex-col gap-1 font-bold">
+            {localizeUi("ui.chat.forkphone.contactPersonality")}
+            <input
+              value={personality}
+              maxLength={200}
+              onChange={(event) => setPersonality(event.target.value)}
+              placeholder={localizeUi("ui.chat.forkphone.contactPersonalityPlaceholder")}
+              className={FIELD}
+            />
+          </label>
+          <label className="flex flex-col gap-1 font-bold">
+            {localizeUi("ui.chat.forkphone.contactTexting")}
+            <textarea
+              value={texting}
+              rows={2}
+              maxLength={200}
+              onChange={(event) => setTexting(event.target.value)}
+              placeholder={localizeUi("ui.chat.forkphone.contactTextingPlaceholder")}
+              className={AREA}
             />
           </label>
           <button
@@ -1330,10 +1420,12 @@ export function ForkPhoneInlineCards({
   onOpen,
   ringingId,
   names,
+  contacts,
 }: {
   /** The call card that is ringing right now, if any. */
   ringingId: string;
   names?: Record<string, string>;
+  contacts?: readonly ForkPhoneContact[];
   messages: readonly PhoneMessage[];
   /** Every phone message of the chat, for a call's length. */
   all: readonly PhoneMessage[];
@@ -1343,7 +1435,7 @@ export function ForkPhoneInlineCards({
   onOpen: (to: string) => void;
 }) {
   const { t: localizeUi } = useUiTranslation();
-  const nameOf = phoneNameOf(cast, personaName, names);
+  const nameOf = phoneNameOf(cast, personaName, names, contacts);
   return (
     <div className="mx-auto my-1 flex w-full max-w-[min(42rem,100%)] flex-col gap-1 px-2">
       {messages.map((message) => {

@@ -1061,6 +1061,30 @@ From an audit of every fork switch (31 of them) and of features reading the same
   conversation cleared, then a call to Molly went through.
 - Regressions: `fork-phone`, `fork-phone-agent`, `fork-phone-contacts`.
 
+### Fuller contacts
+
+- **Labels:** Staff joins Family / Best friend / Close friend / Friend / Other, and "Custom…" takes
+  your own word (Gardener, Boss, Ex), which is what the AI is told.
+- **Shown as:** an optional name for your phone ("Theo (Gardener)"). The phone shows it; the AI
+  and their texts keep the plain name.
+- **Close with:** you and/or any characters. A contact texts or calls only the people they are
+  close with (unless the story says they did), and one close with a character can text that
+  character, which you see by peeking at that character's phone. The writer and the phone helper
+  see who each contact is close with, so characters know who they are.
+- **Personality** and **How they text** are their own fields; the helper follows "how they text"
+  for when they reach out.
+- **Delete fully:** deleting a contact removes every conversation they are in, including theirs
+  with characters.
+- Older contacts read the new fields as empty and close with you, so nothing changes for them.
+- The writer's phone rule now says it holds over any other instruction to show phone screens,
+  chat bubbles or texts in the reply (a preset's "format texts as code" toggle, for one).
+- Live check (Opus 4.6 via LinkAPI): Gary, Staff, close with Kyli and Theo, "texts when work is
+  done; contacts Theo about pay". After "Gary finishes the hedges and sees the pump is leaking",
+  he texted Kyli about the pump; after "Theo handles the payments now", he texted Theo, who
+  answered him, in a conversation only Theo's phone has. Deleting Gary removed both
+  conversations. The form, and "Gary (Gardener)" with its own label, checked in the browser.
+- Regressions: `fork-phone-contacts`.
+
 ## Upstream files touched
 
 Fork-only code lives in `packages/client/src/lib/fork/`, `Fork*` components, `packages/shared/src/features/fork-bond-shapes.ts`, `packages/server/src/services/import/fork/`

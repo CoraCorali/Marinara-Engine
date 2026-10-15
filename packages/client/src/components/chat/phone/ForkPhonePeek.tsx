@@ -109,7 +109,7 @@ function ForkPhonePeekApp({
   const { data } = useForkPhone(chatId);
   const [view, setView] = useState<PeekView>({ name: "home" });
   const owner = cast.find((member) => member.id === ownerId);
-  const nameOf = phoneNameOf(cast, personaName, data?.names);
+  const nameOf = phoneNameOf(cast, personaName, data?.names, data?.settings.contacts);
   const look: ForkPhoneLook = { ...DEFAULT_FORK_PHONE_LOOK, ...data?.settings.characterLooks[ownerId] };
   const threads = (data?.threads ?? []).filter((thread) => thread.a === ownerId || thread.b === ownerId);
   const messages = data?.messages ?? [];

@@ -2,13 +2,11 @@
 import type { FastifyInstance } from "fastify";
 import {
   forkPhoneContactName,
-  FORK_PHONE_RELATIONS,
+  normalizeForkPhoneContact,
   MAX_FORK_PHONE_CONTACTS,
-  MAX_FORK_PHONE_CONTACT_NOTE,
   normalizeForkPhoneLook,
   readForkPhoneSettings,
   type ForkPhoneContact,
-  type ForkPhoneRelation,
 } from "@marinara-engine/shared";
 import { createChatsStorage } from "../services/storage/chats.storage.js";
 import { createCharactersStorage } from "../services/storage/characters.storage.js";
@@ -266,10 +264,10 @@ export async function forkPhoneRoutes(app: FastifyInstance) {
       return phoneRunMetadata(state);
     });
   }
-  const relationOf = (value: unknown): ForkPhoneRelation | null =>
-    (FORK_PHONE_RELATIONS as readonly string[]).includes(value as string) ? (value as ForkPhoneRelation) : null;
-  const noteOf = (value: unknown) =>
-    typeof value === "string" ? value.trim().slice(0, MAX_FORK_PHONE_CONTACT_NOTE) : "";
+  /** The contact fields a request may change; `name` is handled on its own. */
+  const CONTACT_FIELDS = ["relation", "label", "shownAs", "note", "personality", "texting", "closeWith"] as const;
+  const contactFields = (body: Record<string, unknown>) =>
+    Object.fromEntries(CONTACT_FIELDS.filter((key) => body[key] !== undefined).map((key) => [key, body[key]]));
 
   /** A new contact: someone without a card you can text, like Mom or a coworker. */
   app.post<{ Params: { chatId: string } }>("/chats/:chatId/contacts", async (req, reply) => {
@@ -280,7 +278,8 @@ export async function forkPhoneRoutes(app: FastifyInstance) {
       if (contacts.some((contact) => contact.name.toLowerCase() === name.toLowerCase()))
         return "You already have a contact with that name";
       if (contacts.length >= MAX_FORK_PHONE_CONTACTS) return "Your phone is full of contacts";
-      return [...contacts, { name, relation: relationOf(body.relation) ?? "other", note: noteOf(body.note) }];
+      const contact = normalizeForkPhoneContact({ ...contactFields(body), name });
+      return contact ? [...contacts, contact] : "Give the contact a name";
     });
     if ("error" in result) return reply.status(result.status).send({ error: result.error });
     // Saving an unknown number: its texts move to the new contact.
@@ -303,10 +302,8 @@ export async function forkPhoneRoutes(app: FastifyInstance) {
         contacts.some((entry) => entry !== contact && entry.name.toLowerCase() === rename.toLowerCase())
       )
         return "You already have a contact with that name";
-      if (rename) contact.name = rename;
-      if (body.relation !== undefined) contact.relation = relationOf(body.relation) ?? contact.relation;
-      if (body.note !== undefined) contact.note = noteOf(body.note);
-      return contacts;
+      const changed = normalizeForkPhoneContact({ ...contact, ...contactFields(body), name: rename || contact.name });
+      return contacts.map((entry) => (entry === contact && changed ? changed : entry));
     });
     if ("error" in result) return reply.status(result.status).send({ error: result.error });
     if (rename && rename !== req.params.name) {
@@ -326,7 +323,7 @@ export async function forkPhoneRoutes(app: FastifyInstance) {
     return { success: true };
   });
 
-  /** Deletes a contact and your texts with them. */
+  /** Deletes a contact fully: your texts with them, and theirs in the characters' phones. */
   app.delete<{ Params: { chatId: string; name: string } }>("/chats/:chatId/contacts/:name", async (req, reply) => {
     const result = await editContacts(req.params.chatId, (contacts) =>
       contacts.some((contact) => contact.name === req.params.name)
@@ -336,9 +333,7 @@ export async function forkPhoneRoutes(app: FastifyInstance) {
     if ("error" in result) return reply.status(result.status).send({ error: result.error });
     const side = PHONE_CONTACT + req.params.name;
     for (const thread of await phones.listThreads(req.params.chatId)) {
-      if ((thread.a === PHONE_PERSONA && thread.b === side) || (thread.b === PHONE_PERSONA && thread.a === side)) {
-        await phones.removeThread(thread.id);
-      }
+      if (thread.a === side || thread.b === side) await phones.removeThread(thread.id);
     }
     return result;
   });

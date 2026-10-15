@@ -255,14 +255,14 @@ export function useContacts(chatId: string | null) {
   return {
     add: useMutation({
       /** `from`: an unknown number being saved, whose texts move to the new contact. */
-      mutationFn: (input: { name: string; relation: ForkPhoneRelation; note: string; from?: string }) =>
+      mutationFn: (input: Omit<ForkPhoneContact, "relation"> & { relation: ForkPhoneRelation; from?: string }) =>
         api.post<{ contacts: ForkPhoneContact[] }>(base, input),
       onError: failed,
       onSettled: done,
     }),
     edit: useMutation({
       /** `rename`: a new name; their texts move with it. */
-      mutationFn: (input: { name: string; relation: ForkPhoneRelation; note: string; rename?: string }) =>
+      mutationFn: (input: ForkPhoneContact & { rename?: string }) =>
         api.patch<{ contacts: ForkPhoneContact[] }>(`${base}/${encodeURIComponent(input.name)}`, input),
       onError: failed,
       onSettled: done,

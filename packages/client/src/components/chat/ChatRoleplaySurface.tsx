@@ -1679,6 +1679,7 @@ export function ChatRoleplaySurface({
             all={forkPhone.messages}
             ringingId={forkPhone.call?.state === "ringing" ? forkPhone.call.id : ""}
             names={forkPhone.names}
+            contacts={forkPhone.settings.contacts}
             threads={forkPhone.threads}
             cast={forkPhoneCast}
             personaName={forkPersonaName}

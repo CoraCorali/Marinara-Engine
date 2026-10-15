@@ -33,8 +33,16 @@ export type ForkPhoneLook = {
   wallpaper: string;
 };
 
-/** What a contact is to you, like the label on a real phone's contact card. */
-export const FORK_PHONE_RELATIONS = ["family", "bestFriend", "closeFriend", "friend", "other"] as const;
+/** What a contact is to you, like the label on a real phone's contact card. "custom" uses your own word. */
+export const FORK_PHONE_RELATIONS = [
+  "family",
+  "bestFriend",
+  "closeFriend",
+  "friend",
+  "staff",
+  "other",
+  "custom",
+] as const;
 export type ForkPhoneRelation = (typeof FORK_PHONE_RELATIONS)[number];
 
 /** How the models are told each label. */
@@ -43,22 +51,44 @@ export const FORK_PHONE_RELATION_WORDS: Record<ForkPhoneRelation, string> = {
   bestFriend: "best friend",
   closeFriend: "close friend",
   friend: "friend",
+  staff: "staff",
   other: "contact",
+  custom: "contact",
 };
+
+/** In a contact's "close with" list, the persona; everyone else is a character id. */
+export const FORK_PHONE_CONTACT_PERSONA = "persona";
 
 /**
  * Someone in your phone who is not a card character: Mom, a coworker, an ex. They have no phone of
  * their own; you text them and the AI answers as them.
  */
 export type ForkPhoneContact = {
+  /** The name the AI uses, and their texts are found by. */
   name: string;
   relation: ForkPhoneRelation;
+  /** Your own word for them when `relation` is "custom" ("gardener", "boss"). */
+  label: string;
+  /** How your phone shows them ("Theo (Gardener)"), or "" for their name. */
+  shownAs: string;
   /** Who they are, in your words, for the AI ("my mom, worries a lot, texts in all caps"). */
   note: string;
+  personality: string;
+  /** When and how they text ("after work, or when he arrives on the property"). */
+  texting: string;
+  /** Who they are close to: "persona" and/or character ids. They text only these. */
+  closeWith: string[];
 };
 
 export const MAX_FORK_PHONE_CONTACTS = 30;
 export const MAX_FORK_PHONE_CONTACT_NOTE = 300;
+const MAX_CONTACT_FIELD = 200;
+const MAX_CONTACT_LABEL = 40;
+
+/** The word for what they are to you: your own label, or the chosen one. */
+export function forkPhoneRelationWord(contact: Pick<ForkPhoneContact, "relation" | "label">): string {
+  return contact.relation === "custom" && contact.label ? contact.label : FORK_PHONE_RELATION_WORDS[contact.relation];
+}
 
 export type ForkPhoneSettings = ForkPhoneLook & {
   on: boolean;
@@ -73,20 +103,39 @@ export function forkPhoneContactName(raw: unknown): string {
   return typeof raw === "string" ? raw.replace(/\s+/g, " ").trim().slice(0, 60) : "";
 }
 
+/** One contact's fields, cleaned; null without a name. Older contacts lack the newer fields. */
+export function normalizeForkPhoneContact(raw: unknown): ForkPhoneContact | null {
+  const input = raw && typeof raw === "object" ? (raw as Record<string, unknown>) : {};
+  const name = forkPhoneContactName(input.name);
+  if (!name) return null;
+  const text = (value: unknown, max: number) => (typeof value === "string" ? value.trim().slice(0, max) : "");
+  const closeWith = Array.isArray(input.closeWith)
+    ? [...new Set(input.closeWith.filter((id): id is string => typeof id === "string" && Boolean(id.trim())))].slice(
+        0,
+        20,
+      )
+    : [FORK_PHONE_CONTACT_PERSONA];
+  return {
+    name,
+    relation: (FORK_PHONE_RELATIONS as readonly string[]).includes(input.relation as string)
+      ? (input.relation as ForkPhoneRelation)
+      : "other",
+    label: text(input.label, MAX_CONTACT_LABEL),
+    shownAs: forkPhoneContactName(input.shownAs),
+    note: text(input.note, MAX_FORK_PHONE_CONTACT_NOTE),
+    personality: text(input.personality, MAX_CONTACT_FIELD),
+    texting: text(input.texting, MAX_CONTACT_FIELD),
+    closeWith,
+  };
+}
+
 export function normalizeForkPhoneContacts(raw: unknown): ForkPhoneContact[] {
   const contacts: ForkPhoneContact[] = [];
   for (const entry of Array.isArray(raw) ? raw : []) {
-    const input = entry && typeof entry === "object" ? (entry as Record<string, unknown>) : {};
-    const name = forkPhoneContactName(input.name);
+    const contact = normalizeForkPhoneContact(entry);
     // Names are unique whatever their case, since a contact's thread is found by name.
-    if (!name || contacts.some((contact) => contact.name.toLowerCase() === name.toLowerCase())) continue;
-    contacts.push({
-      name,
-      relation: (FORK_PHONE_RELATIONS as readonly string[]).includes(input.relation as string)
-        ? (input.relation as ForkPhoneRelation)
-        : "other",
-      note: typeof input.note === "string" ? input.note.trim().slice(0, MAX_FORK_PHONE_CONTACT_NOTE) : "",
-    });
+    if (!contact || contacts.some((other) => other.name.toLowerCase() === contact.name.toLowerCase())) continue;
+    contacts.push(contact);
   }
   return contacts.slice(0, MAX_FORK_PHONE_CONTACTS);
 }

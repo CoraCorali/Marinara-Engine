@@ -1,5 +1,5 @@
 // Fork feature: Pocket Phone, part 2 — running the phone agent and calls with a model (see FORK.md).
-import { readForkPhoneSettings } from "@marinara-engine/shared";
+import { FORK_PHONE_CONTACT_PERSONA, readForkPhoneSettings } from "@marinara-engine/shared";
 import type { DB } from "../../db/connection.js";
 import { createChatsStorage } from "../storage/chats.storage.js";
 import { createCharactersStorage } from "../storage/characters.storage.js";
@@ -137,10 +137,13 @@ export function createPhoneRunner(db: DB) {
     const personaName = identity?.name?.trim() || "User";
     const nameFor = (id: string) => members.find((member) => member.id === id)?.name ?? "";
     const contacts = readForkPhoneSettings(parseRecord(chat.metadata)).contacts;
+    /** A contact's "close with" entry as a name: the persona, or a character. */
+    const closeName = (id: string) => (id === FORK_PHONE_CONTACT_PERSONA ? personaName : nameFor(id));
     return {
       members,
       personaName,
       nameFor,
+      closeName,
       contacts,
       contactOf: (side: string) => contacts.find((contact) => `${PHONE_CONTACT}${contact.name}` === side),
       /**
@@ -149,7 +152,7 @@ export function createPhoneRunner(db: DB) {
        */
       outsider: (side: string) => {
         const contact = contacts.find((entry) => `${PHONE_CONTACT}${entry.name}` === side);
-        if (contact) return { name: contact.name, who: contactWho(contact, personaName) };
+        if (contact) return { name: contact.name, who: contactWho(contact, personaName, closeName) };
         if (!side.startsWith(PHONE_UNKNOWN)) return null;
         const name = side.slice(PHONE_UNKNOWN.length);
         return name ? { name, who: `someone ${personaName} has not saved in their phone (an unknown number)` } : null;
@@ -567,7 +570,7 @@ export function createPhoneRunner(db: DB) {
           ? `${people.side(state.call.from)} is ${state.call.state === "ringing" ? `calling ${people.personaName} right now (ringing)` : `on a call with ${people.personaName}`}.`
           : "";
         const prompt = buildPhoneAgentMessages({
-          contacts: people.contacts.map(contactLine),
+          contacts: people.contacts.map((contact) => contactLine(contact, people.closeName)),
           personaName: people.personaName,
           // No one listed as present means the world state is not tracking it, not that everyone left.
           cast: people.members.map((member) => ({
@@ -609,6 +612,7 @@ export function createPhoneRunner(db: DB) {
           ),
           new Set(people.contacts.map((contact) => `${PHONE_CONTACT}${contact.name}`)),
           new Set(threads.flatMap((thread) => [thread.a, thread.b]).filter((side) => side.startsWith(PHONE_UNKNOWN))),
+          new Map(people.contacts.map((contact) => [`${PHONE_CONTACT}${contact.name}`, new Set(contact.closeWith)])),
         );
         const plan = planPhoneRun({ state, answer, replyId, day: where.date, owed, newId });
         plan.state.reachable = answer.reachable.length ? { reply: replyId, ids: answer.reachable } : null;

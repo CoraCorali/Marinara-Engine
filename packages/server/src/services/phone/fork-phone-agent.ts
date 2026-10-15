@@ -288,6 +288,8 @@ export function readPhoneAgentAnswer(
   contactSides: ReadonlySet<string> = new Set(),
   /** Unknown numbers already on your phone ("unknown:Deidra"): their next texts join them. */
   unknownSides: ReadonlySet<string> = new Set(),
+  /** Each saved contact's "close with" list ("persona" and character ids): they text only these. */
+  contactCloseWith: ReadonlyMap<string, ReadonlySet<string>> = new Map(),
 ): PhoneAgentAnswer {
   const empty: PhoneAgentAnswer = { texts: [], calls: [], threads: [], drafts: [], send: [], drop: [], reachable: [] };
   const start = raw.indexOf("{");
@@ -313,6 +315,8 @@ export function readPhoneAgentAnswer(
     const unknown = `${PHONE_UNKNOWN}${side.slice(PHONE_CONTACT.length)}`;
     return unsaved || unknownSides.has(unknown) ? unknown : side;
   };
+  // A contact reaches only those they are close with; the story saying they did always counts.
+  const reaches = (from: string, to: string, story = false) => story || contactCloseWith.get(from)?.has(to) !== false;
   const queue = record(parsed.queue);
   return {
     texts: list(parsed.texts)
@@ -325,7 +329,9 @@ export function readPhoneAgentAnswer(
       }))
       .filter(
         (item) =>
-          (isCast(item.from) || contactSides.has(item.from) || item.from.startsWith(PHONE_UNKNOWN)) && item.body,
+          (isCast(item.from) || contactSides.has(item.from) || item.from.startsWith(PHONE_UNKNOWN)) &&
+          item.body &&
+          reaches(item.from, "persona", item.story),
       ),
     calls: list(parsed.calls)
       .map(record)
@@ -336,7 +342,11 @@ export function readPhoneAgentAnswer(
         ...timing(item),
         ...(item.story === true ? { story: true } : {}),
       }))
-      .filter((item) => isCast(item.from) || contactSides.has(item.from) || item.from.startsWith(PHONE_UNKNOWN)),
+      .filter(
+        (item) =>
+          (isCast(item.from) || contactSides.has(item.from) || item.from.startsWith(PHONE_UNKNOWN)) &&
+          reaches(item.from, "persona", item.story),
+      ),
     // Between others only: a card character on one side, never the persona.
     threads: list(parsed.threads)
       .map(record)
@@ -349,7 +359,9 @@ export function readPhoneAgentAnswer(
           item.from !== item.to &&
           item.from !== PHONE_PERSONA &&
           item.to !== PHONE_PERSONA &&
-          (isCast(item.from) || isCast(item.to)),
+          (isCast(item.from) || isCast(item.to)) &&
+          reaches(item.from, item.to) &&
+          reaches(item.to, item.from),
       ),
     drafts: list(parsed.drafts)
       .map(record)
@@ -528,7 +540,7 @@ export function buildPhoneAgentMessages(context: PhoneAgentContext): { role: "us
     ...castLines,
     "Anyone else (Mom, a coworker, a supplier) is a side contact who exists only inside a card character's phone.",
     context.contacts?.length
-      ? `${persona}'s own contacts (people with no card, who can text or call ${persona} too, rarely, about their own lives, their own part in the story or what ${persona} texted them; they were not in the story's scenes, so they know only what ${persona} texted them and what they themselves did, wrote or said in the story, like a letter they sent):\n${context.contacts.map((line) => `- ${line}`).join("\n")}`
+      ? `${persona}'s own contacts (people with no card, who can text or call ${persona} too, rarely, about their own lives, their own part in the story or what ${persona} texted them; they were not in the story's scenes, so they know only what ${persona} texted them and what they themselves did, wrote or said in the story, like a letter they sent. One listed as close with card characters can also text those characters in threads; they reach only the people they are close with, and follow how they text):\n${context.contacts.map((line) => `- ${line}`).join("\n")}`
       : "",
     context.cast.some((member) => member.present === null) ? "Judge from the story who is in the scene." : "",
     "",
