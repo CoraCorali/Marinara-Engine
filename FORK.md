@@ -728,6 +728,47 @@ fields, its own way into the scene, and its own wording for the model.
   phones.
 - Regression: `fork-phone`.
 
+### Pocket Phone, part 2: texting and calling on their own
+
+- **A phone agent** runs after each story reply while the phone is on (one streamed model call on
+  the chat's summary connection, so it can be a cheaper model; prompt and answer logged in debug).
+  It reads the last 8 story messages, the world state (date, time, place, who is present), People
+  and pairs, the persona's recent texts and calls, the characters' private threads, your unanswered
+  texts, what is waiting in the queue and any call in progress. It answers in JSON: texts to you
+  (`now`, or `later` after 1–3 replies), calls, lines in characters' threads with others (another
+  card character or a side contact like "Mom"), unsent drafts, which phones the story left within
+  reach (saved for peeking in part 3), and queued items to send early or drop (a time skip).
+- **It is told silence is the usual answer**, and the code holds it to that whatever it says:
+  **10 texts and calls a story day**, a **2-reply cooldown** for a character who texted unprompted
+  (answering your text is always allowed), at most 2 texts per character, 4 thread lines and 2 drafts
+  per reply, **one call at a time** (a second waits a reply). It is **skipped with no model call**
+  while everyone with a phone is in the scene and nothing waits (no queued text, no call, none of your
+  texts unanswered). A world state that does not track who is present never skips, and the agent is
+  told to judge presence from the story.
+- **Arriving**: "now" items come in after the reply; a toast says "📱 New text from Theo" with Open.
+  Queued items arrive after their replies, or **after 3 minutes in the chat without typing**.
+- **Calls**: a ringing card above the message box (Answer / Decline, the name in sparkly dot
+  letters when that bling is on, a little buzz that stops with reduced motion). Answer opens the call
+  screen with the caller's first line; you type, they answer line by line (one short model call per
+  line). Hang up and the chat shows "📞 Theo · 2 min · the scarf", which opens the thread, where the
+  call folds open into its transcript. Decline leaves "📞 Missed call from Theo", which the next run
+  sees and may turn into a text. You can call any card character from their thread (they pick up);
+  hanging up before anyone speaks leaves no card. The writer's phone block now has each recent call's
+  last 6 lines.
+- **Undo**: a swipe of a reply runs its phone agent again and takes back everything the earlier run
+  did: its texts, thread lines and drafts, what it queued, what it delivered from the queue (which
+  waits again), and a call it rang that was not answered. A deleted reply takes its AI texts, and
+  what it queued is dropped on the next run. Turning the phone off drops what was waiting.
+- **Private stays private**: characters' threads with others and drafts never show in the chat or on
+  your phone and never count as unread; the writer is not told them (they wait for peeking).
+- State lives in chat metadata: `forkPhoneQueue`, `forkPhoneRuns` (the last 20 replies with a run),
+  `forkPhoneLog` (what reached you, for the cap and cooldown), `forkPhoneCall`, `forkPhoneReachable`.
+- Live check (Fable 5.1 via LinkAPI, Kyli in the bakery with Theo): no text to Kyli, who was right
+  there; Mira privately texted Theo "so you're actually doing it saturday?? kyli confirmed??". A call
+  to Mira about Saturday answered in her voice, two short lines at a time.
+- Regression: `fork-phone-agent` (reading the answer, now and later, cap, cooldown, one call at a
+  time, undo, idle, skipping, the call lines in the writer's block, the prompt).
+
 ## Upstream files touched
 
 Fork-only code lives in `packages/client/src/lib/fork/`, `Fork*` components, `packages/shared/src/features/fork-bond-shapes.ts`, `packages/server/src/services/import/fork/`
@@ -839,6 +880,8 @@ Edits to upstream files are marked with a `Fork:` comment.
 | `packages/server/src/routes/index.ts`                                                      | Registers the season route                                                                        |
 | `packages/client/src/components/chat/ChatRoleplaySurface.tsx`                              | The Phone pill and the text cards after the message they followed                                 |
 | `packages/server/src/routes/generate.routes.ts`                                            | The phone block in the fork note                                                                  |
+| `packages/client/src/hooks/use-generate.ts`                                                | Runs the phone agent after the saved reply                                                        |
+| `packages/client/src/components/chat/ChatRoleplaySurface.tsx`                              | Only your own phone's texts and calls show in the chat                                            |
 
 ## Known upstream issue kept as is
 

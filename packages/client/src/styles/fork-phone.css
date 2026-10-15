@@ -459,7 +459,8 @@
     0 0 3px #fff,
     0 0 6px #ff6fb0;
 }
-.fork-phone .fp-dotmatrix {
+.fork-phone .fp-dotmatrix,
+.fork-ring .fp-dotmatrix {
   font-weight: 800;
   letter-spacing: 0.06em;
   background: radial-gradient(circle, var(--fp-dot, #ff8cc6) 50%, transparent 58%) 0 0 / 3px 3px;
@@ -468,8 +469,33 @@
   color: transparent;
 }
 
+/* ── An incoming call: a little buzz now and then ── */
+.fork-ring {
+  animation: fork-ring-buzz 1.6s ease-in-out infinite;
+}
+@keyframes fork-ring-buzz {
+  0%,
+  70%,
+  100% {
+    translate: 0 0;
+  }
+  74%,
+  82%,
+  90% {
+    translate: -2px 0;
+  }
+  78%,
+  86%,
+  94% {
+    translate: 2px 0;
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .fork-phone .fp-slide {
     transition: none;
+  }
+  .fork-ring {
+    animation: none;
   }
 }

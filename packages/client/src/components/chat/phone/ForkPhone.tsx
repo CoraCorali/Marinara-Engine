@@ -5,7 +5,9 @@
 // you picked. What you text sits in the chat after the newest message, and the story's writer is
 // told about it. Off by default; switched on per chat, since a fantasy story has no phones.
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, Loader2, Palette, SendHorizontal, Smartphone, Trash2 } from "lucide-react";
+import { createPortal } from "react-dom";
+import { useQueryClient } from "@tanstack/react-query";
+import { ArrowLeft, Loader2, Palette, Phone, PhoneOff, SendHorizontal, Smartphone, Trash2 } from "lucide-react";
 import { useTranslation as useUiTranslation } from "react-i18next";
 import {
   DEFAULT_FORK_PHONE_LOOK,
@@ -16,13 +18,18 @@ import {
 } from "@marinara-engine/shared";
 import {
   PHONE_PERSONA,
+  callMinutes,
+  deliverIdlePhone,
   otherSide,
+  phoneNames,
   unreadCount,
+  useCallAction,
   useDeleteText,
   useForkPhone,
   useMarkThreadRead,
   useSendText,
   useUpdatePhoneSettings,
+  type PhoneCall,
   type PhoneMessage,
   type PhoneThread,
 } from "../../../hooks/use-fork-phone";
@@ -43,7 +50,13 @@ const CHIP =
 const CHIP_ON = "border-[var(--primary)] bg-[var(--primary)] text-[var(--primary-foreground)]";
 const CHIP_OFF = "border-[var(--border)] text-foreground/85 hover:bg-foreground/10";
 
-type View = { name: "home" } | { name: "thread"; to: string } | { name: "look" };
+type View = { name: "home" } | { name: "thread"; to: string } | { name: "look" } | { name: "call" };
+
+/**
+ * Texts waiting to arrive come in after this long in the chat without writing.
+ * ponytail: only a keypress counts as writing; scrolling or reading does not restart the wait.
+ */
+const IDLE_DELIVERY_MS = 3 * 60_000;
 
 function Avatar({ member }: { member?: PhoneCastMember }) {
   if (member?.avatarUrl) return <img className="fp-avatar" src={member.avatarUrl} alt="" draggable={false} />;
@@ -55,13 +68,36 @@ export function ForkPhonePill({
   chatId,
   cast,
   personaName,
+  busy = false,
 }: {
   chatId: string;
   cast: readonly PhoneCastMember[];
   personaName: string;
+  /** A reply is being written: nothing arrives while you wait for it. */
+  busy?: boolean;
 }) {
   const { t: localizeUi } = useUiTranslation();
   const { data } = useForkPhone(chatId);
+  const qc = useQueryClient();
+  const nameOf = useMemo(() => phoneNameOf(cast, personaName), [cast, personaName]);
+  useEffect(() => {
+    phoneNames.set(chatId, nameOf);
+  }, [chatId, nameOf]);
+  // Waiting texts arrive when you sit in the chat a few minutes without writing.
+  const waiting = data?.settings.on ? (data.waiting ?? 0) : 0;
+  useEffect(() => {
+    if (!waiting || busy) return;
+    let timer = window.setTimeout(() => deliverIdlePhone(qc, chatId), IDLE_DELIVERY_MS);
+    const restart = () => {
+      window.clearTimeout(timer);
+      timer = window.setTimeout(() => deliverIdlePhone(qc, chatId), IDLE_DELIVERY_MS);
+    };
+    window.addEventListener("keydown", restart);
+    return () => {
+      window.clearTimeout(timer);
+      window.removeEventListener("keydown", restart);
+    };
+  }, [busy, chatId, qc, waiting]);
   // In a store, so a text card in the chat can open the phone on its conversation.
   const openTo = useForkPhoneStore((s) => s.openTo);
   const setOpenTo = useForkPhoneStore((s) => s.setOpenTo);
@@ -101,7 +137,76 @@ export function ForkPhonePill({
           />
         )}
       </Modal>
+      {on && data?.call?.state === "ringing" && !open && (
+        <ForkPhoneRinging
+          chatId={chatId}
+          call={data.call}
+          member={cast.find((member) => member.id === data.call?.from)}
+          dotMatrix={data.settings.dotMatrix}
+          onAnswered={() => setOpenTo("call")}
+        />
+      )}
     </>
+  );
+}
+
+function phoneNameOf(cast: readonly PhoneCastMember[], personaName: string) {
+  return (side: string) =>
+    side === PHONE_PERSONA
+      ? personaName
+      : (cast.find((member) => member.id === side)?.name ?? side.replace(/^contact:/, ""));
+}
+
+/** Someone is calling: a card over the chat, with Answer and Decline. */
+function ForkPhoneRinging({
+  chatId,
+  call,
+  member,
+  dotMatrix,
+  onAnswered,
+}: {
+  chatId: string;
+  call: PhoneCall;
+  member?: PhoneCastMember;
+  dotMatrix: boolean;
+  onAnswered: () => void;
+}) {
+  const { t: localizeUi } = useUiTranslation();
+  const action = useCallAction(chatId);
+  const name = member?.name ?? call.from.replace(/^contact:/, "");
+  return createPortal(
+    <div
+      role="alertdialog"
+      aria-label={localizeUi("ui.chat.forkphone.incoming")}
+      className="fork-ui fork-ring fixed inset-x-0 bottom-[calc(8.5rem+env(safe-area-inset-bottom))] z-[60] mx-auto flex w-[min(22rem,calc(100vw-2rem))] items-center gap-3 rounded-3xl border border-[var(--border)] bg-[var(--card)] p-2.5 text-foreground shadow-2xl"
+    >
+      <span className="fork-phone contents">
+        <Avatar member={member} />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block text-[0.6875rem] opacity-75">{localizeUi("ui.chat.forkphone.incoming")}</span>
+        <span className={cn("block truncate text-[0.9375rem] font-bold", dotMatrix && "fp-dotmatrix")}>{name}</span>
+      </span>
+      <button
+        type="button"
+        disabled={action.isPending}
+        onClick={() => action.mutate({ action: "decline" })}
+        aria-label={localizeUi("ui.chat.forkphone.decline")}
+        className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[var(--destructive)] text-white disabled:opacity-50"
+      >
+        <PhoneOff size="1rem" />
+      </button>
+      <button
+        type="button"
+        disabled={action.isPending}
+        onClick={() => action.mutate({ action: "answer" }, { onSuccess: onAnswered })}
+        aria-label={localizeUi("ui.chat.forkphone.answer")}
+        className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-[var(--primary)] text-[var(--primary-foreground)] disabled:opacity-50"
+      >
+        {action.isPending ? <Loader2 size="1rem" className="animate-spin" /> : <Phone size="1rem" />}
+      </button>
+    </div>,
+    document.body,
   );
 }
 
@@ -160,7 +265,11 @@ export function ForkPhoneApp({
 }) {
   const { t: localizeUi } = useUiTranslation();
   const { data } = useForkPhone(chatId);
-  const [view, setView] = useState<View>(startWith ? { name: "thread", to: startWith } : { name: "home" });
+  const [view, setView] = useState<View>(
+    startWith === "call" ? { name: "call" } : startWith ? { name: "thread", to: startWith } : { name: "home" },
+  );
+  const callAction = useCallAction(chatId);
+  const call = data?.call?.state === "live" ? data.call : null;
   const [draft, setDraft] = useState("");
   const [typing, setTyping] = useState(false);
   const send = useSendText(chatId);
@@ -187,6 +296,9 @@ export function ForkPhoneApp({
           threadFor={threadFor}
           onOpen={(to) => setView({ name: "thread", to })}
           onLook={() => setView({ name: "look" })}
+          call={call}
+          callName={call ? (cast.find((member) => member.id === call.from)?.name ?? call.from) : ""}
+          onCall={() => setView({ name: "call" })}
         />
       )}
       {view.name === "thread" && (
@@ -203,6 +315,23 @@ export function ForkPhoneApp({
           onSend={sendDraft}
           sending={send.isPending}
           onBack={() => setView({ name: "home" })}
+          onCall={
+            cast.some((member) => member.id === view.to) && !data?.call
+              ? () => callAction.mutate({ action: "call", to: view.to }, { onSuccess: () => setView({ name: "call" }) })
+              : undefined
+          }
+          calling={callAction.isPending}
+          ringingId={data?.call?.state === "ringing" ? data.call.id : ""}
+        />
+      )}
+      {view.name === "call" && (
+        <PhoneCallView
+          chatId={chatId}
+          call={call}
+          member={call ? cast.find((member) => member.id === call.from) : undefined}
+          personaName={personaName}
+          messages={data?.messages ?? []}
+          onBack={() => setView(call ? { name: "thread", to: call.from } : { name: "home" })}
         />
       )}
       {view.name === "look" && <PhoneLook chatId={chatId} look={look} onBack={() => setView({ name: "home" })} />}
@@ -225,6 +354,7 @@ export function ForkPhoneApp({
         }}
         onBack={() => setView({ name: "home" })}
         onOk={() => (view.name === "thread" ? sendDraft() : undefined)}
+        // The keys type into a text, not into a call: the call has its own box.
         onKey={(key) => {
           if (view.name !== "thread") return;
           if (key === "\n") return sendDraft();
@@ -241,19 +371,25 @@ function PhoneHome({
   threadFor,
   onOpen,
   onLook,
+  call,
+  callName,
+  onCall,
 }: {
   cast: readonly PhoneCastMember[];
   messages: readonly PhoneMessage[];
   threadFor: (to: string) => PhoneThread | undefined;
   onOpen: (to: string) => void;
   onLook: () => void;
+  call: PhoneCall | null;
+  callName: string;
+  onCall: () => void;
 }) {
   const { t: localizeUi } = useUiTranslation();
   const rows = cast
     .map((member) => {
       const thread = threadFor(member.id);
       const own = thread ? messages.filter((message) => message.threadId === thread.id) : [];
-      const last = [...own].reverse().find((message) => message.kind === "text" || message.kind === "photo");
+      const last = [...own].reverse().find((message) => message.kind !== "draft" && message.kind !== "call_line");
       const unread = own.filter((message) => !message.read && message.sender !== PHONE_PERSONA).length;
       return { member, last, unread, at: last?.createdAt ?? "" };
     })
@@ -268,6 +404,14 @@ function PhoneHome({
         </button>
       </div>
       <div className="fp-scroll">
+        {call && (
+          <button type="button" className="fp-row" onClick={onCall}>
+            <Phone size="0.875rem" className="shrink-0" />
+            <span className="min-w-0 flex-1 truncate text-[0.8125rem] font-bold">
+              {localizeUi("ui.chat.forkphone.onCall", { name: callName })}
+            </span>
+          </button>
+        )}
         {rows.length === 0 && (
           <p className="m-0 p-2 text-xs opacity-75">{localizeUi("ui.chat.forkphone.noContacts")}</p>
         )}
@@ -277,7 +421,11 @@ function PhoneHome({
             <span className="min-w-0 flex-1">
               <span className="block truncate text-[0.8125rem] font-bold">{member.name}</span>
               <span className="block truncate text-[0.6875rem] opacity-75">
-                {last ? last.body : localizeUi("ui.chat.forkphone.sayHi")}
+                {last
+                  ? last.kind === "call"
+                    ? localizeUi("ui.chat.forkphone.callPreview", { about: last.body })
+                    : last.body
+                  : localizeUi("ui.chat.forkphone.sayHi")}
               </span>
             </span>
             {unread > 0 && <span className="fp-unread" aria-label={localizeUi("ui.chat.forkphone.unread")} />}
@@ -301,7 +449,11 @@ function PhoneThreadView({
   onSend,
   sending,
   onBack,
+  onCall,
+  calling,
+  ringingId,
 }: {
+  ringingId: string;
   chatId: string;
   to: string;
   member?: PhoneCastMember;
@@ -314,13 +466,21 @@ function PhoneThreadView({
   onSend: () => void;
   sending: boolean;
   onBack: () => void;
+  /** Call them; missing while a call is already on. */
+  onCall?: () => void;
+  calling: boolean;
 }) {
   const { t: localizeUi } = useUiTranslation();
   const markRead = useMarkThreadRead(chatId);
   const remove = useDeleteText(chatId);
   const endRef = useRef<HTMLDivElement>(null);
   const shown = useMemo(
-    () => (thread ? messages.filter((message) => message.threadId === thread.id && message.kind !== "draft") : []),
+    () =>
+      thread
+        ? messages.filter(
+            (message) => message.threadId === thread.id && message.kind !== "draft" && message.kind !== "call_line",
+          )
+        : [],
     [messages, thread],
   );
   const unread = shown.some((message) => !message.read && message.sender !== PHONE_PERSONA);
@@ -354,6 +514,16 @@ function PhoneThreadView({
         </button>
         <Avatar member={member} />
         <span className="min-w-0 flex-1 truncate">{member?.name ?? to}</span>
+        {onCall && (
+          <button
+            type="button"
+            onClick={onCall}
+            disabled={calling}
+            aria-label={localizeUi("ui.chat.forkphone.callButton", { name: member?.name ?? to })}
+          >
+            {calling ? <Loader2 size="0.875rem" className="animate-spin" /> : <Phone size="0.875rem" />}
+          </button>
+        )}
       </div>
       <div className="fp-scroll">
         {shown.length === 0 && (
@@ -363,11 +533,27 @@ function PhoneThreadView({
         )}
         {shown.map((message) => {
           const mine = message.sender === PHONE_PERSONA;
-          if (message.kind === "call" || message.kind === "call_line") {
+          if (message.kind === "call") {
+            const lines = messages.filter((line) => line.kind === "call_line" && line.callId === message.id);
             return (
-              <p key={message.id} className="m-0 self-center text-[0.6875rem] opacity-75">
-                📞 {message.body}
-              </p>
+              <details key={message.id} className="self-center text-center text-[0.6875rem] opacity-85">
+                <summary className="cursor-pointer list-none">
+                  {callCardText(message, lines.length, member?.name ?? to, message.id === ringingId, localizeUi)}
+                  {message.body && !message.body.startsWith("(missed)")
+                    ? localizeUi("ui.chat.forkphone.callAbout", { about: message.body })
+                    : ""}
+                </summary>
+                {lines.map((line) => (
+                  <p key={line.id} className="m-0 text-left">
+                    <b>
+                      {localizeUi("ui.chat.forkphone.callLine", {
+                        name: line.sender === PHONE_PERSONA ? personaName : (member?.name ?? to),
+                      })}
+                    </b>{" "}
+                    {line.body}
+                  </p>
+                ))}
+              </details>
             );
           }
           return (
@@ -420,6 +606,120 @@ function PhoneThreadView({
           {sending ? <Loader2 size="0.875rem" className="animate-spin" /> : <SendHorizontal size="0.875rem" />}
         </button>
       </div>
+    </>
+  );
+}
+
+type Localize = (key: string, options?: Record<string, unknown>) => string;
+
+/** "📞 Theo · 2 min", "📞 Missed call from Theo", or "📞 Theo is calling…". */
+function callCardText(call: PhoneMessage, lines: number, name: string, ringing: boolean, localizeUi: Localize): string {
+  if (ringing) return localizeUi("ui.chat.forkphone.callRinging", { name });
+  if (call.body.startsWith("(missed)") || (lines === 0 && call.sender !== PHONE_PERSONA))
+    return localizeUi("ui.chat.forkphone.callMissed", { name });
+  return localizeUi("ui.chat.forkphone.callDone", { name, minutes: callMinutes(lines) });
+}
+
+/** On a call: you type your lines, they answer one at a time. Text only. */
+function PhoneCallView({
+  chatId,
+  call,
+  member,
+  personaName,
+  messages,
+  onBack,
+}: {
+  chatId: string;
+  call: PhoneCall | null;
+  member?: PhoneCastMember;
+  personaName: string;
+  messages: readonly PhoneMessage[];
+  onBack: () => void;
+}) {
+  const { t: localizeUi } = useUiTranslation();
+  const action = useCallAction(chatId);
+  const [line, setLine] = useState("");
+  const endRef = useRef<HTMLDivElement>(null);
+  const lines = useMemo(
+    () => (call ? messages.filter((message) => message.kind === "call_line" && message.callId === call.id) : []),
+    [call, messages],
+  );
+  useEffect(() => {
+    endRef.current?.scrollIntoView({ block: "end" });
+  }, [lines.length, action.isPending]);
+  const name = member?.name ?? call?.from ?? "";
+  const say = () => {
+    if (!line.trim() || action.isPending) return;
+    action.mutate({ action: "say", line }, { onSuccess: () => setLine("") });
+  };
+  return (
+    <>
+      <div className="fp-bar">
+        <button type="button" onClick={onBack} aria-label={localizeUi("ui.chat.forkphone.back")}>
+          <ArrowLeft size="0.875rem" />
+        </button>
+        <Avatar member={member} />
+        <span className="min-w-0 flex-1 truncate">
+          {call ? localizeUi("ui.chat.forkphone.onCall", { name }) : localizeUi("ui.chat.forkphone.callEnded")}
+        </span>
+        {call && (
+          <button
+            type="button"
+            onClick={() => action.mutate({ action: "hang-up" }, { onSuccess: onBack })}
+            aria-label={localizeUi("ui.chat.forkphone.hangUp")}
+            className="text-[var(--destructive)]"
+          >
+            <PhoneOff size="0.875rem" />
+          </button>
+        )}
+      </div>
+      <div className="fp-scroll">
+        {call && lines.length === 0 && (
+          <p className="m-0 p-2 text-center text-xs opacity-75">{localizeUi("ui.chat.forkphone.callJustStarted")}</p>
+        )}
+        {lines.map((entry) => {
+          const mine = entry.sender === PHONE_PERSONA;
+          return (
+            <div key={entry.id} className={cn("flex flex-col", mine ? "items-end" : "items-start")}>
+              <span className="fp-time">{mine ? personaName : name}</span>
+              <div className={cn("fp-bubble", mine ? "is-me" : "is-them")}>{entry.body}</div>
+            </div>
+          );
+        })}
+        {action.isPending && action.variables?.action === "say" && (
+          <Loader2 size="0.875rem" className="animate-spin self-start opacity-75" />
+        )}
+        <div ref={endRef} />
+      </div>
+      {call && (
+        <div className="fp-compose">
+          <label className="sr-only" htmlFor="fork-phone-call-line">
+            {localizeUi("ui.chat.forkphone.sayPlaceholder")}
+          </label>
+          <textarea
+            id="fork-phone-call-line"
+            rows={1}
+            value={line}
+            placeholder={localizeUi("ui.chat.forkphone.sayPlaceholder")}
+            onChange={(event) => setLine(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+                event.preventDefault();
+                say();
+              }
+            }}
+            className="fork-keep-size"
+          />
+          <button
+            type="button"
+            onClick={say}
+            disabled={!line.trim() || action.isPending}
+            aria-label={localizeUi("ui.chat.forkphone.say")}
+          >
+            <SendHorizontal size="0.875rem" />
+          </button>
+        </div>
+      )}
     </>
   );
 }
@@ -565,22 +865,25 @@ function PhoneLook({ chatId, look, onBack }: { chatId: string; look: ForkPhoneLo
 /** Texts and calls between the prose: a little card after the story message they followed. */
 export function ForkPhoneInlineCards({
   messages,
+  all,
   threads,
   cast,
   personaName,
   onOpen,
+  ringingId,
 }: {
+  /** The call card that is ringing right now, if any. */
+  ringingId: string;
   messages: readonly PhoneMessage[];
+  /** Every phone message of the chat, for a call's length. */
+  all: readonly PhoneMessage[];
   threads: readonly PhoneThread[];
   cast: readonly PhoneCastMember[];
   personaName: string;
   onOpen: (to: string) => void;
 }) {
   const { t: localizeUi } = useUiTranslation();
-  const nameOf = (side: string) =>
-    side === PHONE_PERSONA
-      ? personaName
-      : (cast.find((member) => member.id === side)?.name ?? side.replace(/^contact:/, ""));
+  const nameOf = phoneNameOf(cast, personaName);
   return (
     <div className="mx-auto my-1 flex w-full max-w-[min(42rem,100%)] flex-col gap-1 px-2">
       {messages.map((message) => {
@@ -603,13 +906,21 @@ export function ForkPhoneInlineCards({
             <span className="min-w-0">
               <span className="font-bold">
                 {message.kind === "call"
-                  ? localizeUi("ui.chat.forkphone.callCard", { name: nameOf(message.sender) })
+                  ? callCardText(
+                      message,
+                      all.filter((line) => line.kind === "call_line" && line.callId === message.id).length,
+                      nameOf(other),
+                      message.id === ringingId,
+                      localizeUi,
+                    )
                   : localizeUi("ui.chat.forkphone.textCard", {
                       from: nameOf(message.sender),
                       to: nameOf(mine ? other : PHONE_PERSONA),
                     })}
               </span>{" "}
-              <span className="text-foreground/85">{message.body}</span>
+              {!(message.kind === "call" && message.body.startsWith("(missed)")) && (
+                <span className="text-foreground/85">{message.body}</span>
+              )}
             </span>
           </button>
         );

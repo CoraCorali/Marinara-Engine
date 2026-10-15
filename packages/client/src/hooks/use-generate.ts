@@ -1,6 +1,7 @@
 // ──────────────────────────────────────────────
 // React Query: Generation (streaming + agent pipeline)
 // ──────────────────────────────────────────────
+import { runPhoneAfterReply } from "./use-fork-phone"; // Fork: Pocket Phone
 import { useCallback, useRef } from "react";
 import { audioManager } from "../lib/game-audio";
 import { normalizeEchoChamberMessages } from "../lib/echo-chamber-queue";
@@ -1529,6 +1530,7 @@ export function useGenerate() {
       };
       let sawGroupTurn = false;
       let currentGroupTurnSavedMessage: Message | null = null;
+      let forkPhoneReplyId = ""; // Fork: Pocket Phone
       let heldTextRewriteMessage: Message | null = null;
       let holdingTextRewrite = false;
       let gameStatePatchAnchor: { messageId: string; swipeIndex: number } | null = null;
@@ -2633,6 +2635,8 @@ export function useGenerate() {
               flushLeadingSpeakerPrefix();
               const savedMessage = event.data as Message;
               if (savedMessage.role === "assistant") {
+                // Fork: the phone agent runs after the reply that was saved last.
+                forkPhoneReplyId = savedMessage.id;
                 completeQueuedResponse(params.chatId, savedMessage.characterId);
                 currentGroupTurnSavedMessage = savedMessage;
                 if (
@@ -3071,6 +3075,8 @@ export function useGenerate() {
               sawDoneEvent = true;
               // Fork: the bonds agent may have moved People during this reply; re-read it.
               void qc.invalidateQueries({ queryKey: ["fork-bonds", params.chatId] });
+              // Fork: Pocket Phone — who texts or calls after this reply.
+              if (!params.impersonate && forkPhoneReplyId) runPhoneAfterReply(qc, params.chatId, forkPhoneReplyId);
               if (
                 illustrationQueued &&
                 !illustrationSettled &&

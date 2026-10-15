@@ -3,6 +3,8 @@ import { PHONE_CONTACT, PHONE_PERSONA, type PhoneMessage, type PhoneThread } fro
 
 export const PHONE_TEXTS_PER_THREAD = 8;
 export const PHONE_RECENT_CALLS = 4;
+/** The last lines of each recent call, so the writer knows what was said. */
+export const PHONE_CALL_LINES = 6;
 
 /** "Theo", "Kyli", or a side contact's own name. */
 export function phoneSideName(side: string, personaName: string, nameFor: (id: string) => string): string {
@@ -52,7 +54,11 @@ export function phonePromptBlock(
         call.sender === PHONE_PERSONA
           ? `${name(PHONE_PERSONA)} called ${name(other)}`
           : `${name(call.sender)} called ${name(PHONE_PERSONA)}`;
-      return [`- ${who}${call.storyTime ? ` at ${call.storyTime}` : ""}${call.body ? `: ${call.body}` : ""}`];
+      const lines = messages
+        .filter((line) => line.kind === "call_line" && line.callId === call.id)
+        .slice(-PHONE_CALL_LINES)
+        .map((line) => `  ${name(line.sender)}: ${line.body}`);
+      return [`- ${who}${call.storyTime ? ` at ${call.storyTime}` : ""}${call.body ? `: ${call.body}` : ""}`, ...lines];
     });
   if (calls.length) sections.push(["Recent calls:", ...calls].join("\n"));
   if (sections.length === 0) return "";

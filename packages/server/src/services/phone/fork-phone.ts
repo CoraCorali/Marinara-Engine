@@ -183,7 +183,7 @@ export function createPhoneStorage(db: DB) {
         callId: input.callId ?? "",
         swipes: JSON.stringify(input.source === "agent" && body ? [body] : []),
         activeSwipe: 0,
-        read: input.read === false ? 0 : input.sender === PHONE_PERSONA ? 1 : 0,
+        read: (input.read ?? input.sender === PHONE_PERSONA) ? 1 : 0,
         createdAt: timestamp,
         updatedAt: timestamp,
       };

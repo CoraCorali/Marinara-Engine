@@ -1566,8 +1566,13 @@ export function ChatRoleplaySurface({
   const forkPhoneByMessage = useMemo(() => {
     const byMessage = new Map<string, NonNullable<typeof forkPhone>["messages"]>();
     if (!forkPhone?.settings.on) return byMessage;
+    // Only your own phone's conversations show in the chat; characters' threads with others stay private.
+    const mine = new Set(
+      forkPhone.threads.filter((thread) => thread.a === "persona" || thread.b === "persona").map((thread) => thread.id),
+    );
     for (const message of forkPhone.messages) {
       if (!message.afterMessageId || message.kind === "call_line" || message.kind === "draft") continue;
+      if (!mine.has(message.threadId)) continue;
       byMessage.set(message.afterMessageId, [...(byMessage.get(message.afterMessageId) ?? []), message]);
     }
     return byMessage;
@@ -1593,7 +1598,12 @@ export function ChatRoleplaySurface({
             />
           )}
           {forkChaptersChatId && (
-            <ForkPhonePill chatId={forkChaptersChatId} cast={forkPhoneCast} personaName={forkPersonaName} />
+            <ForkPhonePill
+              chatId={forkChaptersChatId}
+              cast={forkPhoneCast}
+              personaName={forkPersonaName}
+              busy={isStreaming}
+            />
           )}
         </>
       ) : undefined,
@@ -1663,6 +1673,8 @@ export function ChatRoleplaySurface({
         {!folded && phoneCards && forkPhone && (
           <ForkPhoneInlineCards
             messages={phoneCards}
+            all={forkPhone.messages}
+            ringingId={forkPhone.call?.state === "ringing" ? forkPhone.call.id : ""}
             threads={forkPhone.threads}
             cast={forkPhoneCast}
             personaName={forkPersonaName}
