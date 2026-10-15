@@ -623,6 +623,36 @@ Left as they are, with the reason:
 - **Storage**: one new registered table, `fork_chapters` (no storage-format bump). Regression:
   `fork-chapters`.
 
+### The board beyond clothes
+
+Places, things, people and vibes used to be a picture and a caption; now each is a card with its own
+fields, its own way into the scene, and its own wording for the model.
+
+- **Filter chips** sit above the grid: All, clothes, places, things, people, vibes, each with a count
+  and disabled when empty. On the **places** shelf the polaroids group under their building with a
+  room count ("Theo's apartment · 3 rooms"), and the place the story is standing in wears a
+  "📍 here" badge. On the **things** shelf they group by whose they are ("Kyli's things",
+  "Theo's things", "Shared / nobody"). Grouping and the badges are decided in
+  `lib/fork/board-groups.ts` so they can be tested without a browser; a polaroid shows the pin's
+  name when it has one, and falls back to its caption.
+- **A badge tells you what is going on at a glance**: a thing's short status ("⛽ low"), ★ for
+  important, "🎁 from Theo" when a feeling says it was a gift, and "has it" when the holder is
+  someone other than the owner. A lost thing, or one left at a place, gets no "has it" badge.
+- **The editor** shows fields by category. A **place** has a Building and a Room, an album with a
+  look each for Day, Night and Rain (a new picture replaces that look's old one and deletes its file),
+  and "Comes in when the story is here" on by default. A **thing** is one universal card with no
+  per-kind fields: a name or nickname, whose it is, who has it (the persona, a card, at a place,
+  lost, or nobody), what it is inside, a "Right now" line the story also updates, how people feel
+  about it, the memories chapter recaps left on it, ★ Important, and "Comes in with whoever has it",
+  off by default. A **person** has a name, a role and a link to a card. A **vibe** has a title, up to
+  six palette colours, up to eight mood words, and whether it is for this chapter or the whole story
+  (a chapter vibe remembers which chapter it was set in).
+- **Holding**: a chat's thing pins whose holder is the persona appear in the persona card's Holding
+  list, beside the inventory rows, through `useHeldThingNames`.
+- Every field on a card saves through the pin's merged `details`, so clearing one field never
+  disturbs the others, and text fields wait until you stop typing.
+- Regression: `fork-board-grouping`. The board's own strings live under `ui.chat.forkboard.*`.
+
 ## Upstream files touched
 
 Fork-only code lives in `packages/client/src/lib/fork/`, `Fork*` components, `packages/shared/src/features/fork-bond-shapes.ts`, `packages/server/src/services/import/fork/`
@@ -723,6 +753,12 @@ Edits to upstream files are marked with a `Fork:` comment.
 | `packages/server/src/routes/chats.routes.ts`                                               | A branch copies the chapters it fully contains                                                    |
 | `packages/server/src/routes/index.ts`                                                      | Registers the chapters routes                                                                     |
 | `packages/client/src/components/chat/ChatRoleplaySurface.tsx`                              | Chapter rows, the chapter marker, split mode and the Chapter pill                                 |
+| `packages/client/src/components/chat/ChatArea.tsx`                                         | Passes the board's cast into the pin editor                                                       |
+| `packages/client/src/components/chat/RoleplayHUDPanels.tsx`                                | Board things the persona holds, in the card's Holding list                                        |
+| `packages/client/src/features/tracker-panel/components/TrackerSectionList.tsx`             | Same, for the tracker panel's persona card                                                        |
+| `packages/server/src/routes/fork-board.routes.ts`                                          | Name and details on PATCH; the album's add and remove routes                                      |
+| `packages/server/src/services/board/fork-board-pins.ts`                                    | Name and details columns, the merge, and what follows the story                                   |
+| `packages/server/src/services/generation/fork-board-prompt.ts`                             | Per-category wording for the model                                                                |
 
 ## Known upstream issue kept as is
 

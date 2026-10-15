@@ -45,6 +45,7 @@ import { ForkPersonaCard } from "../../features/tracker-panel/components/charact
 import { ForkRelationshipsList } from "../../features/tracker-panel/components/sections/ForkRelationshipsSection";
 import { openForkPanel } from "../../lib/fork/open-panel";
 import { useBondPairs, useBonds } from "../../hooks/use-fork-bonds";
+import { useHeldThingNames } from "../../hooks/use-fork-board";
 import { NEUTRAL_PANEL_HEADER, NEUTRAL_PANEL_TITLE } from "../ui/neutral-surface-styles";
 import { coerceStatNumber, getStatPercent } from "../../features/tracker-panel/lib/tracker-stat-layout";
 import type {
@@ -474,6 +475,8 @@ export function CombinedPlayerPanel({
   // Fork: with a persona attached, its card leads and Marinara's stat editor opens on request
   // (lock mode always shows it, since the locks live there).
   const { data: forkChat } = useChat(chatId);
+  // Fork: the board's thing pins the persona is holding, for the card's Holding list.
+  const heldThingNames = useHeldThingNames(chatId);
   const [forkEditingStats, setForkEditingStats] = useState(false);
   const forkHasPersona = Boolean(forkChat?.personaId);
   const forkShowStatEditor = !forkHasPersona || forkEditingStats || lockMode;
@@ -530,7 +533,12 @@ export function CombinedPlayerPanel({
                   status={personaStatus}
                   onSaveStatus={(status) => onUpdatePersonaStatus?.(status)}
                   personaStats={personaStats}
-                  holding={[...inventoryEquipped, ...inventory].map((row) => row.name).filter(Boolean)}
+                  // Fork: board things the persona is carrying, beside the inventory rows.
+                  holding={[
+                    ...inventoryEquipped.map((row) => row.name),
+                    ...inventory.map((row) => row.name),
+                    ...heldThingNames,
+                  ].filter(Boolean)}
                   presentCharacters={characters}
                 />
                 {!lockMode && (

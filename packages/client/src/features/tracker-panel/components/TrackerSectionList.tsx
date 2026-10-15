@@ -263,9 +263,12 @@ export function TrackerSectionList({
                   onSaveStatus={savePersonaStatus}
                   personaStats={personaStats}
                   location={currentGameState.location ?? null}
-                  holding={[...inventoryTrackerEquipped, ...inventoryTrackerInventory]
-                    .map((row) => row.name)
-                    .filter(Boolean)}
+                  // Fork: board things the persona is carrying, beside the inventory rows.
+                  holding={[
+                    ...inventoryTrackerEquipped.map((row) => row.name),
+                    ...inventoryTrackerInventory.map((row) => row.name),
+                    ...heldThingNames,
+                  ].filter(Boolean)}
                   presentCharacters={presentCharacters}
                 />
               ) : undefined

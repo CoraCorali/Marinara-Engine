@@ -86,7 +86,9 @@ export function normalizeForkPinDetails(raw: unknown): ForkPinDetails {
       const item = entry as { path?: unknown; look?: unknown } | null;
       const path = typeof item?.path === "string" ? item.path.trim() : "";
       if (!path) return [];
-      const look = FORK_PLACE_LOOKS.includes(item?.look as ForkPlaceLook) ? (item?.look as ForkPlaceLook) : "";
+      const look: ForkPlaceLook | "" = FORK_PLACE_LOOKS.includes(item?.look as ForkPlaceLook)
+        ? (item?.look as ForkPlaceLook)
+        : "";
       return [{ path, look }];
     });
     if (album.length) out.album = album.slice(0, MAX_FORK_PIN_ALBUM);

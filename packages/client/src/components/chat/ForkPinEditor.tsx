@@ -19,6 +19,7 @@ import {
 import { FORK_SWITCH_CLASS } from "../../lib/fork/switch";
 import { cn } from "../../lib/utils";
 import { useUIStore } from "../../stores/ui.store";
+import { ForkPinKindFields } from "./ForkPinKindFields";
 
 export const PIN_CATEGORY_LABEL_KEYS: Record<BoardPinCategory, string> = {
   wearing: "ui.chat.forkboard.categoryWearing",
@@ -43,6 +44,9 @@ export const PIN_SLOT_LABEL_KEYS: Record<ForkWearSlot, string> = {
 };
 
 export type PinCastMember = { id: string; name: string };
+
+/** What the editor writes to the pin: everything the fork's board can change, minus the id. */
+export type PinSave = Omit<Parameters<ReturnType<typeof useUpdateBoardPin>["mutate"]>[0], "id">;
 
 const CHIP =
   "flex min-h-8 items-center justify-center rounded-full border px-3 text-xs font-semibold transition-colors";
@@ -79,6 +83,7 @@ export function ForkPinEditor({
   chatId,
   personaName,
   cast,
+  allPins = [],
   onDelete,
   closet = false,
 }: {
@@ -87,6 +92,8 @@ export function ForkPinEditor({
   chatId: string | null;
   personaName: string;
   cast: readonly PinCastMember[];
+  /** The scope's other pins, for the thing editor's place and container pickers. */
+  allPins?: readonly BoardPin[];
   onDelete: () => void;
   /** A piece of a closet outfit: who wears it and whether it is in scene are chosen when it is worn. */
   closet?: boolean;
@@ -97,13 +104,13 @@ export function ForkPinEditor({
   const describePin = useDescribeBoardPin();
   const createOutfit = useCreateOutfit();
   const captionId = useId();
-  const save = (data: Omit<Parameters<typeof updatePin.mutate>[0], "id">) => updatePin.mutate({ id: pin.id, ...data });
+  const save = (data: PinSave) => updatePin.mutate({ id: pin.id, ...data });
   const [caption, changeCaption, flushCaption] = useForkDraftField(pin.caption, (value: string) =>
     save({ caption: value }),
   );
 
   const wearing = closet || pin.category === "wearing";
-  // A wearing pin is always about someone; a place or a vibe is about the scene.
+  // A wearing pin is always about someone; a place, thing, person or vibe has its own "who" fields.
   const whoOptions: { id: string; label: string }[] = [
     ...(personaName
       ? [{ id: FORK_PIN_WHO_PERSONA, label: localizeUi("ui.chat.forkboard.whoYou", { name: personaName }) }]
@@ -243,6 +250,18 @@ export function ForkPinEditor({
             </div>
           </div>
         </>
+      )}
+
+      {/* Places, things, people and vibes each get their own fields, kept in `details`. */}
+      {!closet && !wearing && (
+        <ForkPinKindFields
+          pin={pin}
+          cast={cast}
+          personaName={personaName}
+          chatId={chatId}
+          allPins={allPins}
+          save={save}
+        />
       )}
 
       {!closet && (

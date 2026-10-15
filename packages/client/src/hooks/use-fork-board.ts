@@ -5,6 +5,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ForkPinDetails, ForkPinShows, ForkPlaceLook, ForkWearSlot } from "@marinara-engine/shared";
 import { toast } from "sonner";
 import { api } from "../lib/api-client";
+import { forkHeldThingNames, type ForkBoardPinLike } from "../lib/fork/board-groups";
 import { translate } from "../localization/i18n";
 
 export const BOARD_PIN_CATEGORIES = ["wearing", "place", "person", "thing", "vibe"] as const;
@@ -156,6 +157,15 @@ export function useDescribeBoardPin() {
     mutationFn: ({ id, chatId, debugMode }: { id: string; chatId: string | null; debugMode?: boolean }) =>
       api.post<PinDescription>(`/fork-board/pins/${id}/describe`, { chatId, debugMode }),
   });
+}
+
+/**
+ * The names of the board's thing pins the persona is carrying, for the persona card's Holding list.
+ * A thing's holder is who has it now, which is not always its owner.
+ */
+export function useHeldThingNames(chatId: string | null): string[] {
+  const { data: pins } = useBoardPins(chatId ? { scopeType: "chat", scopeId: chatId } : null);
+  return forkHeldThingNames((pins ?? []) as ForkBoardPinLike[]);
 }
 
 // ── The closet: saved outfits for any chat ──
