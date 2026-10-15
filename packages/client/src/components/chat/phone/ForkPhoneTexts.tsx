@@ -11,6 +11,7 @@ import { toast } from "sonner";
 import { useEditText, useFixText, useSwipeText, type PhoneMessage } from "../../../hooks/use-fork-phone";
 import { followOffset, isCommittedSwipe, isSidewaysDrag, swipeOutcome } from "../../../lib/fork/swipe-feel";
 import { cn } from "../../../lib/utils";
+import { useUIStore } from "../../../stores/ui.store";
 
 const LONG_PRESS_MS = 550;
 const QUICK_FIX_KEYS = [
@@ -143,10 +144,25 @@ export function SwipeRow({
   );
 }
 
+/**
+ * Whether thumb swipes work on texts, and whether one past the last version makes a new one: the
+ * same two settings that decide it for story replies, so both feel the same.
+ */
+export function useTextSwipeSettings() {
+  const on = useUIStore((s) => s.intuitiveSwipeNavigation);
+  const rerollAtEnd = useUIStore((s) => s.intuitiveSwipeRerollLatest);
+  return { on, rerollAtEnd };
+}
+
 /** What a swipe on their newest text does: an earlier version, a later one, or a new one. */
-export function swipeText(swipe: ReturnType<typeof useSwipeText>, message: PhoneMessage, dx: number) {
+export function swipeText(
+  swipe: ReturnType<typeof useSwipeText>,
+  message: PhoneMessage,
+  dx: number,
+  rerollAtEnd: boolean,
+) {
   if (swipe.isPending) return;
-  const outcome = swipeOutcome(dx, message.activeSwipe, Math.max(1, message.swipes.length), true);
+  const outcome = swipeOutcome(dx, message.activeSwipe, Math.max(1, message.swipes.length), rerollAtEnd);
   if (outcome.kind === "new") {
     navigator.vibrate?.(12);
     swipe.mutate({ id: message.id });
