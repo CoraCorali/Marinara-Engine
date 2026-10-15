@@ -1025,6 +1025,36 @@ From an audit of every fork switch (31 of them) and of features reading the same
   showed "Unknown number" and its conversation had the save button.
 - Regressions: `fork-phone`, `fork-phone-agent`, `fork-phone-contacts`.
 
+### Phone touches: ping, clear, day lines, "Read", renaming, calls from anyone
+
+- **Ping.** A soft two-note chime (Web Audio, no sound file) and a short buzz where the device
+  can, for each new text or call on your phone. What was already there when the chat opened stays
+  quiet. A switch in Phone look turns it off ("Ping when a text or call comes in"; on by default).
+  Browsers keep sound asleep until the first tap, so a ping before any tap is silent.
+- **Clear this conversation.** An eraser button in a conversation deletes every text and call in
+  it, after asking. The contact stays.
+- **Day lines.** Texts keep the story's day from the world state; a small line with the day shows
+  wherever it changes. Texts sent before this have no day, so they show none.
+- **"Read".** When someone you text leaves you on read (their answer was nothing), your text shows
+  "Read" and the story time, while it is the last word. The writer and the phone helper see
+  "(seen, not answered)" next to it.
+- **Rename a contact.** The name is editable on the contact form; their texts, a waiting text and
+  a call on the line move to the new name.
+- **Calls from contacts and unknown numbers.** The phone helper may now have a saved contact or an
+  unknown number call (with the same "unsaved" mark texts use); you can call an unknown number
+  back once it has reached you. On the call they speak from your conversation and their own part
+  in the story, never the rest of the scenes. The ringing card shows the contact's name or
+  "Unknown number".
+- Two fields were added to phone messages (`storyDate`, `seenAt`) with empty defaults: older rows
+  read them as empty, so this is not a storage-format change.
+- Live check (Opus 4.6 via LinkAPI): "her phone rings, the number from the letter" rang as an
+  unknown number with Deidra's opening line; on the call she answered "How did you get my
+  number?" in line with the letter. "Deidra is calling" with Deidra saved rang from the contact.
+  Renaming Deidra to Dee moved the conversation; clearing it left the contact. Theo, standing next
+  to Kyli, left her text on read: "Read 8:30 PM" showed under it, under a "December 14, 2026" day
+  line. In the browser, no ping on load and one ping when Jess answered.
+- Regressions: `fork-phone`, `fork-phone-agent`, `fork-phone-contacts`.
+
 ## Upstream files touched
 
 Fork-only code lives in `packages/client/src/lib/fork/`, `Fork*` components, `packages/shared/src/features/fork-bond-shapes.ts`, `packages/server/src/services/import/fork/`

@@ -50,6 +50,10 @@ export const phoneMessages = fileTable("fork_phone_messages", {
   activeSwipe: integer("active_swipe").notNull().default(0),
   /** 1 once the persona's phone has shown it. */
   read: integer("read").notNull().default(0),
+  /** The story's day when it was sent ("Day 3 - Monday"), for the day dividers. */
+  storyDate: text("story_date").notNull().default(""),
+  /** Your text, seen and left unanswered: the story time they saw it ("9:41 PM"). */
+  seenAt: text("seen_at").notNull().default(""),
   createdAt: text("created_at").notNull(),
   updatedAt: text("updated_at").notNull(),
 });
@@ -69,6 +73,8 @@ type MessageRow = {
   swipes: string;
   activeSwipe: number;
   read: number;
+  storyDate: string;
+  seenAt: string;
   createdAt: string;
   updatedAt: string;
 };
@@ -107,6 +113,9 @@ function toMessage(row: MessageRow): PhoneMessage {
   }
   return {
     ...row,
+    // Rows saved before these fields existed have none.
+    storyDate: row.storyDate ?? "",
+    seenAt: row.seenAt ?? "",
     kind: (PHONE_MESSAGE_KINDS as readonly string[]).includes(row.kind) ? (row.kind as PhoneMessageKind) : "text",
     source: row.source === "agent" ? "agent" : "user",
     swipes,
@@ -186,6 +195,7 @@ export function createPhoneStorage(db: DB) {
       body: string;
       kind?: PhoneMessageKind;
       storyTime?: string;
+      storyDate?: string;
       afterMessageId?: string;
       source?: "user" | "agent";
       callId?: string;
@@ -214,6 +224,8 @@ export function createPhoneStorage(db: DB) {
         swipes: JSON.stringify(input.source === "agent" && body ? [body] : []),
         activeSwipe: 0,
         read: (input.read ?? input.sender === PHONE_PERSONA) ? 1 : 0,
+        storyDate: (input.storyDate ?? "").slice(0, 80),
+        seenAt: "",
         createdAt: timestamp,
         updatedAt: timestamp,
       };
@@ -264,6 +276,14 @@ export function createPhoneStorage(db: DB) {
         } as never)
         .where(eq(phoneMessages.id, id));
       return this.getMessage(id);
+    },
+
+    /** They saw your text and left it unanswered, at this story time. */
+    async markSeen(id: string, storyTime: string): Promise<void> {
+      await db
+        .update(phoneMessages)
+        .set({ seenAt: storyTime.slice(0, 60) || "seen" } as never)
+        .where(eq(phoneMessages.id, id));
     },
 
     /** One text, or a call with everything said on it. */

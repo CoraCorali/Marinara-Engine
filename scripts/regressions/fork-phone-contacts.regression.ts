@@ -52,7 +52,7 @@ const answer = agent.readPhoneAgentAnswer(
       { from: "Dad", body: "not in your phone" },
       { from: "Theo", body: "hi" },
     ],
-    calls: [{ from: "Mom", about: "contacts do not call on their own" }],
+    calls: [{ from: "Mom", about: "contacts can call now" }],
   }),
   sideFor,
   new Set(["contact:Mom"]),
@@ -62,7 +62,11 @@ assert.deepEqual(
   ["contact:Mom", "theo"],
   "your contacts can text you; someone you never saved cannot",
 );
-assert.equal(answer.calls.length, 0);
+assert.deepEqual(
+  answer.calls.map((call) => call.from),
+  ["contact:Mom"],
+  "a saved contact can call too",
+);
 const agentPrompt = agent.buildPhoneAgentMessages({
   personaName: "Kyli",
   cast: [{ name: "Theo", about: "", present: true }],

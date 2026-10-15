@@ -224,6 +224,37 @@ assert.deepEqual(
   ],
 );
 
+// ── Day and "Read": a text keeps its story day; a text left unanswered keeps when it was seen ──
+const dayThread = await store.ensureThread("c7", "persona", "char-theo");
+const dated = await store.addMessage({
+  chatId: "c7",
+  threadId: dayThread.id,
+  sender: "persona",
+  body: "you up?",
+  storyTime: "11 PM",
+  storyDate: "Day 3 - Monday",
+});
+assert.equal(dated?.storyDate, "Day 3 - Monday");
+assert.equal(dated?.seenAt, "", "not seen yet");
+await store.markSeen(dated!.id, "11:05 PM");
+assert.equal((await store.getMessage(dated!.id))?.seenAt, "11:05 PM");
+await store.markSeen(dated!.id, "");
+assert.equal((await store.getMessage(dated!.id))?.seenAt, "seen", "seen with no story time still counts");
+assert.match(
+  phonePromptBlock(await store.listThreads("c7"), await store.listMessages("c7"), "Kyli", () => "Theo"),
+  /Kyli: you up\? \(seen, not answered\)/,
+  "the writer knows they left it on read",
+);
+
+// ── A renamed contact keeps their conversation ──
+const momThread = await store.ensureThread("c6", "persona", "contact:Mom");
+await store.addMessage({ chatId: "c6", threadId: momThread.id, sender: "contact:Mom", body: "call me" });
+await store.renameSide("c6", "contact:Mom", "contact:Mama");
+assert.deepEqual(
+  (await store.listMessages("c6")).map((message) => message.sender),
+  ["contact:Mama"],
+);
+
 await closeDB();
 rmSync(dir, { recursive: true, force: true });
 console.log("fork phone: ok");

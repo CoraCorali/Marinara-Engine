@@ -20,7 +20,7 @@ import {
   PHONE_UNKNOWN,
   phoneSide,
 } from "../services/phone/fork-phone.js";
-import { readPhoneRunState } from "../services/phone/fork-phone-agent.js";
+import { phoneRunMetadata, readPhoneRunState } from "../services/phone/fork-phone-agent.js";
 import { readWrittenPhones } from "../services/phone/fork-phone-peek.js";
 import { createPhoneRunner, logPhoneFailure, PhoneError } from "../services/phone/fork-phone-runner.js";
 import { isDebugAgentsEnabled } from "../config/runtime-config.js";
@@ -144,6 +144,7 @@ export async function forkPhoneRoutes(app: FastifyInstance) {
       sender: PHONE_PERSONA,
       body: text,
       storyTime: typeof scene?.time === "string" ? scene.time : "",
+      storyDate: typeof scene?.date === "string" ? scene.date : "",
       afterMessageId: latest?.id ?? "",
       source: "user",
     });
@@ -254,6 +255,16 @@ export async function forkPhoneRoutes(app: FastifyInstance) {
     if (failure) return { error: failure, status: 400 };
     return { contacts: readForkPhoneSettings(parseRecord(updated.metadata)).contacts };
   }
+  /** Someone's texts, a waiting text or call, and a call on the line all follow a new name. */
+  async function moveSide(chatId: string, from: string, to: string) {
+    await phones.renameSide(chatId, from, to);
+    await chats.patchMetadata(chatId, (meta) => {
+      const state = readPhoneRunState(meta);
+      for (const item of state.queue) if (item.from === from) item.from = to;
+      if (state.call?.from === from) state.call.from = to;
+      return phoneRunMetadata(state);
+    });
+  }
   const relationOf = (value: unknown): ForkPhoneRelation | null =>
     (FORK_PHONE_RELATIONS as readonly string[]).includes(value as string) ? (value as ForkPhoneRelation) : null;
   const noteOf = (value: unknown) =>
@@ -273,21 +284,45 @@ export async function forkPhoneRoutes(app: FastifyInstance) {
     if ("error" in result) return reply.status(result.status).send({ error: result.error });
     // Saving an unknown number: its texts move to the new contact.
     const from = phoneSide(body.from);
-    if (from.startsWith(PHONE_UNKNOWN)) await phones.renameSide(req.params.chatId, from, PHONE_CONTACT + name);
+    if (from.startsWith(PHONE_UNKNOWN)) await moveSide(req.params.chatId, from, PHONE_CONTACT + name);
     return result;
   });
 
-  /** What they are to you, or who they are. A name stays, since their texts are found by it. */
+  /** What they are to you, who they are, or a new name (their texts move with it). */
   app.patch<{ Params: { chatId: string; name: string } }>("/chats/:chatId/contacts/:name", async (req, reply) => {
     const body = parseRecord(req.body);
+    const rename = body.rename === undefined ? "" : forkPhoneContactName(body.rename);
     const result = await editContacts(req.params.chatId, (contacts) => {
       const contact = contacts.find((entry) => entry.name === req.params.name);
       if (!contact) return "That contact is not in your phone";
+      if (body.rename !== undefined && !rename) return "Give the contact a name";
+      if (
+        rename &&
+        rename !== contact.name &&
+        contacts.some((entry) => entry !== contact && entry.name.toLowerCase() === rename.toLowerCase())
+      )
+        return "You already have a contact with that name";
+      if (rename) contact.name = rename;
       if (body.relation !== undefined) contact.relation = relationOf(body.relation) ?? contact.relation;
       if (body.note !== undefined) contact.note = noteOf(body.note);
       return contacts;
     });
-    return "error" in result ? reply.status(result.status).send({ error: result.error }) : result;
+    if ("error" in result) return reply.status(result.status).send({ error: result.error });
+    if (rename && rename !== req.params.name) {
+      await moveSide(req.params.chatId, PHONE_CONTACT + req.params.name, PHONE_CONTACT + rename);
+    }
+    return result;
+  });
+
+  /** Clears a conversation on your phone: every text and call in it. The contact stays. */
+  app.delete<{ Params: { id: string } }>("/threads/:id", async (req, reply) => {
+    const thread = await phones.getThread(req.params.id);
+    if (!thread) return reply.status(404).send({ error: "Thread not found" });
+    if (thread.a !== PHONE_PERSONA && thread.b !== PHONE_PERSONA) {
+      return reply.status(400).send({ error: "That conversation is not on your phone" });
+    }
+    await phones.removeThread(thread.id);
+    return { success: true };
   });
 
   /** Deletes a contact and your texts with them. */

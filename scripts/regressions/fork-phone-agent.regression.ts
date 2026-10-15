@@ -420,4 +420,31 @@ assert.match(
 );
 assert.match(rules, /set "unsaved": true, and Kyli's phone shows an unknown number/);
 
+// ── Calls from a contact or an unknown number ──
+const outsideCalls = agent.readPhoneAgentAnswer(
+  '{"calls":[{"from":"Mom","about":"checking in","opening":"hi baby"}]}',
+  sideFor,
+  new Set(["contact:Mom"]),
+).calls;
+assert.deepEqual(
+  outsideCalls.map((call) => call.from),
+  ["contact:Mom"],
+  "a saved contact can call",
+);
+assert.deepEqual(
+  agent
+    .readPhoneAgentAnswer(
+      '{"calls":[{"from":"Deidra","about":"the letter","opening":"Kyli?","unsaved":true}]}',
+      sideFor,
+    )
+    .calls.map((call) => call.from),
+  ["unknown:Deidra"],
+  "someone not saved calls as an unknown number",
+);
+assert.deepEqual(
+  agent.readPhoneAgentAnswer('{"calls":[{"from":"Stranger","about":"x"}]}', sideFor).calls,
+  [],
+  "an unflagged stranger cannot call",
+);
+
 console.log("fork phone agent: ok");

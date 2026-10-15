@@ -42,7 +42,7 @@ export function phonePromptBlock(
         `Texts between ${name(PHONE_PERSONA)} and ${name(other)} (oldest first):`,
         ...texts.map(
           (message) =>
-            `- ${message.storyTime ? `[${message.storyTime}] ` : ""}${name(message.sender)}: ${message.kind === "photo" ? `(a photo) ${message.body}` : message.body}`,
+            `- ${message.storyTime ? `[${message.storyTime}] ` : ""}${name(message.sender)}: ${message.kind === "photo" ? `(a photo) ${message.body}` : message.body}${message.seenAt ? ` (seen${message.seenAt === "seen" ? "" : ` at ${message.seenAt}`}, not answered)` : ""}`,
         ),
       ].join("\n"),
     );

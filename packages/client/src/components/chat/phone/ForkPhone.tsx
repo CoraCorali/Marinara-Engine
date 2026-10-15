@@ -4,7 +4,7 @@
 // The 📱 pill opens your phone: a thread per card character, each a texting app inside the skin
 // you picked. What you text sits in the chat after the newest message, and the story's writer is
 // told about it. Off by default; switched on per chat, since a fantasy story has no phones.
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import {
@@ -17,6 +17,7 @@ import {
   SendHorizontal,
   Smartphone,
   Trash2,
+  Eraser,
   UserPlus,
 } from "lucide-react";
 import { useTranslation as useUiTranslation } from "react-i18next";
@@ -42,6 +43,7 @@ import {
   phoneNames,
   unreadCount,
   useCallAction,
+  useClearThread,
   useDeleteText,
   useForkPhone,
   useMarkThreadRead,
@@ -58,6 +60,7 @@ import { FORK_SWITCH_CLASS } from "../../../lib/fork/switch";
 import { showConfirmDialog } from "../../../lib/app-dialogs";
 import { cn } from "../../../lib/utils";
 import { translate } from "../../../localization/i18n";
+import { playPhonePing } from "../../../lib/fork/phone-ping";
 import { HelpTooltip } from "../../ui/HelpTooltip";
 import { Modal } from "../../ui/Modal";
 import { ForkPhoneShell } from "./ForkPhoneShell";
@@ -125,6 +128,34 @@ export function ForkPhonePill({
       window.removeEventListener("keydown", restart);
     };
   }, [busy, chatId, qc, waiting]);
+  // A ping for each new text or call on your phone; what was there when the chat opened stays quiet.
+  const heard = useRef<{ chatId: string; ids: Set<string> } | null>(null);
+  useEffect(() => {
+    if (!data) return;
+    const mine = new Set(
+      data.threads
+        .filter((thread) => thread.a === PHONE_PERSONA || thread.b === PHONE_PERSONA)
+        .map((thread) => thread.id),
+    );
+    const incoming = data.messages
+      .filter(
+        (message) =>
+          mine.has(message.threadId) &&
+          !message.read &&
+          message.sender !== PHONE_PERSONA &&
+          message.kind !== "call_line" &&
+          message.kind !== "draft",
+      )
+      .map((message) => message.id);
+    if (heard.current?.chatId !== chatId) {
+      heard.current = { chatId, ids: new Set(incoming) };
+      return;
+    }
+    const known = heard.current.ids;
+    const fresh = incoming.some((id) => !known.has(id));
+    for (const id of incoming) known.add(id);
+    if (fresh && data.settings.on && data.settings.ping) playPhonePing();
+  }, [chatId, data]);
   // In a store, so a text card in the chat can open the phone on its conversation.
   const openTo = useForkPhoneStore((s) => s.openTo);
   const setOpenTo = useForkPhoneStore((s) => s.setOpenTo);
@@ -169,6 +200,7 @@ export function ForkPhonePill({
           chatId={chatId}
           call={data.call}
           member={cast.find((member) => member.id === data.call?.from)}
+          name={nameOf(data.call.from)}
           dotMatrix={data.settings.dotMatrix}
           onAnswered={() => setOpenTo("call")}
         />
@@ -191,18 +223,20 @@ function ForkPhoneRinging({
   chatId,
   call,
   member,
+  name,
   dotMatrix,
   onAnswered,
 }: {
   chatId: string;
   call: PhoneCall;
   member?: PhoneCastMember;
+  /** As the phone shows them: a contact's name, or "Unknown number". */
+  name: string;
   dotMatrix: boolean;
   onAnswered: () => void;
 }) {
   const { t: localizeUi } = useUiTranslation();
   const action = useCallAction(chatId);
-  const name = member?.name ?? call.from.replace(/^contact:/, "");
   return createPortal(
     <div
       role="alertdialog"
@@ -210,7 +244,7 @@ function ForkPhoneRinging({
       className="fork-ui fork-ring fixed inset-x-0 bottom-[calc(8.5rem+env(safe-area-inset-bottom))] z-[60] mx-auto flex w-[min(22rem,calc(100vw-2rem))] items-center gap-3 rounded-3xl border border-[var(--border)] bg-[var(--card)] p-2.5 text-foreground shadow-2xl"
     >
       <span className="fork-phone contents">
-        <Avatar member={member} />
+        <Avatar member={member ?? { id: call.from, name }} />
       </span>
       <span className="min-w-0 flex-1">
         <span className="block text-[0.6875rem] opacity-75">{localizeUi("ui.chat.forkphone.incoming")}</span>
@@ -386,7 +420,7 @@ export function ForkPhoneApp({
           sending={send.isPending}
           onBack={() => setView({ name: "home" })}
           onCall={
-            (inCast(view.to) || contactOf(view.to)) && !data?.call
+            (inCast(view.to) || contactOf(view.to) || view.to.startsWith(PHONE_UNKNOWN)) && !data?.call
               ? () => callAction.mutate({ action: "call", to: view.to }, { onSuccess: () => setView({ name: "call" }) })
               : undefined
           }
@@ -665,6 +699,103 @@ function PhoneThreadView({
 
   const [tool, setTool] = useState<{ kind: "fix" | "edit"; message: PhoneMessage } | null>(null);
   const swipe = useSwipeText(chatId);
+  const clear = useClearThread(chatId);
+  const clearThread = async () => {
+    if (!thread) return;
+    if (
+      !(await showConfirmDialog({
+        title: localizeUi("ui.chat.forkphone.clearThread"),
+        message: localizeUi("ui.chat.forkphone.clearThreadBody", { name }),
+        confirmLabel: localizeUi("ui.chat.forkphone.clear"),
+        chatStyle: true,
+      }))
+    )
+      return;
+    clear.mutate(thread.id);
+  };
+  // The newest text either side sent: "Read" shows under yours only while it is the last word.
+  const lastWordId = [...shown].reverse().find((message) => message.kind === "text" || message.kind === "photo")?.id;
+  // A line with the story's day wherever the day changes.
+  const dayBefore = (index: number) => {
+    const day = shown[index]!.storyDate;
+    if (!day) return null;
+    const previous = shown
+      .slice(0, index)
+      .reverse()
+      .find((message) => message.storyDate)?.storyDate;
+    return previous === day ? null : (
+      <p className="fp-day m-0 self-center text-[0.625rem] font-semibold uppercase tracking-wide opacity-60">{day}</p>
+    );
+  };
+  const renderMessage = (message: PhoneMessage) => {
+    const mine = message.sender === PHONE_PERSONA;
+    if (message.kind === "call") {
+      const lines = messages.filter((line) => line.kind === "call_line" && line.callId === message.id);
+      return (
+        <details key={message.id} className="self-center text-center text-[0.6875rem] opacity-85">
+          <summary className="cursor-pointer list-none">
+            {callCardText(message, lines.length, name, message.id === ringingId, localizeUi)}
+            {message.body && !message.body.startsWith("(missed)")
+              ? localizeUi("ui.chat.forkphone.callAbout", { about: message.body })
+              : ""}
+          </summary>
+          {lines.map((line) => (
+            <p key={line.id} className="m-0 text-left">
+              <b>
+                {localizeUi("ui.chat.forkphone.callLine", {
+                  name: line.sender === PHONE_PERSONA ? personaName : name,
+                })}
+              </b>{" "}
+              {line.body}
+            </p>
+          ))}
+        </details>
+      );
+    }
+    const isText = message.kind === "text";
+    // Their newest text swipes like a story reply; long-press fixes theirs or edits yours.
+    const swipeable = isText && !mine && message.id === newestId;
+    return (
+      <div key={message.id} className={cn("flex flex-col", mine ? "items-end" : "items-start")}>
+        <PhoneBubble
+          className={cn("fp-bubble", mine ? "is-me" : "is-them", tool?.message.id === message.id && "is-picked")}
+          onSwipe={swipeable ? (dx) => swipeText(swipe, message, dx) : undefined}
+          onLongPress={isText ? () => setTool({ kind: mine ? "edit" : "fix", message }) : undefined}
+        >
+          {message.body}
+        </PhoneBubble>
+        <span className="fp-time flex items-center gap-1">
+          {message.storyTime || ""}
+          {mine && message.seenAt && message.id === lastWordId && (
+            <span className="font-semibold">
+              {message.seenAt === "seen"
+                ? localizeUi("ui.chat.forkphone.seen")
+                : localizeUi("ui.chat.forkphone.seenAt", { time: message.seenAt })}
+            </span>
+          )}
+          {swipeable && <SwipeRow swipe={swipe} message={message} onFix={() => setTool({ kind: "fix", message })} />}
+          {mine && isText && (
+            <button
+              type="button"
+              onClick={() => setTool({ kind: "edit", message })}
+              aria-label={localizeUi("ui.chat.forkphone.editText")}
+              className="flex h-8 w-8 items-center justify-center opacity-80"
+            >
+              <PencilLine size="0.6875rem" />
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => void removeText(message)}
+            aria-label={localizeUi("ui.chat.forkphone.deleteText")}
+            className="flex h-8 w-8 items-center justify-center opacity-80"
+          >
+            <Trash2 size="0.6875rem" />
+          </button>
+        </span>
+      </div>
+    );
+  };
   const newestId = [...shown].reverse().find((message) => message.kind === "text" || message.kind === "photo")?.id;
 
   const removeText = async (message: PhoneMessage) => {
@@ -700,6 +831,16 @@ function PhoneThreadView({
             </button>
           </>
         )}
+        {thread && shown.length > 0 && (
+          <button
+            type="button"
+            onClick={() => void clearThread()}
+            disabled={clear.isPending}
+            aria-label={localizeUi("ui.chat.forkphone.clearThread")}
+          >
+            <Eraser size="0.875rem" />
+          </button>
+        )}
         {onSaveNumber && (
           <button type="button" onClick={onSaveNumber} aria-label={localizeUi("ui.chat.forkphone.saveNumber")}>
             <UserPlus size="0.875rem" />
@@ -722,70 +863,12 @@ function PhoneThreadView({
             {localizeUi("ui.chat.forkphone.emptyThread", { name: name })}
           </p>
         )}
-        {shown.map((message) => {
-          const mine = message.sender === PHONE_PERSONA;
-          if (message.kind === "call") {
-            const lines = messages.filter((line) => line.kind === "call_line" && line.callId === message.id);
-            return (
-              <details key={message.id} className="self-center text-center text-[0.6875rem] opacity-85">
-                <summary className="cursor-pointer list-none">
-                  {callCardText(message, lines.length, name, message.id === ringingId, localizeUi)}
-                  {message.body && !message.body.startsWith("(missed)")
-                    ? localizeUi("ui.chat.forkphone.callAbout", { about: message.body })
-                    : ""}
-                </summary>
-                {lines.map((line) => (
-                  <p key={line.id} className="m-0 text-left">
-                    <b>
-                      {localizeUi("ui.chat.forkphone.callLine", {
-                        name: line.sender === PHONE_PERSONA ? personaName : name,
-                      })}
-                    </b>{" "}
-                    {line.body}
-                  </p>
-                ))}
-              </details>
-            );
-          }
-          const isText = message.kind === "text";
-          // Their newest text swipes like a story reply; long-press fixes theirs or edits yours.
-          const swipeable = isText && !mine && message.id === newestId;
-          return (
-            <div key={message.id} className={cn("flex flex-col", mine ? "items-end" : "items-start")}>
-              <PhoneBubble
-                className={cn("fp-bubble", mine ? "is-me" : "is-them", tool?.message.id === message.id && "is-picked")}
-                onSwipe={swipeable ? (dx) => swipeText(swipe, message, dx) : undefined}
-                onLongPress={isText ? () => setTool({ kind: mine ? "edit" : "fix", message }) : undefined}
-              >
-                {message.body}
-              </PhoneBubble>
-              <span className="fp-time flex items-center gap-1">
-                {message.storyTime || ""}
-                {swipeable && (
-                  <SwipeRow swipe={swipe} message={message} onFix={() => setTool({ kind: "fix", message })} />
-                )}
-                {mine && isText && (
-                  <button
-                    type="button"
-                    onClick={() => setTool({ kind: "edit", message })}
-                    aria-label={localizeUi("ui.chat.forkphone.editText")}
-                    className="flex h-8 w-8 items-center justify-center opacity-80"
-                  >
-                    <PencilLine size="0.6875rem" />
-                  </button>
-                )}
-                <button
-                  type="button"
-                  onClick={() => void removeText(message)}
-                  aria-label={localizeUi("ui.chat.forkphone.deleteText")}
-                  className="flex h-8 w-8 items-center justify-center opacity-80"
-                >
-                  <Trash2 size="0.6875rem" />
-                </button>
-              </span>
-            </div>
-          );
-        })}
+        {shown.map((message, index) => (
+          <Fragment key={message.id}>
+            {dayBefore(index)}
+            {renderMessage(message)}
+          </Fragment>
+        ))}
         {replying && (
           <div className="fp-bubble is-them fp-typing" aria-label={localizeUi("ui.chat.forkphone.typing", { name })}>
             <i />
@@ -983,8 +1066,13 @@ function ContactForm({
   const save = () => {
     if (!name.trim() || busy) return;
     const input = { name: name.trim(), relation, note };
-    if (contact) edit.mutate(input, { onSuccess: () => onDone(contact.name) });
-    else add.mutate({ ...input, from }, { onSuccess: () => onDone(input.name.replace(/\s+/g, " ")) });
+    if (contact) {
+      const renamed = input.name.replace(/\s+/g, " ");
+      edit.mutate(
+        { ...input, name: contact.name, ...(renamed !== contact.name ? { rename: renamed } : {}) },
+        { onSuccess: () => onDone(renamed) },
+      );
+    } else add.mutate({ ...input, from }, { onSuccess: () => onDone(input.name.replace(/\s+/g, " ")) });
   };
   const removeContact = async () => {
     if (!contact) return;
@@ -1022,7 +1110,6 @@ function ContactForm({
             {localizeUi("ui.chat.forkphone.contactName")}
             <input
               value={name}
-              disabled={Boolean(contact)}
               maxLength={60}
               onChange={(event) => setName(event.target.value)}
               placeholder={localizeUi("ui.chat.forkphone.contactNamePlaceholder")}
@@ -1171,6 +1258,7 @@ export function PhoneLook({
               ["gems", "ui.chat.forkphone.gems"],
               ["dotMatrix", "ui.chat.forkphone.dotMatrix"],
               ...(look.skin === "candybar" ? ([["stickers", "ui.chat.forkphone.stickers"]] as const) : []),
+              ["ping", "ui.chat.forkphone.ping"],
             ] as const
           ).map(([key, label]) => (
             <label

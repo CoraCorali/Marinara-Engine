@@ -330,13 +330,13 @@ export function readPhoneAgentAnswer(
     calls: list(parsed.calls)
       .map(record)
       .map((item) => ({
-        from: sideFor(item.from),
+        from: textSender(sideFor(item.from), item.unsaved === true),
         about: str(item.about, 200),
         opening: str(item.opening),
         ...timing(item),
         ...(item.story === true ? { story: true } : {}),
       }))
-      .filter((item) => isCast(item.from)),
+      .filter((item) => isCast(item.from) || contactSides.has(item.from) || item.from.startsWith(PHONE_UNKNOWN)),
     // Between others only: a card character on one side, never the persona.
     threads: list(parsed.threads)
       .map(record)
@@ -528,7 +528,7 @@ export function buildPhoneAgentMessages(context: PhoneAgentContext): { role: "us
     ...castLines,
     "Anyone else (Mom, a coworker, a supplier) is a side contact who exists only inside a card character's phone.",
     context.contacts?.length
-      ? `${persona}'s own contacts (people with no card, who can text ${persona} too, rarely, about their own lives, their own part in the story or what ${persona} texted them; they were not in the story's scenes, so they know only what ${persona} texted them and what they themselves did, wrote or said in the story, like a letter they sent):\n${context.contacts.map((line) => `- ${line}`).join("\n")}`
+      ? `${persona}'s own contacts (people with no card, who can text or call ${persona} too, rarely, about their own lives, their own part in the story or what ${persona} texted them; they were not in the story's scenes, so they know only what ${persona} texted them and what they themselves did, wrote or said in the story, like a letter they sent):\n${context.contacts.map((line) => `- ${line}`).join("\n")}`
       : "",
     context.cast.some((member) => member.present === null) ? "Judge from the story who is in the scene." : "",
     "",
@@ -541,20 +541,20 @@ export function buildPhoneAgentMessages(context: PhoneAgentContext): { role: "us
     queueLines.length ? `\nWritten earlier and not sent yet:\n${queueLines.join("\n")}` : "",
     "\nRules:",
     `- When the story says someone texted or called ${persona} (a text came in, the phone rang), that text or call must be on the phone (unless it already is): send it "now", from that person, with words that fit the story, and set "story": true. This comes before everything below.`,
-    `- Someone ${persona} has not saved (not a card character, not one of ${persona}'s contacts) can still text ${persona}: put their name in "from" and set "unsaved": true, and ${persona}'s phone shows an unknown number. They know only their own part in the story. Calls come only from card characters.`,
+    `- Someone ${persona} has not saved (not a card character, not one of ${persona}'s contacts) can still text ${persona}: put their name in "from" and set "unsaved": true, and ${persona}'s phone shows an unknown number. They know only their own part in the story. They can call the same way ("unsaved": true on the call).`,
     "- Otherwise most replies need nothing. Text or call only when this character really would right now, given who they are and what just happened. Empty lists are the usual answer.",
     `- Anyone can text ${persona} at any time, even from across the room mid-scene, but only when that is something they would really do.`,
     `- Answer ${persona}'s unanswered texts when the character would have seen them and wants to reply.`,
     "- Texts read like that person's real texts: short, in their voice, no narration, no quotation marks, no stage directions.",
     `- Never write ${persona}'s texts or words.`,
     '- "when": "now" arrives right after this reply; "later" waits "after" story replies (1 to 3).',
-    "- Calls are for things that cannot wait or a voice they want to hear. About: a few words. Opening: their first line when picked up.",
+    `- Calls are for things that cannot wait or a voice they want to hear, from a card character, one of ${persona}'s contacts or an unknown number. About: a few words. Opening: their first line when picked up.`,
     `- threads: texts between a card character and someone other than ${persona} (another card character or a side contact), for what is happening in their own lives or what they say about ${persona}. Private; ${persona} does not see them. Only when it adds to the story.`,
     "- drafts: something a card character typed and did not send.",
     `- reachable: card characters whose phone the story just left within ${persona}'s reach (set down, left unlocked). Usually empty.`,
     "- queue: ids of earlier items to send now, or to drop because the story moved past them (a time skip, the moment passed).",
     "\nReply with JSON only, in this shape:",
-    '{"texts":[{"from":"Name","body":"text","when":"now","after":0,"unsaved":false,"story":false}],"calls":[{"from":"Name","about":"a few words","opening":"first line","when":"now","after":0,"story":false}],"threads":[{"from":"Name","to":"Name","body":"text"}],"drafts":[{"from":"Name","to":"Name","body":"text"}],"queue":{"send":[],"drop":[]},"reachable":[]}',
+    '{"texts":[{"from":"Name","body":"text","when":"now","after":0,"unsaved":false,"story":false}],"calls":[{"from":"Name","about":"a few words","opening":"first line","when":"now","after":0,"unsaved":false,"story":false}],"threads":[{"from":"Name","to":"Name","body":"text"}],"drafts":[{"from":"Name","to":"Name","body":"text"}],"queue":{"send":[],"drop":[]},"reachable":[]}',
   ]
     .filter((line) => line !== "")
     .join("\n");

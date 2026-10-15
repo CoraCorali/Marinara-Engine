@@ -34,6 +34,10 @@ export interface PhoneMessage {
   swipes: string[];
   activeSwipe: number;
   read: boolean;
+  /** The story's day when it was sent, for the day lines. */
+  storyDate: string;
+  /** Your text, seen and left unanswered: the story time they saw it, or "seen". */
+  seenAt: string;
   createdAt: string;
 }
 
@@ -257,7 +261,8 @@ export function useContacts(chatId: string | null) {
       onSettled: done,
     }),
     edit: useMutation({
-      mutationFn: (input: { name: string; relation: ForkPhoneRelation; note: string }) =>
+      /** `rename`: a new name; their texts move with it. */
+      mutationFn: (input: { name: string; relation: ForkPhoneRelation; note: string; rename?: string }) =>
         api.patch<{ contacts: ForkPhoneContact[] }>(`${base}/${encodeURIComponent(input.name)}`, input),
       onError: failed,
       onSettled: done,
@@ -281,6 +286,16 @@ export function useTextReply(chatId: string | null) {
           : `/fork-phone/chats/${chatId}/characters/${encodeURIComponent(side)}/reply`,
         { debugMode: useUIStore.getState().debugMode },
       ),
+    onError: failed,
+    onSettled: () => void qc.invalidateQueries({ queryKey: phoneKeys.chat(chatId) }),
+  });
+}
+
+/** Clears a whole conversation on your phone. */
+export function useClearThread(chatId: string | null) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (threadId: string) => api.delete<{ success: boolean }>(`/fork-phone/threads/${threadId}`),
     onError: failed,
     onSettled: () => void qc.invalidateQueries({ queryKey: phoneKeys.chat(chatId) }),
   });

@@ -322,6 +322,7 @@ export function createPhoneRunner(db: DB) {
           sender: side,
           body,
           storyTime: where.time,
+          storyDate: where.date,
           // Shown in the chat with your text, after the same story message. Kept like your own
           // texts: it answers you, not the story, so the phone agent re-running for that story
           // message (when its reply finishes, or on a swipe) must not take it back.
@@ -330,12 +331,16 @@ export function createPhoneRunner(db: DB) {
         });
         if (message) added.push(message);
       }
+      // Left on read: your text shows "Read" with the time they saw it.
+      if (added.length === 0) await phones.markSeen(last.id, where.time);
       return { added };
     });
   }
 
   /** Puts a plan's texts, calls, thread lines and drafts on the phones. */
-  async function applyPlan(chatId: string, plan: PhoneRunPlan, replyId: string, storyTime: string) {
+  async function applyPlan(chatId: string, plan: PhoneRunPlan, replyId: string, when: { time: string; date: string }) {
+    const storyTime = when.time;
+    const storyDate = when.date;
     const added: PhoneMessage[] = [];
     for (const item of plan.deliver) {
       const thread = await phones.ensureThread(chatId, PHONE_PERSONA, item.from);
@@ -346,6 +351,7 @@ export function createPhoneRunner(db: DB) {
         body: item.kind === "call" ? "" : item.body,
         kind: item.kind,
         storyTime,
+        storyDate,
         afterMessageId: replyId,
         source: "agent",
       });
@@ -374,6 +380,7 @@ export function createPhoneRunner(db: DB) {
         body: line.body,
         kind: line.kind,
         storyTime,
+        storyDate,
         afterMessageId: replyId,
         source: "agent",
         // The persona's phone never shows these, so they never count as unread there.
@@ -594,7 +601,7 @@ export function createPhoneRunner(db: DB) {
         // The phone may have been switched off while the agent was thinking.
         chat = await getChat(chatId);
         if (!readForkPhoneSettings(parseRecord(chat.metadata)).on) return { ran: true, added: [] as PhoneMessage[] };
-        const added = await applyPlan(chatId, plan, replyId, where.time);
+        const added = await applyPlan(chatId, plan, replyId, where);
         await saveState(chatId, plan.state);
         return { ran: true, added };
       });
@@ -612,7 +619,7 @@ export function createPhoneRunner(db: DB) {
         if (!latest) return { added: [] as PhoneMessage[] };
         const where = await scene(chatId);
         const plan = planIdleDelivery(state, latest.id, where.date);
-        const added = await applyPlan(chatId, plan, latest.id, where.time);
+        const added = await applyPlan(chatId, plan, latest.id, where);
         await saveState(chatId, plan.state);
         return { added };
       });
@@ -637,6 +644,7 @@ export function createPhoneRunner(db: DB) {
             body: state.call.opening,
             kind: "call_line",
             storyTime: card.storyTime,
+            storyDate: card.storyDate,
             afterMessageId: card.afterMessageId,
             source: "agent",
             callId: card.id,
@@ -675,9 +683,13 @@ export function createPhoneRunner(db: DB) {
         const state = readPhoneRunState(meta);
         if (state.call) throw new PhoneError("You are already on a call", 400);
         const people = await cast(chat);
-        if (!people.members.some((member) => member.id === to) && !people.contactOf(to)) {
-          throw new PhoneError("Who are you calling?", 400);
-        }
+        const known =
+          people.members.some((member) => member.id === to) ||
+          people.contactOf(to) ||
+          // An unknown number can be called back once it has texted or called you.
+          (to.startsWith(PHONE_UNKNOWN) &&
+            (await phones.listThreads(chatId)).some((thread) => thread.a === to || thread.b === to));
+        if (!known) throw new PhoneError("Who are you calling?", 400);
         const [latest] = (await chats.listMessagePreviews(chatId, 1)) as { id: string }[];
         const where = await scene(chatId);
         const thread = await phones.ensureThread(chatId, PHONE_PERSONA, to);
@@ -688,6 +700,7 @@ export function createPhoneRunner(db: DB) {
           body: "",
           kind: "call",
           storyTime: where.time,
+          storyDate: where.date,
           afterMessageId: latest?.id ?? "",
           source: "user",
         });
@@ -717,13 +730,15 @@ export function createPhoneRunner(db: DB) {
           body: line,
           kind: "call_line",
           storyTime: card.storyTime,
+          storyDate: card.storyDate,
           afterMessageId: card.afterMessageId,
           source: "user",
           callId: card.id,
         });
         if (!mine) throw new PhoneError("Say something first", 400);
         const people = await cast(chat);
-        const characterName = people.side(state.call.from);
+        const outsider = people.outsider(state.call.from);
+        const characterName = outsider?.name ?? people.side(state.call.from);
         const { text: story } = await storyTranscript(chat, (message) =>
           message.role === "user"
             ? people.personaName
@@ -735,17 +750,16 @@ export function createPhoneRunner(db: DB) {
           chat,
           buildCallLineMessages({
             characterName,
-            who: (() => {
-              const contact = people.contactOf(state.call.from);
-              return contact ? contactWho(contact, people.personaName) : undefined;
-            })(),
+            who: outsider?.who,
             about: state.call.about,
             personaName: people.personaName,
-            story: people.contactOf(state.call.from) ? "" : story,
-            knows: people.contactOf(state.call.from)
-              ? await contactKnows(chat, people.contactOf(state.call.from)!.name, people.personaName)
-              : undefined,
-            lines: [...callLines, mine].map((entry) => ({ name: people.side(entry.sender), text: entry.body })),
+            // Someone with no card was not in the scenes: only their own part in the story.
+            story: outsider ? "" : story,
+            knows: outsider ? await contactKnows(chat, outsider.name, people.personaName) : undefined,
+            lines: [...callLines, mine].map((entry) => ({
+              name: entry.sender === state.call!.from ? characterName : people.side(entry.sender),
+              text: entry.body,
+            })),
           }),
           "call line",
           debug,
@@ -760,6 +774,7 @@ export function createPhoneRunner(db: DB) {
               body: spoken,
               kind: "call_line",
               storyTime: card.storyTime,
+              storyDate: card.storyDate,
               afterMessageId: card.afterMessageId,
               source: "agent",
               callId: card.id,

@@ -27,6 +27,8 @@ export type ForkPhoneLook = {
   dotMatrix: boolean;
   /** A sticker sheet on the case. */
   stickers: boolean;
+  /** A soft ping (and a buzz where the device can) when a text or call comes in. */
+  ping: boolean;
   /** Smartphone: a board picture as the lock screen wallpaper, or "". */
   wallpaper: string;
 };
@@ -96,6 +98,7 @@ export const DEFAULT_FORK_PHONE_LOOK: ForkPhoneLook = {
   gems: false,
   dotMatrix: true,
   stickers: false,
+  ping: true,
   wallpaper: "",
 };
 
@@ -111,7 +114,7 @@ export function normalizeForkPhoneLook(raw: unknown, base: ForkPhoneLook = DEFAU
       : colors.includes(base.color)
         ? base.color
         : colors[0]!;
-  const flag = (key: "gems" | "dotMatrix" | "stickers") =>
+  const flag = (key: "gems" | "dotMatrix" | "stickers" | "ping") =>
     typeof input[key] === "boolean" ? (input[key] as boolean) : base[key];
   return {
     skin,
@@ -120,6 +123,7 @@ export function normalizeForkPhoneLook(raw: unknown, base: ForkPhoneLook = DEFAU
     gems: flag("gems"),
     dotMatrix: flag("dotMatrix"),
     stickers: flag("stickers"),
+    ping: flag("ping"),
     wallpaper: typeof input.wallpaper === "string" ? input.wallpaper.slice(0, 300) : base.wallpaper,
   };
 }
