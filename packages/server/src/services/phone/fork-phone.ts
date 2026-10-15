@@ -293,6 +293,8 @@ export function createPhoneStorage(db: DB) {
      */
     async copyToBranch(fromChatId: string, toChatId: string, messageIdMap: ReadonlyMap<string, string>) {
       const threads = new Map<string, string>();
+      // A call's lines point at its card by id, so the copies point at the copied card.
+      const copies = new Map<string, string>();
       for (const row of await messageRows(fromChatId)) {
         const after = row.afterMessageId ? messageIdMap.get(row.afterMessageId) : "";
         if (row.afterMessageId && !after) continue;
@@ -303,10 +305,18 @@ export function createPhoneStorage(db: DB) {
           threadId = (await this.ensureThread(toChatId, source.a, source.b)).id;
           threads.set(row.threadId, threadId);
         }
-        await db
-          .insert(phoneMessages)
-          .values({ ...row, id: newId(), chatId: toChatId, threadId, afterMessageId: after ?? "" } as never);
+        const id = newId();
+        copies.set(row.id, id);
+        await db.insert(phoneMessages).values({
+          ...row,
+          id,
+          chatId: toChatId,
+          threadId,
+          afterMessageId: after ?? "",
+          callId: row.callId ? (copies.get(row.callId) ?? "") : "",
+        } as never);
       }
+      return { threads };
     },
   };
 }

@@ -170,6 +170,40 @@ export function rewindPhoneRun(state: PhoneRunState, replyIds: readonly string[]
   };
 }
 
+/**
+ * A branch's own run state: only what came from replies up to the branch point, pointing at the
+ * branch's copies. A queued text delivered after the branch point waits again there; no call rings.
+ */
+export function branchPhoneRunState(
+  state: PhoneRunState,
+  replies: ReadonlyMap<string, string>,
+  threads: ReadonlyMap<string, string>,
+): PhoneRunState {
+  const reply = (id: string) => replies.get(id) ?? "";
+  return {
+    queue: state.queue
+      .filter((item) => replies.has(item.fromReply))
+      .map((item) => ({ ...item, fromReply: reply(item.fromReply), deliveredAt: reply(item.deliveredAt) })),
+    runs: state.runs.map(reply).filter(Boolean),
+    log: state.log
+      .filter((entry) => replies.has(entry.reply))
+      .map((entry) => ({ ...entry, reply: reply(entry.reply) })),
+    call: null,
+    reachable:
+      state.reachable && replies.has(state.reachable.reply)
+        ? { ...state.reachable, reply: reply(state.reachable.reply) }
+        : null,
+    peeks: state.peeks
+      .filter((peek) => replies.has(peek.reply))
+      .map((peek) => ({
+        ...peek,
+        reply: reply(peek.reply),
+        // A conversation opened points at the branch's copy; a screen (drafts, calls, photos) stays.
+        threadIds: peek.threadIds.map((id) => threads.get(id) ?? id),
+      })),
+  };
+}
+
 /** Replies since `replyId` had its run, or Infinity once it is too old to be remembered. */
 function repliesSince(runs: readonly string[], replyId: string): number {
   const index = runs.indexOf(replyId);

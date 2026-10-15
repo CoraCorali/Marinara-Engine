@@ -9,6 +9,7 @@ import { bondPairs, createBondPairsStorage } from "./bonds/fork-bond-pairs.js";
 import { undoBondTurn } from "./bonds/fork-bond-updates.js";
 import { createChaptersStorage } from "./chapters/fork-chapters.js";
 import { createPhoneStorage } from "./phone/fork-phone.js";
+import { branchPhoneRunState, phoneRunMetadata, readPhoneRunState } from "./phone/fork-phone-agent.js";
 import { FORK_THING_AT_PLACE } from "@marinara-engine/shared";
 import { eq } from "../db/file-query.js";
 import { readLorebookImageDataUrl, saveLorebookImage } from "./lorebook/lorebook-images.js";
@@ -41,7 +42,9 @@ export async function copyForkChatData(
   fromChatId: string,
   toChatId: string,
   messageIdMap: ReadonlyMap<string, string> = new Map(),
-): Promise<void> {
+  /** The source chat's metadata: the phone's memory of its replies is mapped onto the branch. */
+  sourceMetadata?: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
   // Chapters come along while every message of theirs did: a branch from inside a finished chapter
   // keeps that chapter open, and the ones after it are not part of the branch's story.
   try {
@@ -63,12 +66,17 @@ export async function copyForkChatData(
   } catch (error) {
     logger.warn(error, "[fork-chapters] Could not copy the chapters from chat %s to %s", fromChatId, toChatId);
   }
-  // The phones' texts up to the branch point come along, tied to the branch's own messages.
-  await createPhoneStorage(db)
-    .copyToBranch(fromChatId, toChatId, messageIdMap)
-    .catch((error) =>
-      logger.warn(error, "[fork-phone] Could not copy the phones from chat %s to %s", fromChatId, toChatId),
-    );
+  // The phones' texts up to the branch point come along, tied to the branch's own messages, and so
+  // does what the phone agent remembers (queued texts, looks at a phone) from those replies only.
+  // The caller writes it into the branch's metadata, which it builds from the source's.
+  let metadata: Record<string, unknown> = {};
+  try {
+    const { threads } = await createPhoneStorage(db).copyToBranch(fromChatId, toChatId, messageIdMap);
+    const source = sourceMetadata ? readPhoneRunState(sourceMetadata) : null;
+    if (source) metadata = phoneRunMetadata(branchPhoneRunState(source, messageIdMap, threads));
+  } catch (error) {
+    logger.warn(error, "[fork-phone] Could not copy the phones from chat %s to %s", fromChatId, toChatId);
+  }
   try {
     const pins = createBoardPinsStorage(db);
     const copyPicture = async (path: string) => {
@@ -144,6 +152,7 @@ export async function copyForkChatData(
   } catch (error) {
     logger.warn(error, "[fork-bonds] Could not copy the pairs from chat %s to %s", fromChatId, toChatId);
   }
+  return metadata;
 }
 
 /**

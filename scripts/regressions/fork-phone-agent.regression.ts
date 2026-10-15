@@ -262,4 +262,58 @@ assert.match(untracked, /- Theo\n/, "no presence list: nobody is called away");
 assert.match(untracked, /Judge from the story who is in the scene/);
 assert.equal(agent.cleanSpokenLine('Theo: "hey, you."', "Theo"), "hey, you.");
 
+// ── A branch keeps only what came before its branch point ──
+const source = {
+  ...empty,
+  queue: [
+    {
+      id: "q-a",
+      kind: "text" as const,
+      from: "theo",
+      body: "kept",
+      opening: "",
+      fromReply: "r1",
+      after: 1,
+      deliveredAt: "r2",
+    },
+    {
+      id: "q-b",
+      kind: "text" as const,
+      from: "theo",
+      body: "after",
+      opening: "",
+      fromReply: "r3",
+      after: 1,
+      deliveredAt: "",
+    },
+  ],
+  runs: ["r1", "r2", "r3"],
+  log: [
+    { reply: "r1", day: "d", from: "theo", prompted: false },
+    { reply: "r3", day: "d", from: "theo", prompted: false },
+  ],
+  call: { id: "c", from: "theo", about: "", opening: "", state: "live" as const, reply: "r1" },
+  reachable: { reply: "r3", ids: ["theo"] },
+  peeks: [
+    { characterId: "theo", reply: "r1", storyTime: "", threadIds: ["t1", "drafts"], at: "" },
+    { characterId: "theo", reply: "r3", storyTime: "", threadIds: [], at: "" },
+  ],
+};
+const branched = agent.branchPhoneRunState(source, new Map([["r1", "b1"]]), new Map([["t1", "bt1"]]));
+assert.deepEqual(
+  branched.queue.map((item) => [item.id, item.fromReply, item.deliveredAt]),
+  [["q-a", "b1", ""]],
+  "a text queued before the branch point waits again there; one queued after it is not in the branch",
+);
+assert.deepEqual(branched.runs, ["b1"]);
+assert.deepEqual(
+  branched.log.map((entry) => entry.reply),
+  ["b1"],
+);
+assert.equal(branched.call, null);
+assert.equal(branched.reachable, null, "a phone left in reach after the branch point is not in the branch");
+assert.deepEqual(branched.peeks, [
+  { characterId: "theo", reply: "b1", storyTime: "", threadIds: ["bt1", "drafts"], at: "" },
+]);
+
 console.log("fork phone agent: ok");

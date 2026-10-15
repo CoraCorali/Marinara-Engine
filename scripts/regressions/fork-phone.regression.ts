@@ -110,15 +110,41 @@ await store.addMessage({
   body: "later text",
   afterMessageId: "m9",
 });
+const callCard = await store.addMessage({
+  chatId: "c1",
+  threadId: theo.id,
+  sender: "char-theo",
+  body: "",
+  kind: "call",
+  afterMessageId: "m1",
+  source: "agent",
+});
+await store.addMessage({
+  chatId: "c1",
+  threadId: theo.id,
+  sender: "char-theo",
+  body: "you up?",
+  kind: "call_line",
+  afterMessageId: "m1",
+  source: "agent",
+  callId: callCard!.id,
+});
 await copyForkChatData(db, "c1", "c2", new Map([["m1", "b1"]]));
 const branched = await store.listMessages("c2");
+const branchedTexts = branched.filter((message) => message.kind === "text");
 assert.deepEqual(
-  branched.map((message) => [message.body, message.afterMessageId]).sort(),
+  branchedTexts.map((message) => [message.body, message.afterMessageId]).sort(),
   [
     ["got home ok", "b1"],
     ["she kept it", ""],
   ],
   "the branch keeps texts up to its branch point, tied to its own copies",
+);
+const branchCard = branched.find((message) => message.kind === "call");
+assert.equal(
+  branched.find((message) => message.kind === "call_line")?.callId,
+  branchCard?.id,
+  "a call's lines point at the branch's copy of the call",
 );
 assert.equal((await store.listThreads("c2")).length, 2);
 await removeForkChatData(db, "c2");

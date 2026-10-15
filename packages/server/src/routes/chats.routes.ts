@@ -4913,7 +4913,14 @@ export async function chatsRoutes(app: FastifyInstance) {
     });
     await storage.remapRoleplayInterruptionTargets(newChat.id, sourceToBranchedMessageId);
     // Fork: the branch starts with the source's board, relationships and finished chapters.
-    await copyForkChatData(app.db, sourceChat.id, newChat.id, sourceToBranchedMessageId);
+    // Fork: also hands back the phone's memory of the copied replies, written into the metadata below.
+    const forkBranchMetadata = await copyForkChatData(
+      app.db,
+      sourceChat.id,
+      newChat.id,
+      sourceToBranchedMessageId,
+      sourceMeta,
+    );
     const forkSourceMessage = copiedSourceMessages.at(-1);
 
     if (sourceChat.mode === "game" && settingsToKeep.gameJournal) {
@@ -4962,6 +4969,7 @@ export async function chatsRoutes(app: FastifyInstance) {
     await storage.raiseWriteOrdinalFloor(newChat.id, sourceChat.writeOrdinalCounter);
     await storage.updateMetadata(newChat.id, {
       ...settingsToKeep,
+      ...forkBranchMetadata, // Fork: Pocket Phone
       branchName: "New Branch",
       branchParentChatId: sourceChat.id,
       branchParentMessageId: forkSourceMessage?.id ?? null,
