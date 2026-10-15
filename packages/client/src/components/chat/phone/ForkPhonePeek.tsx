@@ -63,7 +63,13 @@ export function ForkPhonePeekChips({
           {localizeUi("ui.chat.forkphone.peekChip", { name: owner.name })}
         </button>
       ))}
-      <HelpTooltip text={localizeUi("ui.chat.forkphone.peekHelp")} side="top" wide size="0.8125rem" />
+      <HelpTooltip
+        buttonClassName="-m-2 p-2"
+        text={localizeUi("ui.chat.forkphone.peekHelp")}
+        side="top"
+        wide
+        size="0.8125rem"
+      />
       <Modal
         open={open !== null}
         onClose={close}

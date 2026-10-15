@@ -1085,6 +1085,21 @@ From an audit of every fork switch (31 of them) and of features reading the same
   conversations. The form, and "Gary (Gardener)" with its own label, checked in the browser.
 - Regressions: `fork-phone-contacts`.
 
+### UI check, fork-wide
+
+- Swept every fork bar button and panel (Board, People, Weather, Slop list, Chapters, Phone,
+  Director) and the phone's inner screens (conversations, Fix this text, contact form, Phone look,
+  peeking, the People editor, the board editor) at 360, 390 and 1280 px, in a dark custom theme,
+  plain dark and plain light: no page errors, no failed requests, no sideways scroll, no control
+  off screen.
+- Fixed: in a contact's conversation on a small phone, the name shrank to "M…" between the label,
+  edit, clear and call buttons. The label now sits under the name.
+- Fixed: the help button next to "Peek at …'s phone" was a 14px tap target; it now has the same
+  padded tap area as the other help buttons.
+- Contact form placeholders now read as examples ("e.g. Theo (Gardener)").
+- Marinara's own browser smoke tests pass on desktop (7/7) and phone size (5 passed, 2 skip there
+  by design).
+
 ## Upstream files touched
 
 Fork-only code lives in `packages/client/src/lib/fork/`, `Fork*` components, `packages/shared/src/features/fork-bond-shapes.ts`, `packages/server/src/services/import/fork/`

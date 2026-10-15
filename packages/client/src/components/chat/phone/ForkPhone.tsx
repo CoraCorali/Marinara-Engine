@@ -838,10 +838,13 @@ function PhoneThreadView({
           <ArrowLeft size="0.875rem" />
         </button>
         <Avatar member={member ?? { id: to, name }} />
-        <span className="min-w-0 flex-1 truncate">{name}</span>
+        {/* The label sits under the name, so a small screen keeps the name readable. */}
+        <span className="flex min-w-0 flex-1 flex-col items-start leading-tight">
+          <span className="w-full truncate">{name}</span>
+          {contact && <span className="fp-tag mt-0.5 max-w-full truncate">{relationTag(contact, localizeUi)}</span>}
+        </span>
         {contact && (
           <>
-            <span className="fp-tag">{relationTag(contact, localizeUi)}</span>
             <button
               type="button"
               onClick={onEditContact}
