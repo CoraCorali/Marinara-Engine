@@ -21,6 +21,7 @@ import {
 } from "../../lib/fork/weather-prefs";
 import { patchGameStateField } from "../../hooks/use-game-state-patcher";
 import { useThemes } from "../../hooks/use-themes";
+import { useUIStore } from "../../stores/ui.store";
 import { SEASON_EFFECT_IDS } from "../../hooks/use-fork-season";
 import { isThemeEffectOn, parseThemeEffects } from "../../lib/fork/theme-effects";
 import { useGameStateStore } from "../../stores/game-state.store";
@@ -120,6 +121,9 @@ export function ForkWeatherPanel({ chatId }: { chatId: string | null }) {
   const activeThemeCss = themes.find((theme) => theme.isActive)?.css ?? null;
   const themeEffects = useMemo(() => parseThemeEffects(activeThemeCss), [activeThemeCss]);
   const themeChoices = useForkWeatherStore((s) => s.themeEffects);
+  const swipeOn = useUIStore((s) => s.intuitiveSwipeNavigation);
+  const setSwipeNavigation = useUIStore((s) => s.setIntuitiveSwipeNavigation);
+  const setSwipeReroll = useUIStore((s) => s.setIntuitiveSwipeRerollLatest);
   const setThemeEffect = useForkWeatherStore((s) => s.setThemeEffect);
 
   // The story's own weather and time, from the world state the tracker shows.
@@ -320,6 +324,16 @@ export function ForkWeatherPanel({ chatId }: { chatId: string | null }) {
           label={localizeUi("ui.chat.forkweather.storyLight")}
           checked={prefs.light}
           onChange={(light) => set({ light })}
+        />
+        {/* Marinara's own swipe navigation, both halves in one switch: swipe for the next or last
+            version of the newest reply, and a new one past the end. */}
+        <Switch
+          label={localizeUi("ui.chat.forkswipe.switch")}
+          checked={swipeOn}
+          onChange={(on) => {
+            setSwipeNavigation(on);
+            setSwipeReroll(on);
+          }}
         />
         {(Object.keys(SEASON_EFFECT_IDS) as (keyof typeof SEASON_EFFECT_IDS)[]).map((season) => (
           <Switch

@@ -683,6 +683,24 @@ fields, its own way into the scene, and its own wording for the model.
   on some calls, which fell back as designed.
 - Regressions: `fork-story-light`, `fork-season`.
 
+### Swipe replies with your thumb
+
+- Marinara already has **Intuitive swipe navigation** (Settings): a sideways swipe on the chat goes
+  to the newest reply's next or previous version, past the end writes a new one ("reroll at the
+  end"), and it is blocked while a reply streams, while you type, with text selected or over a
+  button. The fork builds on it instead of adding a second gesture:
+  - **"Swipe replies with your thumb"** under Cozy touches in the weather panel turns on both halves
+    (navigation and reroll at the end) in one switch.
+  - **The reply follows the thumb** (a third of the drag, at most 90px) and a counter above it says
+    where it lands ("2/3", or "✦ new"), using the same rules as Marinara's swipe
+    (`lib/fork/swipe-feel.ts`), so what it promises is what happens. It springs back on release.
+    Android gives a short buzz when a new reply starts. Touch screens only; off while streaming.
+  - **Long-press a sentence**: on a phone the long-pressed word grows to its whole sentence (once
+    per press, so dragging the handles afterwards is left alone), and Fix this part's button opens
+    on it. It reuses the slop highlighter's `sentenceAround`.
+- Tested in the browser with real touch events: a left drag showed "✦ new" and wrote a second
+  version; a right drag showed "1/2" and went back. Regression: `fork-swipe-feel`.
+
 ## Upstream files touched
 
 Fork-only code lives in `packages/client/src/lib/fork/`, `Fork*` components, `packages/shared/src/features/fork-bond-shapes.ts`, `packages/server/src/services/import/fork/`

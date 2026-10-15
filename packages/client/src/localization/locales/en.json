@@ -6137,6 +6137,8 @@
   "ui.chat.forkfix.whatToChange": "What should change? (optional)",
   "ui.chat.forknotice.thinkingCutoff": "This reply was cut off: the model spent {{reasoning}} of its {{completion}} output tokens thinking before it wrote. Raise Max Tokens in your preset or connection to give it room, or turn its reasoning down.",
   "ui.chat.forkretry.tryAgain": "Try again",
+  "ui.chat.forkswipe.new": "✦ new",
+  "ui.chat.forkswipe.switch": "Swipe replies with your thumb",
   "ui.chat.forkweather.amount": "Amount",
   "ui.chat.forkweather.aurora": "Aurora",
   "ui.chat.forkweather.brightness": "Brightness",

@@ -14,6 +14,7 @@ import { cn } from "../../lib/utils";
 import { useUIStore } from "../../stores/ui.store";
 import { useForkSlopStore } from "../../stores/fork-slop.store";
 import { findSlopMatches, locatePassage, passageOccurrence, replacePassage, sentenceAround } from "../../lib/fork/slop";
+import { isSingleWordSelection } from "../../lib/fork/sentence-range";
 import { useBackDismiss } from "../../hooks/use-back-dismiss";
 import { FORK_SWITCH_CLASS } from "../../lib/fork/switch";
 import { isModalOverlayOpen } from "../../lib/modal-overlay-registry";
@@ -225,6 +226,41 @@ export function ForkFixPart({ chatId, messages, onEdit, busy }: Props) {
       window.removeEventListener("resize", onChange);
     };
   }, [replyById]);
+
+  // ── On a phone, a long-pressed word grows to its sentence, so Fix this part opens on the sentence ──
+  useEffect(() => {
+    if (!matchMedia("(pointer: coarse)").matches) return;
+    let pressedAt = 0;
+    let grown = false;
+    const onTouch = () => {
+      pressedAt = Date.now();
+      grown = false;
+    };
+    const onChange = () => {
+      // Once per press, and only right after one: dragging the handles afterwards is left alone.
+      if (grown || Date.now() - pressedAt > 1500) return;
+      const selection = document.getSelection();
+      if (!selection || selection.isCollapsed || selection.rangeCount === 0) return;
+      const range = selection.getRangeAt(0);
+      const node = range.startContainer;
+      if (node !== range.endContainer || node.nodeType !== Node.TEXT_NODE) return;
+      if (!elementOf(node)?.closest(".mari-message-content")?.closest(ROLEPLAY_ROOT)) return;
+      if (!isSingleWordSelection(selection.toString())) return;
+      const bounds = sentenceAround(node.textContent ?? "", range.startOffset, range.endOffset);
+      grown = true;
+      const sentence = document.createRange();
+      sentence.setStart(node, bounds.start);
+      sentence.setEnd(node, bounds.end);
+      selection.removeAllRanges();
+      selection.addRange(sentence);
+    };
+    document.addEventListener("touchstart", onTouch, { passive: true });
+    document.addEventListener("selectionchange", onChange);
+    return () => {
+      document.removeEventListener("touchstart", onTouch);
+      document.removeEventListener("selectionchange", onChange);
+    };
+  }, []);
 
   // ── The highlighter: marks drawn by the browser over the text, so the message is never changed ──
   useEffect(() => {

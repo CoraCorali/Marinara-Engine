@@ -88,6 +88,7 @@ import {
 } from "../../hooks/use-fork-chapters";
 import { ForkFixPart } from "./ForkFixPart";
 import { ForkStoryLight } from "./ForkStoryLight";
+import { ForkSwipeFeel } from "./ForkSwipeFeel";
 import { useForkSeason } from "../../hooks/use-fork-season";
 import { useChatWeatherPrefs } from "../../stores/fork-weather.store";
 import { effectiveWeatherInput } from "../../lib/fork/weather-prefs";
@@ -1873,8 +1874,9 @@ export function ChatRoleplaySurface({
         <ForkFixPart chatId={activeChatId} messages={messages} onEdit={onEdit} busy={isStreaming} />
         <div className="rpg-overlay absolute inset-0" />
         <div className="rpg-vignette pointer-events-none absolute inset-0" />
-        {/* Fork: the light follows the story's time of day. */}
+        {/* Fork: the light follows the story's time of day; the newest reply follows a swiping thumb. */}
         {chatMode === "roleplay" && <ForkStoryLight />}
+        {chatMode === "roleplay" && <ForkSwipeFeel message={latestStoryboardMessage} busy={isStreaming} />}
         {weatherEffects && <WeatherEffectsConnected paused={weatherEffectsPaused} />}
         {visualNovel && !vnHistoryOpen && (
           <div
