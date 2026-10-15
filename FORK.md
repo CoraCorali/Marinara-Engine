@@ -701,6 +701,33 @@ fields, its own way into the scene, and its own wording for the model.
 - Tested in the browser with real touch events: a left drag showed "✦ new" and wrote a second
   version; a right drag showed "1/2" and went back. Regression: `fork-swipe-feel`.
 
+### Pocket Phone, part 1: your phone
+
+- **A 📱 Phone pill** in the row above the message box. Pocket Phone is **off by default** per chat
+  (Roleplay has no era, and a fantasy story has no phones): the first tap explains it and offers
+  "Turn on for this chat". Settings live in chat metadata as `forkPhone`; "Turn the phone off for
+  this chat" is in the phone's look screen. When off, nothing is sent to the model.
+- **Your phone**: a thread per card character (newest conversation first, an unread dot, an unread
+  count on the pill). Typing sends a text; it is stored with the story's time (from the world state)
+  and the newest story message it followed, and shows in the chat as a small card after that
+  message ("Kyli → Theo: …"), which opens the conversation. Your own texts can be deleted (with a
+  confirm).
+- **Skins** (approved in round 3): the pearly **slider** (pink pearl, midnight, mint, lilac; its
+  keypad slides out while you type), the sticker **candybar** (sky, bubblegum, silver; QWERTY keys
+  that really type into your text, or number keys, and silver with number keys is the classic) and the
+  **smartphone** (blush, lilac, graphite; any board picture as wallpaper). **Bling** for any skin:
+  rhinestone flowers on the frame, dot-matrix calls (used by calls in part 2) and the candybar's
+  stickers. All CSS (`styles/fork-phone.css`), no images.
+- **What the writer gets**: a phone block in the fork note with the last 8 texts in each thread with
+  the persona (with their story times), the latest calls, and "these texts and calls really
+  happened; the characters remember them".
+- **Data**: two registered tables, `fork_phone_threads` (one per pair, sorted, so it is shared by
+  both phones) and `fork_phone_messages` (sender, body, kind, story time, the reply it followed,
+  `user` or `agent`, swipes). A deleted reply takes the AI's texts after it and leaves yours; a
+  branch keeps the texts up to its branch point, tied to its own copies; deleting a chat deletes its
+  phones.
+- Regression: `fork-phone`.
+
 ## Upstream files touched
 
 Fork-only code lives in `packages/client/src/lib/fork/`, `Fork*` components, `packages/shared/src/features/fork-bond-shapes.ts`, `packages/server/src/services/import/fork/`
@@ -810,6 +837,8 @@ Edits to upstream files are marked with a `Fork:` comment.
 | `packages/client/src/components/chat/WeatherEffects.tsx`                                   | Takes a season; the story light switch never rebuilds the canvas                                  |
 | `packages/client/src/lib/weather-renderer.ts`                                              | A season from the place, after one named in the weather line                                      |
 | `packages/server/src/routes/index.ts`                                                      | Registers the season route                                                                        |
+| `packages/client/src/components/chat/ChatRoleplaySurface.tsx`                              | The Phone pill and the text cards after the message they followed                                 |
+| `packages/server/src/routes/generate.routes.ts`                                            | The phone block in the fork note                                                                  |
 
 ## Known upstream issue kept as is
 

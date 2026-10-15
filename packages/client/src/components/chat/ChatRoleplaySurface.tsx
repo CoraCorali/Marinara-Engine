@@ -89,6 +89,9 @@ import {
 import { ForkFixPart } from "./ForkFixPart";
 import { ForkStoryLight } from "./ForkStoryLight";
 import { ForkSwipeFeel } from "./ForkSwipeFeel";
+import { ForkPhoneInlineCards, ForkPhonePill, type PhoneCastMember } from "./phone/ForkPhone";
+import { useForkPhone } from "../../hooks/use-fork-phone";
+import { useForkPhoneStore } from "../../stores/fork-phone.store";
 import { useForkSeason } from "../../hooks/use-fork-season";
 import { useChatWeatherPrefs } from "../../stores/fork-weather.store";
 import { effectiveWeatherInput } from "../../lib/fork/weather-prefs";
@@ -1548,6 +1551,29 @@ export function ChatRoleplaySurface({
     void queryClient.invalidateQueries({ queryKey: chapterKeys.chat(forkChaptersChatId) });
   }, [forkChapterSignature, forkChaptersChatId, isStreaming, queryClient]);
 
+  // Fork: Pocket Phone. The cast are the chat's card characters; texts show after the message
+  // they followed, while the phone is on.
+  const forkPhoneCast = useMemo<PhoneCastMember[]>(
+    () =>
+      chatCharIds.flatMap((id) => {
+        const character = characterMap.get(id);
+        return character ? [{ id, name: character.name, avatarUrl: character.avatarUrl }] : [];
+      }),
+    [characterMap, chatCharIds],
+  );
+  const forkPersonaName = personaInfo?.name ?? "";
+  const { data: forkPhone } = useForkPhone(forkChaptersChatId);
+  const forkPhoneByMessage = useMemo(() => {
+    const byMessage = new Map<string, NonNullable<typeof forkPhone>["messages"]>();
+    if (!forkPhone?.settings.on) return byMessage;
+    for (const message of forkPhone.messages) {
+      if (!message.afterMessageId || message.kind === "call_line" || message.kind === "draft") continue;
+      byMessage.set(message.afterMessageId, [...(byMessage.get(message.afterMessageId) ?? []), message]);
+    }
+    return byMessage;
+  }, [forkPhone]);
+  const openForkPhone = useForkPhoneStore((s) => s.setOpenTo);
+
   // Fork: memoised so the memoised ChatInput does not re-render on every streamed chunk.
   const forkBarLeading = useMemo(
     () =>
@@ -1566,9 +1592,21 @@ export function ChatRoleplaySurface({
               onPickSplit={() => setForkChapterSplitting(true)}
             />
           )}
+          {forkChaptersChatId && (
+            <ForkPhonePill chatId={forkChaptersChatId} cast={forkPhoneCast} personaName={forkPersonaName} />
+          )}
         </>
       ) : undefined,
-    [forkBoardChatScope, forkBoardPersonaScope, forkChaptersChatId, isStreaming, onOpenForkBoard, onOpenForkBonds],
+    [
+      forkBoardChatScope,
+      forkBoardPersonaScope,
+      forkChaptersChatId,
+      forkPersonaName,
+      forkPhoneCast,
+      isStreaming,
+      onOpenForkBoard,
+      onOpenForkBonds,
+    ],
   );
   const showTranscript = showHistory || vnHistoryHasDraft;
   const visibleMessages = showTranscript ? transcriptWindow.messages : [];
@@ -1608,7 +1646,8 @@ export function ChatRoleplaySurface({
       />
     ));
   const wrapForkChapterMessage = (msg: MessageWithSwipes, body: ReactNode): ReactNode => {
-    if (!forkChapterLayout && !forkChapterSplitting) return body;
+    const phoneCards = forkPhoneByMessage.get(msg.id);
+    if (!forkChapterLayout && !forkChapterSplitting && !phoneCards) return body;
     const chapter = forkChapterLayout?.chapterOf.get(msg.id) ?? null;
     const rows = forkChapterLayout?.rowsBefore.get(msg.id);
     const folded = chapter !== null && !forkOpenChapterIds.has(chapter.id);
@@ -1620,6 +1659,15 @@ export function ChatRoleplaySurface({
           <div className="border-l-2 border-[color-mix(in_srgb,var(--primary)_35%,transparent)] pl-1.5">{body}</div>
         ) : (
           body
+        )}
+        {!folded && phoneCards && forkPhone && (
+          <ForkPhoneInlineCards
+            messages={phoneCards}
+            threads={forkPhone.threads}
+            cast={forkPhoneCast}
+            personaName={forkPersonaName}
+            onOpen={(to) => openForkPhone(to)}
+          />
         )}
         {forkChapterSplitting && !chapter && msg.role !== "system" && !isMessageHiddenFromUser(msg) && (
           <ForkChapterSplitButton

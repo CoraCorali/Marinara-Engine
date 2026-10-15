@@ -241,3 +241,4 @@ export * from "./utils/game-widget-update.js";
 export * from "./features/fork-bond-shapes.js";
 export * from "./features/fork-board-shapes.js";
 export * from "./features/fork-pin-details.js";
+export * from "./features/fork-phone.js";

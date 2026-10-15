@@ -136,6 +136,7 @@ import {
   diffChatVariables,
   mergeChatVariableChanges,
   undoChatVariableChanges,
+  readForkPhoneSettings,
   type APIProvider,
   type MacroContext,
   type RulesetCatalogEntriesById,
@@ -242,6 +243,8 @@ import {
   loadBondsAgentState,
 } from "../services/bonds/fork-bond-updates.js";
 import { pairsPromptBlock } from "../services/bonds/fork-bond-pairs.js";
+import { createPhoneStorage } from "../services/phone/fork-phone.js";
+import { phonePromptBlock } from "../services/phone/fork-phone-prompt.js";
 import { storyNowFromScene } from "../services/board/fork-story-now.js";
 import {
   chaptersBefore,
@@ -7851,9 +7854,19 @@ export async function generateRoutes(app: FastifyInstance, options: GenerateRout
                 .filter((message: { role: string }) => message.role === "assistant")
                 .map((message: { id: string }) => message.id),
             );
+            // Pocket Phone: what was said on the phones, while the phone is on for this chat.
+            const forkPhoneBlock = readForkPhoneSettings(chatMeta).on
+              ? phonePromptBlock(
+                  await createPhoneStorage(app.db).listThreads(input.chatId),
+                  await createPhoneStorage(app.db).listMessages(input.chatId),
+                  personaName,
+                  forkNameFor,
+                )
+              : "";
             const forkNoteParts = [
               // Advanced Memory owns the summary slot, so the chapter recaps ride here instead.
               advancedMemoryEnabled ? forkStorySoFar : "",
+              forkPhoneBlock,
               bondsPromptBlock(forkBonds, forkNameFor, personaName),
               pairsPromptBlock(forkPairs, forkNameFor),
               recentChangesPromptBlock(forkRecent, forkBonds, forkPairs, forkNameFor),

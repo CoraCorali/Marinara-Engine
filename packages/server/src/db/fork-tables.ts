@@ -2,6 +2,7 @@
 import { boardPins } from "../services/board/fork-board-pins.js";
 import { closetOutfits } from "../services/board/fork-closet.js";
 import { chapters } from "../services/chapters/fork-chapters.js";
+import { phoneMessages, phoneThreads } from "../services/phone/fork-phone.js";
 import { bondMoments, bondTurns, bonds } from "../services/bonds/fork-bonds.js";
 import { bondPairs } from "../services/bonds/fork-bond-pairs.js";
 
@@ -19,4 +20,6 @@ export const FORK_TABLES: readonly unknown[] = [
   bondPairs,
   closetOutfits,
   chapters,
+  phoneThreads,
+  phoneMessages,
 ];

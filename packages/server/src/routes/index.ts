@@ -14,6 +14,7 @@ import { forkDirectorRoutes } from "./fork-director.routes.js";
 import { forkBondsRoutes } from "./fork-bonds.routes.js";
 import { forkFixRoutes } from "./fork-fix.routes.js";
 import { forkWeatherRoutes } from "./fork-weather.routes.js";
+import { forkPhoneRoutes } from "./fork-phone.routes.js";
 import { promptsRoutes } from "./prompts.routes.js";
 import { connectionsRoutes } from "./connections.routes.js";
 import { agentsRoutes } from "./agents.routes.js";
@@ -114,6 +115,7 @@ export async function registerRoutes(app: FastifyInstance) {
   await app.register(forkBondsRoutes, { prefix: "/api/fork-bonds" });
   await app.register(forkFixRoutes, { prefix: "/api/fork-fix" });
   await app.register(forkWeatherRoutes, { prefix: "/api/fork-weather" });
+  await app.register(forkPhoneRoutes, { prefix: "/api/fork-phone" });
   await app.register(promptsRoutes, { prefix: "/api/prompts" });
   await app.register(connectionsRoutes, { prefix: "/api/connections" });
   await app.register(decisionRoutes, { prefix: "/api/decision" });

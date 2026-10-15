@@ -8,6 +8,7 @@ import { bondMoments, bondTurns, bonds, createBondsStorage } from "./bonds/fork-
 import { bondPairs, createBondPairsStorage } from "./bonds/fork-bond-pairs.js";
 import { undoBondTurn } from "./bonds/fork-bond-updates.js";
 import { createChaptersStorage } from "./chapters/fork-chapters.js";
+import { createPhoneStorage } from "./phone/fork-phone.js";
 import { FORK_THING_AT_PLACE } from "@marinara-engine/shared";
 import { eq } from "../db/file-query.js";
 import { readLorebookImageDataUrl, saveLorebookImage } from "./lorebook/lorebook-images.js";
@@ -19,6 +20,9 @@ export async function removeForkChatData(db: DB, chatId: string): Promise<void> 
   await createChaptersStorage(db)
     .removeChat(chatId)
     .catch((error) => logger.warn(error, "[fork-chapters] Could not clear the chapters for chat %s", chatId));
+  await createPhoneStorage(db)
+    .removeChat(chatId)
+    .catch((error) => logger.warn(error, "[fork-phone] Could not clear the phones for chat %s", chatId));
   await createBondsStorage(db)
     .removeChat(chatId)
     .catch((error) => logger.warn(error, "[fork-bonds] Could not clear the relationships for chat %s", chatId));
@@ -59,6 +63,12 @@ export async function copyForkChatData(
   } catch (error) {
     logger.warn(error, "[fork-chapters] Could not copy the chapters from chat %s to %s", fromChatId, toChatId);
   }
+  // The phones' texts up to the branch point come along, tied to the branch's own messages.
+  await createPhoneStorage(db)
+    .copyToBranch(fromChatId, toChatId, messageIdMap)
+    .catch((error) =>
+      logger.warn(error, "[fork-phone] Could not copy the phones from chat %s to %s", fromChatId, toChatId),
+    );
   try {
     const pins = createBoardPinsStorage(db);
     const copyPicture = async (path: string) => {
@@ -166,6 +176,15 @@ export async function forgetForkReplies(
   removed: readonly { id: string; chatId: string; createdAt: string }[],
 ): Promise<void> {
   await markForkChaptersStale(db, removed);
+  // What the AI put on the phones after a deleted reply goes with it; your own texts stay.
+  for (const chatId of new Set(removed.map((message) => message.chatId))) {
+    await createPhoneStorage(db)
+      .forgetAgentMessages(
+        chatId,
+        removed.filter((message) => message.chatId === chatId).map((message) => message.id),
+      )
+      .catch((error) => logger.warn(error, "[fork-phone] Could not take back the phone texts of chat %s", chatId));
+  }
   // Two reads per chat find the replies that left a tracker run or a moment; only those are undone,
   // so deleting many ordinary messages costs the same as deleting one.
   const tracked = new Set<string>();
