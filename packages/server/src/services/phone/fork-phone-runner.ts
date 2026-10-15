@@ -640,7 +640,7 @@ export function createPhoneRunner(db: DB) {
             })(),
             about: state.call.about,
             personaName: people.personaName,
-            story,
+            story: people.contactOf(state.call.from) ? "" : story,
             lines: [...callLines, mine].map((entry) => ({ name: people.side(entry.sender), text: entry.body })),
           }),
           "call line",
@@ -754,13 +754,7 @@ export function createPhoneRunner(db: DB) {
         const last = texts[texts.length - 1];
         // Only when your text is the newest: they have nothing to answer otherwise.
         if (!last || last.sender !== PHONE_PERSONA) return { added: [] as PhoneMessage[] };
-        const { text: story } = await storyTranscript(chat, (message) =>
-          message.role === "user"
-            ? people.personaName
-            : message.role === "narrator"
-              ? "Narrator"
-              : people.nameFor(message.characterId ?? "") || "Character",
-        );
+        // No story here: a contact was not in the scenes and knows only what you texted them.
         const where = await scene(chatId);
         const raw = await complete(
           chat,
@@ -769,7 +763,6 @@ export function createPhoneRunner(db: DB) {
             who: contactWho(contact, people.personaName),
             personaName: people.personaName,
             storyTime: where.time,
-            story,
             texts: texts
               .slice(-CONTACT_TEXTS)
               .map((text) => ({ name: people.side(text.sender), text: text.body, time: text.storyTime })),
@@ -786,11 +779,11 @@ export function createPhoneRunner(db: DB) {
             sender: side,
             body,
             storyTime: where.time,
-            // Shown in the chat with your text, after the same story message.
-            // ponytail: a swipe of that story message takes the answer back, like any AI text after
-            // it, while your text stays; the next text you send gets a fresh answer.
+            // Shown in the chat with your text, after the same story message. Kept like your own
+            // texts: it answers you, not the story, so the phone agent re-running for that story
+            // message (when its reply finishes, or on a swipe) must not take it back.
             afterMessageId: last.afterMessageId,
-            source: "agent",
+            source: "user",
           });
           if (message) added.push(message);
         }
@@ -831,7 +824,8 @@ export function createPhoneRunner(db: DB) {
               ? contactWho(contact, people.personaName)
               : (people.members.find((member) => member.id === message.sender)?.about ?? ""),
             personaName: people.personaName,
-            story,
+            // A contact was not in the scenes: their new version is written from your texts alone.
+            story: contact ? "" : story,
             earlier: thread
               .filter((entry) => entry.id !== message.id && (entry.kind === "text" || entry.kind === "photo"))
               .slice(-8)

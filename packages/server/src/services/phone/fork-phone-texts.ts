@@ -56,7 +56,7 @@ export function buildTextSwipeMessages(input: {
       role: "user",
       content: [
         `${input.name} is texting ${persona} in an ongoing roleplay story.${input.who ? ` ${input.name}: ${input.who}` : ""}`,
-        `\nThe latest story (oldest first, for context):\n${input.story || "(nothing yet)"}`,
+        input.story ? `\nThe latest story (oldest first, for context):\n${input.story}` : "",
         input.earlier.length
           ? `\nTheir texts before this one (oldest first):\n${input.earlier.map((line) => `${line.name}: ${line.text}`).join("\n")}`
           : "",

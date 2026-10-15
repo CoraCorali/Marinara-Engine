@@ -79,7 +79,7 @@ const agentPrompt = agent.buildPhoneAgentMessages({
 })[0]!.content;
 assert.match(
   agentPrompt,
-  /Kyli's own contacts .*only know what Kyli has told them\):\n- Mom \(family\): worries a lot\n- Jess \(contact\)/,
+  /Kyli's own contacts .*never mention anything from them that Kyli has not texted them\):\n- Mom \(family\): worries a lot\n- Jess \(contact\)/,
 );
 
 // ── A contact's answer ──
@@ -88,11 +88,11 @@ const reply = agent.buildContactReplyMessages({
   who: prompt.contactWho(contacts[0]!, "Kyli"),
   personaName: "Kyli",
   storyTime: "11 PM",
-  story: "Theo: goodnight",
   texts: [{ name: "Kyli", text: "home safe", time: "11 PM" }],
 })[0]!.content;
 assert.match(reply, /Mom is Kyli's family \(worries a lot\)/);
-assert.match(reply, /knows only what Kyli has told them/);
+assert.match(reply, /knows nothing about Kyli's day except what Kyli has texted them/);
+assert.doesNotMatch(reply, /latest story|scene:/i, "a contact is never shown the story's scenes");
 assert.match(reply, /- \[11 PM\] Kyli: home safe/);
 assert.deepEqual(agent.readContactReply('{"texts":["GOOD", " \\"call me tomorrow\\" ", "", "x", "y"]}'), [
   "GOOD",

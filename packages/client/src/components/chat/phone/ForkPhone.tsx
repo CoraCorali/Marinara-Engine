@@ -59,14 +59,7 @@ import { cn } from "../../../lib/utils";
 import { HelpTooltip } from "../../ui/HelpTooltip";
 import { Modal } from "../../ui/Modal";
 import { ForkPhoneShell } from "./ForkPhoneShell";
-import {
-  PhoneBubble,
-  PhoneEditPanel,
-  PhoneFixPanel,
-  SwipeRow,
-  swipeText,
-  useTextSwipeSettings,
-} from "./ForkPhoneTexts";
+import { PhoneBubble, PhoneEditPanel, PhoneFixPanel, SwipeRow, swipeText } from "./ForkPhoneTexts";
 import { useForkPhoneStore } from "../../../stores/fork-phone.store";
 
 export type PhoneCastMember = { id: string; name: string; avatarUrl?: string | null };
@@ -642,7 +635,6 @@ function PhoneThreadView({
 
   const [tool, setTool] = useState<{ kind: "fix" | "edit"; message: PhoneMessage } | null>(null);
   const swipe = useSwipeText(chatId);
-  const swipeSettings = useTextSwipeSettings();
   const newestId = [...shown].reverse().find((message) => message.kind === "text" || message.kind === "photo")?.id;
 
   const removeText = async (message: PhoneMessage) => {
@@ -727,11 +719,7 @@ function PhoneThreadView({
             <div key={message.id} className={cn("flex flex-col", mine ? "items-end" : "items-start")}>
               <PhoneBubble
                 className={cn("fp-bubble", mine ? "is-me" : "is-them", tool?.message.id === message.id && "is-picked")}
-                onSwipe={
-                  swipeable && swipeSettings.on
-                    ? (dx) => swipeText(swipe, message, dx, swipeSettings.rerollAtEnd)
-                    : undefined
-                }
+                onSwipe={swipeable ? (dx) => swipeText(swipe, message, dx) : undefined}
                 onLongPress={isText ? () => setTool({ kind: mine ? "edit" : "fix", message }) : undefined}
               >
                 {message.body}

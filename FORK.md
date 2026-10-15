@@ -919,9 +919,6 @@ From an audit of every fork switch (31 of them) and of features reading the same
   and keep applying until then. Reset clears the chat's saved choices.
 - **"Swipe replies with your thumb"** now switches only Marinara's swipe navigation. It used to
   switch "Reroll past the newest swipe" too, without showing it; that stays Marinara's own setting.
-- **Text swipes follow the swipe settings**: thumb swipes on a character's newest text work only
-  with swipe navigation on, and a new version past the last one only with reroll on, as for story
-  replies. The ‹ › ✦ buttons always work.
 - **"All chats"** beside the switches that are one setting for every chat (sounds, fireplace, swipe,
   the seasons, theme effects), among the ones that are for this chat.
 - **The Weather panel says when Marinara's "Weather effects" are off** (nothing in the panel shows
@@ -935,6 +932,25 @@ From an audit of every fork switch (31 of them) and of features reading the same
   writer, the phone and the light read one weather and time; weather sounds come from the same
   weather the screen draws.
 - Regression: `fork-weather-prefs-sync`.
+
+### Phone fixes from real use
+
+- **A contact's answer vanished.** A story reply is saved and shown before Marinara finishes its
+  agents; a text sent to a contact in that gap got its answer after that reply, and when the reply
+  finished, the phone agent's run for it took back every AI text after it, the answer included. A
+  contact's answer to your text is now kept like your own texts (it answers you, not the story).
+- **Contacts knew things they should not.** Their prompt carried the story's latest scenes "for
+  tone", and models used them (a letter only the persona had seen). Contacts are now given only
+  your texts with them, for answers, new versions and calls; the phone agent is told a contact must
+  never mention what you have not texted them.
+- **Thumb swipes on texts work again.** They had been tied to Marinara's "Swipe replies with your
+  thumb", which is off by default, so swiping a text did nothing. Texts always take thumb swipes,
+  and a swipe past the last version always writes a new one, as on a phone; that switch stays with
+  the story's replies.
+- Live check (Fable 5.1 via LinkAPI): Jess answered, the phone agent then ran again for the same
+  story reply, and her three texts stayed; her prompt held only your texts with her, and her answer
+  only mentioned what had been texted. A real left thumb swipe on a contact's newest text, with
+  Marinara's swipe setting off, made a new version.
 
 ## Upstream files touched
 

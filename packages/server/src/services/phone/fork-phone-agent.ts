@@ -507,7 +507,7 @@ export function buildPhoneAgentMessages(context: PhoneAgentContext): { role: "us
     ...castLines,
     "Anyone else (Mom, a coworker, a supplier) is a side contact who exists only inside a card character's phone.",
     context.contacts?.length
-      ? `${persona}'s own contacts (people with no card, who can text ${persona} too, rarely, about their own lives or what ${persona} told them; they only know what ${persona} has told them):\n${context.contacts.map((line) => `- ${line}`).join("\n")}`
+      ? `${persona}'s own contacts (people with no card, who can text ${persona} too, rarely, about their own lives or what ${persona} texted them; they were not in the story's scenes and must never mention anything from them that ${persona} has not texted them):\n${context.contacts.map((line) => `- ${line}`).join("\n")}`
       : "",
     context.cast.some((member) => member.present === null) ? "Judge from the story who is in the scene." : "",
     "",
@@ -555,7 +555,7 @@ export function buildCallLineMessages(input: {
       content: [
         `${input.characterName} is on a phone call with ${persona} in an ongoing roleplay story.${input.about ? ` The call is about: ${input.about}.` : ""}`,
         input.who ? `${input.characterName} is ${input.who}. They only know what ${persona} has told them.` : "",
-        `\nThe latest story (oldest first):\n${input.story || "(nothing yet)"}`,
+        input.story ? `\nThe latest story (oldest first):\n${input.story}` : "",
         `\nThe call so far:\n${input.lines.map((line) => `${line.name}: ${line.text}`).join("\n") || "(just picked up)"}`,
         `\nWrite ${input.characterName}'s next spoken line only, in their own voice: one to three short sentences, the way people talk on the phone. No narration, no name label, no quotation marks. Never write ${persona}'s words.`,
       ]
@@ -584,7 +584,6 @@ export function buildContactReplyMessages(input: {
   who: string;
   personaName: string;
   storyTime: string;
-  story: string;
   texts: { name: string; text: string; time: string }[];
 }): { role: "user"; content: string }[] {
   const persona = input.personaName || "the user's character";
@@ -592,11 +591,10 @@ export function buildContactReplyMessages(input: {
     {
       role: "user",
       content: [
-        `${input.name} is ${input.who}, texting with ${persona} in an ongoing roleplay story. ${input.name} has no part in the story's scenes and knows only what ${persona} has told them, plus their own life.`,
-        input.storyTime ? `Story time now: ${input.storyTime}.` : "",
-        `\nWhat is happening in ${persona}'s story (for tone only; ${input.name} was not there):\n${input.story || "(nothing yet)"}`,
+        `${input.name} is ${input.who}, texting with ${persona}. ${input.name} is not in ${persona}'s scenes and knows nothing about ${persona}'s day except what ${persona} has texted them below, plus their own life.`,
+        input.storyTime ? `Time now: ${input.storyTime}.` : "",
         `\nTheir texts so far (oldest first):\n${input.texts.map((text) => `- ${text.time ? `[${text.time}] ` : ""}${text.name}: ${text.text}`).join("\n")}`,
-        `\nWrite ${input.name}'s reply: one to three short texts in their own voice, the way they would really text ${persona}. No narration, no quotation marks. Never write ${persona}'s texts.`,
+        `\nWrite ${input.name}'s reply: one to three short texts in their own voice, the way they would really text ${persona}. Only mention things ${persona} has texted about or that are part of ${input.name}'s own life; never anything else that happened to ${persona}. No narration, no quotation marks. Never write ${persona}'s texts.`,
         'Reply with JSON only: {"texts":["text","text"]}',
       ]
         .filter(Boolean)
