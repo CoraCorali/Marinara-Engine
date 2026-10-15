@@ -603,6 +603,45 @@ export function buildContactReplyMessages(input: {
   ];
 }
 
+/**
+ * A card character answers your texts right away. They are in the story, so they get its latest
+ * part; they may leave you on read when the story has them busy, asleep or right next to you.
+ */
+export function buildCharacterReplyMessages(input: {
+  name: string;
+  about: string;
+  personaName: string;
+  story: string;
+  storyTime: string;
+  location: string;
+  /** True while the scene has them with the persona. */
+  present: boolean;
+  texts: { name: string; text: string; time: string }[];
+}): { role: "user"; content: string }[] {
+  const persona = input.personaName || "the user's character";
+  return [
+    {
+      role: "user",
+      content: [
+        `${input.name} is texting with ${persona} in an ongoing roleplay story.${input.about ? ` ${input.name}: ${input.about}` : ""}`,
+        input.story ? `\nThe latest story (oldest first):\n${input.story}` : "",
+        [
+          input.storyTime ? `Time now: ${input.storyTime}.` : "",
+          input.location ? `The scene is at: ${input.location}.` : "",
+          input.present ? `${input.name} is in the scene with ${persona} right now.` : "",
+        ]
+          .filter(Boolean)
+          .join(" "),
+        `\nTheir texts so far (oldest first):\n${input.texts.map((text) => `- ${text.time ? `[${text.time}] ` : ""}${text.name}: ${text.text}`).join("\n")}`,
+        `\nWrite ${input.name}'s reply: one to three short texts in their own voice, the way they would really text ${persona}, true to what is happening in the story right now. If the story has ${input.name} unable to answer (asleep, busy, phone away, right next to ${persona}), send nothing. No narration, no quotation marks. Never write ${persona}'s texts.`,
+        'Reply with JSON only: {"texts":["text","text"]}, or {"texts":[]} to send nothing.',
+      ]
+        .filter(Boolean)
+        .join("\n"),
+    },
+  ];
+}
+
 /** The contact's texts, from JSON or, failing that, one text per line. At most three. */
 export function readContactReply(raw: string): string[] {
   const start = raw.indexOf("{");

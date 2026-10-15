@@ -3,7 +3,8 @@
  * persona's words are never written for them); texts arrive now or after 1–3 replies; the daily cap
  * and the per-character cooldown hold, except for answering your text; one call rings at a time; a
  * swipe or delete of a reply takes back what its run did; idle delivery sends what waits; the agent
- * is skipped while everyone is present and nothing waits; the writer sees a call's last lines.
+ * is skipped while everyone is present and nothing waits; the writer sees a call's last lines; a
+ * card character answering your text right away sees the story and may leave you on read.
  */
 import assert from "node:assert/strict";
 
@@ -315,5 +316,41 @@ assert.equal(branched.reachable, null, "a phone left in reach after the branch p
 assert.deepEqual(branched.peeks, [
   { characterId: "theo", reply: "b1", storyTime: "", threadIds: ["bt1", "drafts"], at: "" },
 ]);
+
+// ── A card character answers your text right away ──
+const textReply = agent.buildCharacterReplyMessages({
+  name: "Theo",
+  about: "a sleepy barista",
+  personaName: "Kyli",
+  story: "Narrator: Theo closes the café and heads home.",
+  storyTime: "11 PM",
+  location: "Theo's flat",
+  present: false,
+  texts: [{ name: "Kyli", text: "you up?", time: "11 PM" }],
+})[0]!.content;
+assert.match(textReply, /Theo: a sleepy barista/);
+assert.match(
+  textReply,
+  /The latest story \(oldest first\):\nNarrator: Theo closes the café/,
+  "a character is in the story",
+);
+assert.match(textReply, /Time now: 11 PM\. The scene is at: Theo's flat\./);
+assert.doesNotMatch(textReply, /in the scene with Kyli/);
+assert.match(textReply, /- \[11 PM\] Kyli: you up\?/);
+assert.match(textReply, /\{"texts":\[\]\} to send nothing/, "they may leave you on read");
+assert.match(
+  agent.buildCharacterReplyMessages({
+    name: "Theo",
+    about: "",
+    personaName: "Kyli",
+    story: "",
+    storyTime: "",
+    location: "",
+    present: true,
+    texts: [],
+  })[0]!.content,
+  /Theo is in the scene with Kyli right now/,
+);
+assert.deepEqual(agent.readContactReply('{"texts":[]}'), [], "left on read: nothing is sent");
 
 console.log("fork phone agent: ok");

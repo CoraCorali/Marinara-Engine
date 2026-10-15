@@ -33,6 +33,7 @@ import {
 } from "./fork-phone-texts.js";
 import {
   buildCallLineMessages,
+  buildCharacterReplyMessages,
   buildContactReplyMessages,
   buildPhoneAgentMessages,
   cleanSpokenLine,
@@ -227,6 +228,75 @@ export function createPhoneRunner(db: DB) {
 
   async function saveState(chatId: string, state: PhoneRunState) {
     await chats.patchMetadata(chatId, () => phoneRunMetadata(state));
+  }
+
+  /** Someone answers your texts in your conversation with them, when your text is the newest. */
+  function answerTexts(chatId: string, side: string, debug: boolean) {
+    return withLock(chatId, async () => {
+      const chat = await getChat(chatId);
+      const meta = parseRecord(chat.metadata);
+      if (!readForkPhoneSettings(meta).on) throw new PhoneError("The phone is off for this chat", 400);
+      const people = await cast(chat);
+      const contact = people.contactOf(side);
+      const member = people.members.find((entry) => entry.id === side);
+      if (!contact && !member) throw new PhoneError("They are not in your phone", 404);
+      const thread = await phones.ensureThread(chatId, PHONE_PERSONA, side);
+      const texts = (await phones.listMessages(chatId)).filter(
+        (message) => message.threadId === thread.id && (message.kind === "text" || message.kind === "photo"),
+      );
+      const last = texts[texts.length - 1];
+      // Only when your text is the newest: they have nothing to answer otherwise.
+      if (!last || last.sender !== PHONE_PERSONA) return { added: [] as PhoneMessage[] };
+      const where = await scene(chatId);
+      const lines = texts
+        .slice(-CONTACT_TEXTS)
+        .map((text) => ({ name: people.side(text.sender), text: text.body, time: text.storyTime }));
+      // No story for a contact: they were not in the scenes and know only what you texted them.
+      const messages = contact
+        ? buildContactReplyMessages({
+            name: contact.name,
+            who: contactWho(contact, people.personaName),
+            personaName: people.personaName,
+            storyTime: where.time,
+            texts: lines,
+          })
+        : buildCharacterReplyMessages({
+            name: member!.name,
+            about: member!.about,
+            personaName: people.personaName,
+            story: (
+              await storyTranscript(chat, (message) =>
+                message.role === "user"
+                  ? people.personaName
+                  : message.role === "narrator"
+                    ? "Narrator"
+                    : people.nameFor(message.characterId ?? "") || "Character",
+              )
+            ).text,
+            storyTime: where.time,
+            location: where.location,
+            present: where.present.includes(side),
+            texts: lines,
+          });
+      const raw = await complete(chat, messages, contact ? "contact reply" : "character text reply", debug, 800);
+      const added: PhoneMessage[] = [];
+      for (const body of readContactReply(raw)) {
+        const message = await phones.addMessage({
+          chatId,
+          threadId: thread.id,
+          sender: side,
+          body,
+          storyTime: where.time,
+          // Shown in the chat with your text, after the same story message. Kept like your own
+          // texts: it answers you, not the story, so the phone agent re-running for that story
+          // message (when its reply finishes, or on a swipe) must not take it back.
+          afterMessageId: last.afterMessageId,
+          source: "user",
+        });
+        if (message) added.push(message);
+      }
+      return { added };
+    });
   }
 
   /** Puts a plan's texts, calls, thread lines and drafts on the phones. */
@@ -736,59 +806,19 @@ export function createPhoneRunner(db: DB) {
 
     /**
      * A contact answers your texts: one to three texts in their voice. They were not in the
-     * scenes, so they are told only your conversation, with the story for tone.
+     * scenes, so they are told only your conversation.
      */
     async contactReply(chatId: string, name: string, debug: boolean) {
-      return withLock(chatId, async () => {
-        const chat = await getChat(chatId);
-        const meta = parseRecord(chat.metadata);
-        if (!readForkPhoneSettings(meta).on) throw new PhoneError("The phone is off for this chat", 400);
-        const people = await cast(chat);
-        const side = `${PHONE_CONTACT}${name}`;
-        const contact = people.contactOf(side);
-        if (!contact) throw new PhoneError("That contact is not in your phone", 404);
-        const thread = await phones.ensureThread(chatId, PHONE_PERSONA, side);
-        const texts = (await phones.listMessages(chatId)).filter(
-          (message) => message.threadId === thread.id && (message.kind === "text" || message.kind === "photo"),
-        );
-        const last = texts[texts.length - 1];
-        // Only when your text is the newest: they have nothing to answer otherwise.
-        if (!last || last.sender !== PHONE_PERSONA) return { added: [] as PhoneMessage[] };
-        // No story here: a contact was not in the scenes and knows only what you texted them.
-        const where = await scene(chatId);
-        const raw = await complete(
-          chat,
-          buildContactReplyMessages({
-            name: contact.name,
-            who: contactWho(contact, people.personaName),
-            personaName: people.personaName,
-            storyTime: where.time,
-            texts: texts
-              .slice(-CONTACT_TEXTS)
-              .map((text) => ({ name: people.side(text.sender), text: text.body, time: text.storyTime })),
-          }),
-          "contact reply",
-          debug,
-          800,
-        );
-        const added: PhoneMessage[] = [];
-        for (const body of readContactReply(raw)) {
-          const message = await phones.addMessage({
-            chatId,
-            threadId: thread.id,
-            sender: side,
-            body,
-            storyTime: where.time,
-            // Shown in the chat with your text, after the same story message. Kept like your own
-            // texts: it answers you, not the story, so the phone agent re-running for that story
-            // message (when its reply finishes, or on a swipe) must not take it back.
-            afterMessageId: last.afterMessageId,
-            source: "user",
-          });
-          if (message) added.push(message);
-        }
-        return { added };
-      });
+      return answerTexts(chatId, `${PHONE_CONTACT}${name}`, debug);
+    },
+
+    /**
+     * A card character answers your texts right away, from the story as it stands, or leaves you
+     * on read when the story has them busy. Unanswered, the phone agent can still answer after a
+     * later story reply.
+     */
+    async characterReply(chatId: string, characterId: string, debug: boolean) {
+      return answerTexts(chatId, characterId, debug);
     },
 
     /**

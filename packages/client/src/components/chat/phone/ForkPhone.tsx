@@ -34,7 +34,7 @@ import {
   PHONE_CONTACT,
   PHONE_PERSONA,
   callMinutes,
-  useContactReply,
+  useTextReply,
   useContacts,
   deliverIdlePhone,
   otherSide,
@@ -306,7 +306,7 @@ export function ForkPhoneApp({
   const inCast = (side: string) => cast.some((member) => member.id === side);
   const contacts = data?.settings.contacts ?? [];
   const contactOf = (side: string) => contacts.find((contact) => PHONE_CONTACT + contact.name === side);
-  const reply = useContactReply(chatId);
+  const reply = useTextReply(chatId);
 
   const threadFor = (to: string): PhoneThread | undefined =>
     data?.threads.find(
@@ -321,8 +321,8 @@ export function ForkPhoneApp({
       {
         onSuccess: () => {
           setDraft("");
-          // A contact answers right away; a card character answers through the story's phone agent.
-          if (contact) reply.mutate(contact.name);
+          // They answer right away (a card character may leave it for the story's phone agent).
+          reply.mutate(view.to);
         },
       },
     );
@@ -367,7 +367,7 @@ export function ForkPhoneApp({
           left={!inCast(view.to) && !contactOf(view.to)}
           contact={contactOf(view.to)}
           onEditContact={() => setView({ name: "contact", edit: contactOf(view.to)?.name })}
-          replying={reply.isPending}
+          replying={reply.isPending && reply.variables === view.to}
           caseKeys={caseKeys}
           personaName={personaName}
           thread={threadFor(view.to)}

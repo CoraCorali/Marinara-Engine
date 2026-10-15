@@ -296,4 +296,11 @@ export async function forkPhoneRoutes(app: FastifyInstance) {
       runner.contactReply(req.params.chatId, req.params.name, debugOf(req.body)),
     ),
   );
+
+  /** A card character answers your newest text right away, or leaves it for later. */
+  app.post<{ Params: { chatId: string; id: string } }>("/chats/:chatId/characters/:id/reply", async (req, reply) =>
+    step(reply, req.params.chatId, "A character's text reply", () =>
+      runner.characterReply(req.params.chatId, req.params.id, debugOf(req.body)),
+    ),
+  );
 }

@@ -952,6 +952,22 @@ From an audit of every fork switch (31 of them) and of features reading the same
   only mentioned what had been texted. A real left thumb swipe on a contact's newest text, with
   Marinara's swipe setting off, made a new version.
 
+### Characters answer your texts right away
+
+- Texting a card character used to wait for the next story reply, because only the phone agent
+  (which runs after replies) answered. Now they answer as soon as you send, with the typing dots,
+  like contacts do. Their prompt has the story's latest part, the scene's time and place, whether
+  they are in the scene with the persona, and your conversation with them.
+- They can leave you on read: when the story has them asleep, busy, without their phone or right
+  next to the persona, the model sends nothing. The text then stays unanswered, and the phone agent
+  can still answer it after a later story reply.
+- Their answer is kept like a contact's (it answers you, not a story reply), so re-running the
+  phone agent for that reply never takes it back.
+- Live check (Opus 5.5, Fable 5.1, Opus 4.6 via LinkAPI): with Kyli standing next to Theo in the
+  bakery, all three sent nothing; with Theo alone in the car park after the open mic, all three
+  answered in his voice from that moment. In the browser, the dots showed and his texts arrived.
+- Regression: `fork-phone-agent`.
+
 ## Upstream files touched
 
 Fork-only code lives in `packages/client/src/lib/fork/`, `Fork*` components, `packages/shared/src/features/fork-bond-shapes.ts`, `packages/server/src/services/import/fork/`

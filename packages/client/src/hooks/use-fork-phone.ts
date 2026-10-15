@@ -267,14 +267,17 @@ export function useContacts(chatId: string | null) {
   };
 }
 
-/** A contact answers your newest text (one model call). */
-export function useContactReply(chatId: string | null) {
+/** Whoever you are texting (a card character id, or a contact side) answers your newest text. */
+export function useTextReply(chatId: string | null) {
   const qc = useQueryClient();
   return useMutation({
-    mutationFn: (name: string) =>
-      api.post<{ added: PhoneMessage[] }>(`/fork-phone/chats/${chatId}/contacts/${encodeURIComponent(name)}/reply`, {
-        debugMode: useUIStore.getState().debugMode,
-      }),
+    mutationFn: (side: string) =>
+      api.post<{ added: PhoneMessage[] }>(
+        side.startsWith(PHONE_CONTACT)
+          ? `/fork-phone/chats/${chatId}/contacts/${encodeURIComponent(side.slice(PHONE_CONTACT.length))}/reply`
+          : `/fork-phone/chats/${chatId}/characters/${encodeURIComponent(side)}/reply`,
+        { debugMode: useUIStore.getState().debugMode },
+      ),
     onError: failed,
     onSettled: () => void qc.invalidateQueries({ queryKey: phoneKeys.chat(chatId) }),
   });
