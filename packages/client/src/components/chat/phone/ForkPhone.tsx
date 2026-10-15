@@ -33,6 +33,7 @@ import {
 import {
   PHONE_CONTACT,
   PHONE_PERSONA,
+  PHONE_UNKNOWN,
   callMinutes,
   useTextReply,
   useContacts,
@@ -56,6 +57,7 @@ import { FORK_BAR_PILL_CLASS, FORK_BAR_PILL_IDLE_CLASS } from "../../../lib/fork
 import { FORK_SWITCH_CLASS } from "../../../lib/fork/switch";
 import { showConfirmDialog } from "../../../lib/app-dialogs";
 import { cn } from "../../../lib/utils";
+import { translate } from "../../../localization/i18n";
 import { HelpTooltip } from "../../ui/HelpTooltip";
 import { Modal } from "../../ui/Modal";
 import { ForkPhoneShell } from "./ForkPhoneShell";
@@ -74,8 +76,8 @@ type View =
   | { name: "thread"; to: string }
   | { name: "look" }
   | { name: "call" }
-  /** A new contact, or changing one (by name). */
-  | { name: "contact"; edit?: string };
+  /** A new contact (maybe saving an unknown number), or changing one (by name). */
+  | { name: "contact"; edit?: string; from?: string };
 
 /**
  * Texts waiting to arrive come in after this long in the chat without writing.
@@ -179,7 +181,9 @@ export function phoneNameOf(cast: readonly PhoneCastMember[], personaName: strin
   return (side: string) =>
     side === PHONE_PERSONA
       ? personaName
-      : (cast.find((member) => member.id === side)?.name ?? names[side] ?? side.replace(/^contact:/, ""));
+      : side.startsWith(PHONE_UNKNOWN)
+        ? translate("ui.chat.forkphone.unknownNumber")
+        : (cast.find((member) => member.id === side)?.name ?? names[side] ?? side.replace(/^contact:/, ""));
 }
 
 /** Someone is calling: a card over the chat, with Answer and Decline. */
@@ -315,7 +319,7 @@ export function ForkPhoneApp({
   const sendDraft = () => {
     if (view.name !== "thread" || !draft.trim() || send.isPending) return;
     const contact = contactOf(view.to);
-    if (!inCast(view.to) && !contact) return;
+    if (!inCast(view.to) && !contact && !view.to.startsWith(PHONE_UNKNOWN)) return;
     send.mutate(
       { to: view.to, body: draft },
       {
@@ -364,7 +368,10 @@ export function ForkPhoneApp({
           to={view.to}
           member={cast.find((member) => member.id === view.to)}
           name={nameOf(view.to)}
-          left={!inCast(view.to) && !contactOf(view.to)}
+          left={!inCast(view.to) && !contactOf(view.to) && !view.to.startsWith(PHONE_UNKNOWN)}
+          onSaveNumber={
+            view.to.startsWith(PHONE_UNKNOWN) ? () => setView({ name: "contact", from: view.to }) : undefined
+          }
           contact={contactOf(view.to)}
           onEditContact={() => setView({ name: "contact", edit: contactOf(view.to)?.name })}
           replying={reply.isPending && reply.variables === view.to}
@@ -408,7 +415,16 @@ export function ForkPhoneApp({
         <ContactForm
           chatId={chatId}
           contact={view.edit ? contacts.find((contact) => contact.name === view.edit) : undefined}
-          onDone={(name) => setView(name ? { name: "thread", to: PHONE_CONTACT + name } : { name: "home" })}
+          from={view.from}
+          onDone={(name) =>
+            setView(
+              name
+                ? { name: "thread", to: PHONE_CONTACT + name }
+                : view.from
+                  ? { name: "thread", to: view.from }
+                  : { name: "home" },
+            )
+          }
         />
       )}
     </div>
@@ -477,8 +493,19 @@ function PhoneHome({
   const former = threads
     .filter((thread) => thread.a === PHONE_PERSONA || thread.b === PHONE_PERSONA)
     .map((thread) => otherSide(thread))
-    .filter((side) => !side.startsWith("contact:") && !cast.some((member) => member.id === side))
+    .filter(
+      (side) =>
+        !side.startsWith(PHONE_CONTACT) &&
+        !side.startsWith(PHONE_UNKNOWN) &&
+        !cast.some((member) => member.id === side),
+    )
     .map((side) => ({ id: side, name: nameOf(side), left: true }));
+  // Numbers you have not saved yet.
+  const unknown = threads
+    .filter((thread) => thread.a === PHONE_PERSONA || thread.b === PHONE_PERSONA)
+    .map((thread) => otherSide(thread))
+    .filter((side) => side.startsWith(PHONE_UNKNOWN))
+    .map((side) => ({ id: side, name: nameOf(side), left: false }));
   type Row = PhoneCastMember & { left: boolean; relation?: ForkPhoneRelation };
   const people: Row[] = contacts.map((contact) => ({
     id: PHONE_CONTACT + contact.name,
@@ -486,7 +513,7 @@ function PhoneHome({
     left: false,
     relation: contact.relation,
   }));
-  const rows = ([...cast.map((member) => ({ ...member, left: false })), ...people, ...former] as Row[])
+  const rows = ([...cast.map((member) => ({ ...member, left: false })), ...people, ...unknown, ...former] as Row[])
     .map((member) => {
       const thread = threadFor(member.id);
       const own = thread ? messages.filter((message) => message.threadId === thread.id) : [];
@@ -566,6 +593,7 @@ function PhoneThreadView({
   member,
   name,
   left,
+  onSaveNumber,
   contact,
   onEditContact,
   replying,
@@ -590,6 +618,8 @@ function PhoneThreadView({
   name: string;
   /** They left the chat: the thread can be read but not written to. */
   left: boolean;
+  /** An unknown number: save it as a contact. */
+  onSaveNumber?: () => void;
   /** One of your contacts (not a card character). */
   contact?: ForkPhoneContact;
   onEditContact: () => void;
@@ -669,6 +699,11 @@ function PhoneThreadView({
               <PencilLine size="0.875rem" />
             </button>
           </>
+        )}
+        {onSaveNumber && (
+          <button type="button" onClick={onSaveNumber} aria-label={localizeUi("ui.chat.forkphone.saveNumber")}>
+            <UserPlus size="0.875rem" />
+          </button>
         )}
         {onCall && (
           <button
@@ -929,10 +964,13 @@ function PhoneCallView({
 function ContactForm({
   chatId,
   contact,
+  from,
   onDone,
 }: {
   chatId: string;
   contact?: ForkPhoneContact;
+  /** Saving an unknown number: its texts move to the new contact. */
+  from?: string;
   /** Back to their conversation (a name), or home. */
   onDone: (name?: string) => void;
 }) {
@@ -946,7 +984,7 @@ function ContactForm({
     if (!name.trim() || busy) return;
     const input = { name: name.trim(), relation, note };
     if (contact) edit.mutate(input, { onSuccess: () => onDone(contact.name) });
-    else add.mutate(input, { onSuccess: () => onDone(input.name.replace(/\s+/g, " ")) });
+    else add.mutate({ ...input, from }, { onSuccess: () => onDone(input.name.replace(/\s+/g, " ")) });
   };
   const removeContact = async () => {
     if (!contact) return;

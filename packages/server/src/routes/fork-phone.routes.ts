@@ -13,7 +13,13 @@ import {
 import { createChatsStorage } from "../services/storage/chats.storage.js";
 import { createCharactersStorage } from "../services/storage/characters.storage.js";
 import { createGameStateStorage } from "../services/storage/game-state.storage.js";
-import { createPhoneStorage, PHONE_CONTACT, PHONE_PERSONA, phoneSide } from "../services/phone/fork-phone.js";
+import {
+  createPhoneStorage,
+  PHONE_CONTACT,
+  PHONE_PERSONA,
+  PHONE_UNKNOWN,
+  phoneSide,
+} from "../services/phone/fork-phone.js";
 import { readPhoneRunState } from "../services/phone/fork-phone-agent.js";
 import { readWrittenPhones } from "../services/phone/fork-phone-peek.js";
 import { createPhoneRunner, logPhoneFailure, PhoneError } from "../services/phone/fork-phone-runner.js";
@@ -121,6 +127,13 @@ export async function forkPhoneRoutes(app: FastifyInstance) {
     if (!settings.on) return reply.status(400).send({ error: "The phone is off for this chat" });
     if (to.startsWith(PHONE_CONTACT) && !settings.contacts.some((contact) => PHONE_CONTACT + contact.name === to)) {
       return reply.status(400).send({ error: "That contact is not in your phone" });
+    }
+    // An unknown number can be texted back once it has texted you.
+    if (
+      to.startsWith(PHONE_UNKNOWN) &&
+      !(await phones.listThreads(chat.id)).some((thread) => thread.a === to || thread.b === to)
+    ) {
+      return reply.status(400).send({ error: "That number is not in your phone" });
     }
     const [latest] = (await chats.listMessagePreviews(chat.id, 1)) as { id: string }[];
     const scene = await createGameStateStorage(app.db).getLatest(chat.id);
@@ -257,7 +270,11 @@ export async function forkPhoneRoutes(app: FastifyInstance) {
       if (contacts.length >= MAX_FORK_PHONE_CONTACTS) return "Your phone is full of contacts";
       return [...contacts, { name, relation: relationOf(body.relation) ?? "other", note: noteOf(body.note) }];
     });
-    return "error" in result ? reply.status(result.status).send({ error: result.error }) : result;
+    if ("error" in result) return reply.status(result.status).send({ error: result.error });
+    // Saving an unknown number: its texts move to the new contact.
+    const from = phoneSide(body.from);
+    if (from.startsWith(PHONE_UNKNOWN)) await phones.renameSide(req.params.chatId, from, PHONE_CONTACT + name);
+    return result;
   });
 
   /** What they are to you, or who they are. A name stays, since their texts are found by it. */
@@ -297,7 +314,7 @@ export async function forkPhoneRoutes(app: FastifyInstance) {
     ),
   );
 
-  /** A card character answers your newest text right away, or leaves it for later. */
+  /** A card character (or an unknown number) answers your newest text right away, or leaves it for later. */
   app.post<{ Params: { chatId: string; id: string } }>("/chats/:chatId/characters/:id/reply", async (req, reply) =>
     step(reply, req.params.chatId, "A character's text reply", () =>
       runner.characterReply(req.params.chatId, req.params.id, debugOf(req.body)),

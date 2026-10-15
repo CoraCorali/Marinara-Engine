@@ -1003,6 +1003,28 @@ From an audit of every fork switch (31 of them) and of features reading the same
   showed a delete button and went after confirming.
 - Regression: `fork-phone`.
 
+### Texts the story mentions, and unknown numbers
+
+- **A text the story mentions now reaches the phone.** If your message or a reply says Kyli got a
+  text or a call, the phone helper is told it must put that text or call on the phone (unless it
+  is already there), from that person, in words that fit the story. It marks it as told by the
+  story, so the daily cap and the per-character cooldown never hold it back.
+- **Contacts know their own part when they text on their own** (a letter they sent), the same
+  rule their direct replies already had; the writer's contact list says so too.
+- **Unknown numbers.** Someone with no card who is not saved can text Kyli: the helper names them
+  and marks the text "unsaved", and the phone shows "Unknown number". The writer and the helper
+  still know who it is, and are told Kyli does not unless the texts say so. You can text back
+  (they answer right away, like a contact), and the add-contact button in that conversation saves
+  the number: its texts move to the new contact. Unknown numbers text only; calls still come from
+  card characters.
+- Live check (Opus 5.5, Fable 5.1, Opus 4.6 via LinkAPI): after "Kyli received a text from an
+  unknown number, the same number from her letter", with no Deidra contact saved, all three put a
+  text from Deidra on the phone as an unknown number, true to the letter ("I got your number from
+  someone you used to work with at the club"). Texting back got an answer at once; saving the
+  number moved the whole conversation to the Deidra contact. In the browser the home screen
+  showed "Unknown number" and its conversation had the save button.
+- Regressions: `fork-phone`, `fork-phone-agent`, `fork-phone-contacts`.
+
 ## Upstream files touched
 
 Fork-only code lives in `packages/client/src/lib/fork/`, `Fork*` components, `packages/shared/src/features/fork-bond-shapes.ts`, `packages/server/src/services/import/fork/`

@@ -1,6 +1,6 @@
 // Fork feature: what the story's writer is told about the phones (see FORK.md).
 import { FORK_PHONE_RELATION_WORDS, type ForkPhoneContact } from "@marinara-engine/shared";
-import { PHONE_CONTACT, PHONE_PERSONA, type PhoneMessage, type PhoneThread } from "./fork-phone.js";
+import { PHONE_CONTACT, PHONE_PERSONA, PHONE_UNKNOWN, type PhoneMessage, type PhoneThread } from "./fork-phone.js";
 
 export const PHONE_TEXTS_PER_THREAD = 8;
 export const PHONE_RECENT_CALLS = 4;
@@ -11,6 +11,7 @@ export const PHONE_CALL_LINES = 6;
 export function phoneSideName(side: string, personaName: string, nameFor: (id: string) => string): string {
   if (side === PHONE_PERSONA) return personaName || "the user's character";
   if (side.startsWith(PHONE_CONTACT)) return side.slice(PHONE_CONTACT.length);
+  if (side.startsWith(PHONE_UNKNOWN)) return `an unknown number (really ${side.slice(PHONE_UNKNOWN.length)})`;
   return nameFor(side) || "someone";
 }
 
@@ -67,12 +68,18 @@ export function phonePromptBlock(
   if (contacts.length) {
     sections.push(
       [
-        `${name(PHONE_PERSONA)}'s contacts (no part in the scenes; they know only what ${name(PHONE_PERSONA)} tells them):`,
+        `${name(PHONE_PERSONA)}'s contacts (no part in the scenes; they know only what ${name(PHONE_PERSONA)} tells them and their own part, like a letter they sent):`,
         ...contacts.map((line) => `- ${line}`),
       ].join("\n"),
     );
   }
   if (sections.length === 0) return "";
+  const unknown = threads.some((thread) => thread.a.startsWith(PHONE_UNKNOWN) || thread.b.startsWith(PHONE_UNKNOWN));
+  if (unknown) {
+    sections.push(
+      `An unknown number is someone ${name(PHONE_PERSONA)} has not saved: the phone shows no name, so ${name(PHONE_PERSONA)} does not know who it is unless the texts say so.`,
+    );
+  }
   return [
     "On the phones (these texts and calls really happened in the story; the characters remember them and can bring them up):",
     ...sections,

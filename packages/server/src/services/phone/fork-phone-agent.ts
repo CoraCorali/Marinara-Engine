@@ -4,7 +4,7 @@
 // little later. Everything here is plain logic so it can be tested without a model: reading the
 // agent's answer, the safety caps, the queue of texts waiting to arrive, and taking a run back when
 // its reply is swiped or deleted.
-import { PHONE_CONTACT, PHONE_PERSONA, type PhoneMessage, type PhoneThread } from "./fork-phone.js";
+import { PHONE_CONTACT, PHONE_PERSONA, PHONE_UNKNOWN, type PhoneMessage, type PhoneThread } from "./fork-phone.js";
 
 /** Texts and calls from characters to the persona per story day, whatever the agent asks for. */
 export const PHONE_DAILY_CAP = 10;
@@ -244,8 +244,9 @@ export function shouldSkipPhoneRun(input: {
 }
 
 export type PhoneAgentAnswer = {
-  texts: { from: string; body: string; when: "now" | "later"; after: number }[];
-  calls: { from: string; about: string; opening: string; when: "now" | "later"; after: number }[];
+  /** `story`: the story said it happened, so the caps and cooldown never hold it back. */
+  texts: { from: string; body: string; when: "now" | "later"; after: number; story?: boolean }[];
+  calls: { from: string; about: string; opening: string; when: "now" | "later"; after: number; story?: boolean }[];
   threads: { from: string; to: string; body: string }[];
   drafts: { from: string; to: string; body: string }[];
   send: string[];
@@ -285,6 +286,8 @@ export function readPhoneAgentAnswer(
   sideFor: (name: unknown) => string,
   /** Your saved contacts (as sides): they may text you too. */
   contactSides: ReadonlySet<string> = new Set(),
+  /** Unknown numbers already on your phone ("unknown:Deidra"): their next texts join them. */
+  unknownSides: ReadonlySet<string> = new Set(),
 ): PhoneAgentAnswer {
   const empty: PhoneAgentAnswer = { texts: [], calls: [], threads: [], drafts: [], send: [], drop: [], reachable: [] };
   const start = raw.indexOf("{");
@@ -304,12 +307,26 @@ export function readPhoneAgentAnswer(
       after: later ? Math.min(3, Math.max(1, Math.round(Number(item.after) || 1))) : 0,
     };
   };
+  // Someone not saved: an unknown number, when the agent says so or already texted from one.
+  const textSender = (side: string, unsaved: boolean) => {
+    if (!side.startsWith(PHONE_CONTACT) || contactSides.has(side)) return side;
+    const unknown = `${PHONE_UNKNOWN}${side.slice(PHONE_CONTACT.length)}`;
+    return unsaved || unknownSides.has(unknown) ? unknown : side;
+  };
   const queue = record(parsed.queue);
   return {
     texts: list(parsed.texts)
       .map(record)
-      .map((item) => ({ from: sideFor(item.from), body: str(item.body), ...timing(item) }))
-      .filter((item) => (isCast(item.from) || contactSides.has(item.from)) && item.body),
+      .map((item) => ({
+        from: textSender(sideFor(item.from), item.unsaved === true),
+        body: str(item.body),
+        ...timing(item),
+        ...(item.story === true ? { story: true } : {}),
+      }))
+      .filter(
+        (item) =>
+          (isCast(item.from) || contactSides.has(item.from) || item.from.startsWith(PHONE_UNKNOWN)) && item.body,
+      ),
     calls: list(parsed.calls)
       .map(record)
       .map((item) => ({
@@ -317,6 +334,7 @@ export function readPhoneAgentAnswer(
         about: str(item.about, 200),
         opening: str(item.opening),
         ...timing(item),
+        ...(item.story === true ? { story: true } : {}),
       }))
       .filter((item) => isCast(item.from)),
     // Between others only: a card character on one side, never the persona.
@@ -381,8 +399,11 @@ export function planPhoneRun(input: {
   );
   let callTaken = Boolean(state.call);
   const queued: PhoneQueueItem[] = [];
-  const take = (item: Omit<PhoneRunPlan["deliver"][number], "queueId"> & { queueId?: string }): boolean => {
-    if (usedToday >= PHONE_DAILY_CAP) return false;
+  const take = (
+    item: Omit<PhoneRunPlan["deliver"][number], "queueId"> & { queueId?: string },
+    story = false,
+  ): boolean => {
+    if (usedToday >= PHONE_DAILY_CAP && !story) return false;
     if (item.kind === "call") {
       if (callTaken) return false;
       callTaken = true;
@@ -407,9 +428,9 @@ export function planPhoneRun(input: {
   for (const text of answer.texts) {
     const count = perCharacter.get(text.from) ?? 0;
     if (count >= PHONE_TEXTS_PER_RUN) continue;
-    if (cooling.has(text.from) && !owed.has(text.from)) continue;
+    if (cooling.has(text.from) && !owed.has(text.from) && !text.story) continue;
     perCharacter.set(text.from, count + 1);
-    if (text.when === "later") {
+    if (text.when === "later" && !text.story) {
       queued.push({
         id: input.newId(),
         kind: "text",
@@ -421,12 +442,12 @@ export function planPhoneRun(input: {
         deliveredAt: "",
       });
     } else {
-      take({ kind: "text", from: text.from, body: text.body, opening: "" });
+      take({ kind: "text", from: text.from, body: text.body, opening: "" }, text.story);
     }
   }
   for (const call of answer.calls.slice(0, 1)) {
-    if (cooling.has(call.from) && !owed.has(call.from)) continue;
-    const later = call.when === "later" || callTaken;
+    if (cooling.has(call.from) && !owed.has(call.from) && !call.story) continue;
+    const later = (call.when === "later" && !call.story) || callTaken;
     if (later) {
       queued.push({
         id: input.newId(),
@@ -439,7 +460,7 @@ export function planPhoneRun(input: {
         deliveredAt: "",
       });
     } else {
-      take({ kind: "call", from: call.from, body: call.about, opening: call.opening });
+      take({ kind: "call", from: call.from, body: call.about, opening: call.opening }, call.story);
     }
   }
 
@@ -507,7 +528,7 @@ export function buildPhoneAgentMessages(context: PhoneAgentContext): { role: "us
     ...castLines,
     "Anyone else (Mom, a coworker, a supplier) is a side contact who exists only inside a card character's phone.",
     context.contacts?.length
-      ? `${persona}'s own contacts (people with no card, who can text ${persona} too, rarely, about their own lives or what ${persona} texted them; they were not in the story's scenes and must never mention anything from them that ${persona} has not texted them):\n${context.contacts.map((line) => `- ${line}`).join("\n")}`
+      ? `${persona}'s own contacts (people with no card, who can text ${persona} too, rarely, about their own lives, their own part in the story or what ${persona} texted them; they were not in the story's scenes, so they know only what ${persona} texted them and what they themselves did, wrote or said in the story, like a letter they sent):\n${context.contacts.map((line) => `- ${line}`).join("\n")}`
       : "",
     context.cast.some((member) => member.present === null) ? "Judge from the story who is in the scene." : "",
     "",
@@ -519,7 +540,9 @@ export function buildPhoneAgentMessages(context: PhoneAgentContext): { role: "us
     context.call ? `\n${context.call}` : "",
     queueLines.length ? `\nWritten earlier and not sent yet:\n${queueLines.join("\n")}` : "",
     "\nRules:",
-    "- Most replies need nothing. Text or call only when this character really would right now, given who they are and what just happened. Empty lists are the usual answer.",
+    `- When the story says someone texted or called ${persona} (a text came in, the phone rang), that text or call must be on the phone (unless it already is): send it "now", from that person, with words that fit the story, and set "story": true. This comes before everything below.`,
+    `- Someone ${persona} has not saved (not a card character, not one of ${persona}'s contacts) can still text ${persona}: put their name in "from" and set "unsaved": true, and ${persona}'s phone shows an unknown number. They know only their own part in the story. Calls come only from card characters.`,
+    "- Otherwise most replies need nothing. Text or call only when this character really would right now, given who they are and what just happened. Empty lists are the usual answer.",
     `- Anyone can text ${persona} at any time, even from across the room mid-scene, but only when that is something they would really do.`,
     `- Answer ${persona}'s unanswered texts when the character would have seen them and wants to reply.`,
     "- Texts read like that person's real texts: short, in their voice, no narration, no quotation marks, no stage directions.",
@@ -531,7 +554,7 @@ export function buildPhoneAgentMessages(context: PhoneAgentContext): { role: "us
     `- reachable: card characters whose phone the story just left within ${persona}'s reach (set down, left unlocked). Usually empty.`,
     "- queue: ids of earlier items to send now, or to drop because the story moved past them (a time skip, the moment passed).",
     "\nReply with JSON only, in this shape:",
-    '{"texts":[{"from":"Name","body":"text","when":"now","after":0}],"calls":[{"from":"Name","about":"a few words","opening":"first line","when":"now","after":0}],"threads":[{"from":"Name","to":"Name","body":"text"}],"drafts":[{"from":"Name","to":"Name","body":"text"}],"queue":{"send":[],"drop":[]},"reachable":[]}',
+    '{"texts":[{"from":"Name","body":"text","when":"now","after":0,"unsaved":false,"story":false}],"calls":[{"from":"Name","about":"a few words","opening":"first line","when":"now","after":0,"story":false}],"threads":[{"from":"Name","to":"Name","body":"text"}],"drafts":[{"from":"Name","to":"Name","body":"text"}],"queue":{"send":[],"drop":[]},"reachable":[]}',
   ]
     .filter((line) => line !== "")
     .join("\n");

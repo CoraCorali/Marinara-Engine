@@ -11,6 +11,8 @@ import { newId, now } from "../../utils/id-generator.js";
 
 export const PHONE_PERSONA = "persona";
 export const PHONE_CONTACT = "contact:";
+/** Someone texting the persona from a number not saved yet: "unknown:Deidra". The phone hides the name. */
+export const PHONE_UNKNOWN = "unknown:";
 export const MAX_PHONE_TEXT = 2000;
 export const MAX_PHONE_MESSAGES_PER_CHAT = 2000;
 
@@ -82,9 +84,10 @@ export type PhoneMessage = Omit<MessageRow, "swipes" | "read" | "kind" | "source
 export function phoneSide(value: unknown): string {
   if (typeof value !== "string") return "";
   const side = value.trim();
-  if (side.startsWith(PHONE_CONTACT)) {
-    const name = side.slice(PHONE_CONTACT.length).replace(/\s+/g, " ").trim().slice(0, 60);
-    return name ? `${PHONE_CONTACT}${name}` : "";
+  for (const prefix of [PHONE_CONTACT, PHONE_UNKNOWN]) {
+    if (!side.startsWith(prefix)) continue;
+    const name = side.slice(prefix.length).replace(/\s+/g, " ").trim().slice(0, 60);
+    return name ? `${prefix}${name}` : "";
   }
   return side.slice(0, 120);
 }
@@ -143,6 +146,28 @@ export function createPhoneStorage(db: DB) {
       const row: ThreadRow = { id: newId(), chatId, a, b, createdAt: timestamp, updatedAt: timestamp };
       await db.insert(phoneThreads).values(row as never);
       return row;
+    },
+
+    /**
+     * An unknown number saved as a contact: its conversation moves to the contact, joining one
+     * that already exists.
+     */
+    async renameSide(chatId: string, from: string, to: string): Promise<void> {
+      const [oldSide, newSide] = [phoneSide(from), phoneSide(to)];
+      if (!oldSide || !newSide || oldSide === newSide) return;
+      for (const thread of await threadRows(chatId)) {
+        if (thread.a !== oldSide && thread.b !== oldSide) continue;
+        const other = thread.a === oldSide ? thread.b : thread.a;
+        const target = await this.ensureThread(chatId, other, newSide);
+        for (const row of await messageRows(chatId)) {
+          if (row.threadId !== thread.id) continue;
+          await db
+            .update(phoneMessages)
+            .set({ threadId: target.id, sender: row.sender === oldSide ? newSide : row.sender } as never)
+            .where(eq(phoneMessages.id, row.id));
+        }
+        await db.delete(phoneThreads).where(eq(phoneThreads.id, thread.id));
+      }
     },
 
     async listMessages(chatId: string): Promise<PhoneMessage[]> {

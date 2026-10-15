@@ -206,6 +206,24 @@ await store.addMessage({
 await store.removeMessage(ringCard!.id);
 assert.deepEqual(await store.listMessages("c9"), [], "the call and its lines are gone");
 
+// ── Saving an unknown number moves its texts to the new contact ──
+const unknownThread = await store.ensureThread("c8", "persona", "unknown:Deidra");
+await store.addMessage({ chatId: "c8", threadId: unknownThread.id, sender: "unknown:Deidra", body: "its me" });
+await store.addMessage({ chatId: "c8", threadId: unknownThread.id, sender: "persona", body: "who is this" });
+await store.renameSide("c8", "unknown:Deidra", "contact:Deidra");
+const saved = await store.listThreads("c8");
+assert.deepEqual(
+  saved.map((thread) => [thread.a, thread.b]),
+  [["contact:Deidra", "persona"]],
+);
+assert.deepEqual(
+  (await store.listMessages("c8")).map((message) => [message.threadId, message.sender, message.body]),
+  [
+    [saved[0]!.id, "contact:Deidra", "its me"],
+    [saved[0]!.id, "persona", "who is this"],
+  ],
+);
+
 await closeDB();
 rmSync(dir, { recursive: true, force: true });
 console.log("fork phone: ok");

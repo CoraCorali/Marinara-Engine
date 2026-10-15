@@ -4,7 +4,8 @@
  * and the per-character cooldown hold, except for answering your text; one call rings at a time; a
  * swipe or delete of a reply takes back what its run did; idle delivery sends what waits; the agent
  * is skipped while everyone is present and nothing waits; the writer sees a call's last lines; a
- * card character answering your text right away sees the story and may leave you on read.
+ * card character answering your text right away sees the story and may leave you on read; a text the
+ * story says arrived is sent past the caps; someone not saved texts as an unknown number.
  */
 import assert from "node:assert/strict";
 
@@ -352,5 +353,71 @@ assert.match(
   /Theo is in the scene with Kyli right now/,
 );
 assert.deepEqual(agent.readContactReply('{"texts":[]}'), [], "left on read: nothing is sent");
+
+// ── A text the story says arrived: sent past the cooldown and the daily cap ──
+const storyAnswer = agent.readPhoneAgentAnswer(
+  '{"texts":[{"from":"Theo","body":"saw your letter came","when":"later","after":2,"story":true}],"calls":[]}',
+  sideFor,
+);
+assert.equal(storyAnswer.texts[0]?.story, true);
+const busyDay = {
+  ...empty,
+  runs: ["s1", "s2"],
+  log: Array.from({ length: agent.PHONE_DAILY_CAP }, () => ({ reply: "s2", day: "d", from: "theo", prompted: false })),
+};
+const storyPlan = agent.planPhoneRun({
+  state: busyDay,
+  answer: storyAnswer,
+  replyId: "s3",
+  day: "d",
+  owed: new Set(),
+  newId,
+});
+assert.deepEqual(
+  storyPlan.deliver.map((item) => [item.from, item.body]),
+  [["theo", "saw your letter came"]],
+  "the story said it happened: it arrives now, cap and cooldown aside",
+);
+const plainPlan = agent.planPhoneRun({
+  state: busyDay,
+  answer: agent.readPhoneAgentAnswer('{"texts":[{"from":"Theo","body":"hi again"}]}', sideFor),
+  replyId: "s3",
+  day: "d",
+  owed: new Set(),
+  newId,
+});
+assert.deepEqual(plainPlan.deliver, [], "an ordinary text still waits for the cap");
+
+// ── Someone not saved texts as an unknown number ──
+const unknownAnswer = agent.readPhoneAgentAnswer(
+  '{"texts":[{"from":"Deidra","body":"its me, from the letter","unsaved":true},{"from":"Stranger","body":"not flagged"},' +
+    '{"from":"Mom","body":"saved contact stays","unsaved":true},{"from":"Rosa","body":"again"}]}',
+  sideFor,
+  new Set(["contact:Mom"]),
+  new Set(["unknown:Rosa"]),
+);
+assert.deepEqual(
+  unknownAnswer.texts.map((text) => text.from),
+  ["unknown:Deidra", "contact:Mom", "unknown:Rosa"],
+  "flagged or already texting from an unknown number; a saved contact stays a contact; an unflagged stranger is dropped",
+);
+const rules = agent.buildPhoneAgentMessages({
+  personaName: "Kyli",
+  cast: [],
+  date: "",
+  time: "",
+  location: "",
+  people: "",
+  story: "",
+  phones: "",
+  owed: [],
+  queue: [],
+  call: "",
+})[0]!.content;
+assert.match(
+  rules,
+  /When the story says someone texted or called Kyli .*must be on the phone \(unless it already is\)/,
+);
+assert.match(rules, /set "unsaved": true, and Kyli's phone shows an unknown number/);
 
 console.log("fork phone agent: ok");

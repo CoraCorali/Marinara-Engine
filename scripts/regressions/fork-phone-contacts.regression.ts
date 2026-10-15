@@ -79,7 +79,7 @@ const agentPrompt = agent.buildPhoneAgentMessages({
 })[0]!.content;
 assert.match(
   agentPrompt,
-  /Kyli's own contacts .*never mention anything from them that Kyli has not texted them\):\n- Mom \(family\): worries a lot\n- Jess \(contact\)/,
+  /Kyli's own contacts .*they know only what Kyli texted them and what they themselves did, wrote or said in the story, like a letter they sent\):\n- Mom \(family\): worries a lot\n- Jess \(contact\)/,
 );
 
 // ── A contact's answer ──

@@ -14,7 +14,7 @@ import { pairsPromptBlock } from "../bonds/fork-bond-pairs.js";
 import { plainMessageText } from "../chapters/fork-chapter-recap.js";
 import { logDebugOverride, logger } from "../../lib/logger.js";
 import { newId } from "../../utils/id-generator.js";
-import { createPhoneStorage, PHONE_CONTACT, PHONE_PERSONA, type PhoneMessage } from "./fork-phone.js";
+import { createPhoneStorage, PHONE_CONTACT, PHONE_PERSONA, PHONE_UNKNOWN, type PhoneMessage } from "./fork-phone.js";
 import { contactLine, contactWho, phonePromptBlock, phoneSideName } from "./fork-phone-prompt.js";
 import {
   buildPhoneWriteMessages,
@@ -143,6 +143,17 @@ export function createPhoneRunner(db: DB) {
       nameFor,
       contacts,
       contactOf: (side: string) => contacts.find((contact) => `${PHONE_CONTACT}${contact.name}` === side),
+      /**
+       * Someone with no card: a saved contact, or an unknown number. Who they are, for their
+       * prompts, and their name.
+       */
+      outsider: (side: string) => {
+        const contact = contacts.find((entry) => `${PHONE_CONTACT}${entry.name}` === side);
+        if (contact) return { name: contact.name, who: contactWho(contact, personaName) };
+        if (!side.startsWith(PHONE_UNKNOWN)) return null;
+        const name = side.slice(PHONE_UNKNOWN.length);
+        return name ? { name, who: `someone ${personaName} has not saved in their phone (an unknown number)` } : null;
+      },
       side: (side: string) => phoneSideName(side, personaName, nameFor),
     };
   }
@@ -258,7 +269,7 @@ export function createPhoneRunner(db: DB) {
       const meta = parseRecord(chat.metadata);
       if (!readForkPhoneSettings(meta).on) throw new PhoneError("The phone is off for this chat", 400);
       const people = await cast(chat);
-      const contact = people.contactOf(side);
+      const contact = people.outsider(side);
       const member = people.members.find((entry) => entry.id === side);
       if (!contact && !member) throw new PhoneError("They are not in your phone", 404);
       const thread = await phones.ensureThread(chatId, PHONE_PERSONA, side);
@@ -269,14 +280,16 @@ export function createPhoneRunner(db: DB) {
       // Only when your text is the newest: they have nothing to answer otherwise.
       if (!last || last.sender !== PHONE_PERSONA) return { added: [] as PhoneMessage[] };
       const where = await scene(chatId);
-      const lines = texts
-        .slice(-CONTACT_TEXTS)
-        .map((text) => ({ name: people.side(text.sender), text: text.body, time: text.storyTime }));
+      const lines = texts.slice(-CONTACT_TEXTS).map((text) => ({
+        name: text.sender === side ? (contact?.name ?? member!.name) : people.side(text.sender),
+        text: text.body,
+        time: text.storyTime,
+      }));
       // A contact was not in the scenes: they know your texts, and their own part where the story names them.
       const messages = contact
         ? buildContactReplyMessages({
             name: contact.name,
-            who: contactWho(contact, people.personaName),
+            who: contact.who,
             personaName: people.personaName,
             storyTime: where.time,
             texts: lines,
@@ -574,6 +587,7 @@ export function createPhoneRunner(db: DB) {
             people.contacts.map((contact) => contact.name),
           ),
           new Set(people.contacts.map((contact) => `${PHONE_CONTACT}${contact.name}`)),
+          new Set(threads.flatMap((thread) => [thread.a, thread.b]).filter((side) => side.startsWith(PHONE_UNKNOWN))),
         );
         const plan = planPhoneRun({ state, answer, replyId, day: where.date, owed, newId });
         plan.state.reachable = answer.reachable.length ? { reply: replyId, ids: answer.reachable } : null;
@@ -857,8 +871,8 @@ export function createPhoneRunner(db: DB) {
         if ("to" in change) return phones.setVersions(message.id, applyTextSwipe(message, change));
         if (message.swipes.length >= MAX_TEXT_SWIPES) throw new PhoneError("That text has enough versions", 400);
         const people = await cast(chat);
-        const name = people.side(message.sender);
-        const contact = people.contactOf(message.sender);
+        const contact = people.outsider(message.sender);
+        const name = contact?.name ?? people.side(message.sender);
         const { text: story } = await storyTranscript(chat, (entry) =>
           entry.role === "user"
             ? people.personaName
@@ -870,9 +884,7 @@ export function createPhoneRunner(db: DB) {
           chat,
           buildTextSwipeMessages({
             name,
-            who: contact
-              ? contactWho(contact, people.personaName)
-              : (people.members.find((member) => member.id === message.sender)?.about ?? ""),
+            who: contact ? contact.who : (people.members.find((member) => member.id === message.sender)?.about ?? ""),
             personaName: people.personaName,
             // A contact was not in the scenes: their new version is written from your texts alone.
             story: contact ? "" : story,

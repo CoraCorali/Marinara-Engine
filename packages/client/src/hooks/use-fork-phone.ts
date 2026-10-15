@@ -240,6 +240,8 @@ export function markPeekSeen(chatId: string, characterId: string, threadId: stri
 }
 
 export const PHONE_CONTACT = "contact:";
+/** Someone texting you from a number you have not saved; the phone shows no name. */
+export const PHONE_UNKNOWN = "unknown:";
 
 /** Add, change or delete one of your contacts. */
 export function useContacts(chatId: string | null) {
@@ -248,7 +250,8 @@ export function useContacts(chatId: string | null) {
   const base = `/fork-phone/chats/${chatId}/contacts`;
   return {
     add: useMutation({
-      mutationFn: (input: { name: string; relation: ForkPhoneRelation; note: string }) =>
+      /** `from`: an unknown number being saved, whose texts move to the new contact. */
+      mutationFn: (input: { name: string; relation: ForkPhoneRelation; note: string; from?: string }) =>
         api.post<{ contacts: ForkPhoneContact[] }>(base, input),
       onError: failed,
       onSettled: done,
