@@ -244,7 +244,9 @@ import {
 } from "../services/bonds/fork-bond-updates.js";
 import { pairsPromptBlock } from "../services/bonds/fork-bond-pairs.js";
 import { createPhoneStorage } from "../services/phone/fork-phone.js";
-import { phonePromptBlock } from "../services/phone/fork-phone-prompt.js";
+import { phonePromptBlock, phoneSideName } from "../services/phone/fork-phone-prompt.js";
+import { readPhoneRunState } from "../services/phone/fork-phone-agent.js";
+import { peekPromptBlock } from "../services/phone/fork-phone-peek.js";
 import { storyNowFromScene } from "../services/board/fork-story-now.js";
 import {
   chaptersBefore,
@@ -7855,13 +7857,23 @@ export async function generateRoutes(app: FastifyInstance, options: GenerateRout
                 .map((message: { id: string }) => message.id),
             );
             // Pocket Phone: what was said on the phones, while the phone is on for this chat.
-            const forkPhoneBlock = readForkPhoneSettings(chatMeta).on
-              ? phonePromptBlock(
-                  await createPhoneStorage(app.db).listThreads(input.chatId),
-                  await createPhoneStorage(app.db).listMessages(input.chatId),
-                  personaName,
-                  forkNameFor,
-                )
+            const forkPhoneOn = readForkPhoneSettings(chatMeta).on;
+            const forkPhoneThreads = forkPhoneOn ? await createPhoneStorage(app.db).listThreads(input.chatId) : [];
+            const forkPhoneMessages = forkPhoneOn ? await createPhoneStorage(app.db).listMessages(input.chatId) : [];
+            const forkPhoneBlock = forkPhoneOn
+              ? [
+                  phonePromptBlock(forkPhoneThreads, forkPhoneMessages, personaName, forkNameFor),
+                  // What the persona saw on a character's phone.
+                  peekPromptBlock(
+                    readPhoneRunState(chatMeta).peeks,
+                    forkPhoneThreads,
+                    forkPhoneMessages,
+                    personaName,
+                    (side) => phoneSideName(side, personaName, forkNameFor),
+                  ),
+                ]
+                  .filter(Boolean)
+                  .join("\n\n")
               : "";
             const forkNoteParts = [
               // Advanced Memory owns the summary slot, so the chapter recaps ride here instead.

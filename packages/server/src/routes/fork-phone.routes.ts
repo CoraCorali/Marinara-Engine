@@ -2,9 +2,11 @@
 import type { FastifyInstance } from "fastify";
 import { normalizeForkPhoneLook, readForkPhoneSettings } from "@marinara-engine/shared";
 import { createChatsStorage } from "../services/storage/chats.storage.js";
+import { createCharactersStorage } from "../services/storage/characters.storage.js";
 import { createGameStateStorage } from "../services/storage/game-state.storage.js";
-import { createPhoneStorage, PHONE_PERSONA, phoneSide } from "../services/phone/fork-phone.js";
+import { createPhoneStorage, PHONE_CONTACT, PHONE_PERSONA, phoneSide } from "../services/phone/fork-phone.js";
 import { readPhoneRunState } from "../services/phone/fork-phone-agent.js";
+import { readWrittenPhones } from "../services/phone/fork-phone-peek.js";
 import { createPhoneRunner, logPhoneFailure, PhoneError } from "../services/phone/fork-phone-runner.js";
 import { isDebugAgentsEnabled } from "../config/runtime-config.js";
 
@@ -45,13 +47,26 @@ export async function forkPhoneRoutes(app: FastifyInstance) {
     const chat = await chats.getById(req.params.chatId);
     if (!chat) return reply.status(404).send({ error: "Chat not found" });
     const run = readPhoneRunState(parseRecord(chat.metadata));
+    const threads = await phones.listThreads(chat.id);
+    // Names of every character with a thread, so one who left the chat still reads as themselves.
+    const names: Record<string, string> = {};
+    const characters = createCharactersStorage(app.db);
+    for (const side of new Set(threads.flatMap((thread) => [thread.a, thread.b]))) {
+      if (side === PHONE_PERSONA || side.startsWith(PHONE_CONTACT)) continue;
+      const name = parseRecord((await characters.getById(side))?.data).name;
+      if (typeof name === "string" && name.trim()) names[side] = name.trim();
+    }
     return {
       settings: readForkPhoneSettings(parseRecord(chat.metadata)),
-      threads: await phones.listThreads(chat.id),
+      threads,
+      names,
       messages: await phones.listMessages(chat.id),
       call: run.call,
       waiting: run.queue.filter((item) => !item.deliveredAt).length,
       reachable: run.reachable,
+      peeks: run.peeks,
+      /** Characters whose phone has been written, with their camera roll. */
+      written: readWrittenPhones(parseRecord(chat.metadata)),
     };
   });
 
@@ -161,4 +176,17 @@ export async function forkPhoneRoutes(app: FastifyInstance) {
   app.post<{ Params: { chatId: string } }>("/chats/:chatId/call/hang-up", async (req, reply) =>
     step(reply, req.params.chatId, "Hanging up", () => runner.hangUp(req.params.chatId)),
   );
+
+  /** Look at a character's phone the story left within reach. The first look writes it. */
+  app.post<{ Params: { chatId: string } }>("/chats/:chatId/peek", async (req, reply) =>
+    step(reply, req.params.chatId, "Peeking", () =>
+      runner.peek(req.params.chatId, String(parseRecord(req.body).characterId ?? ""), debugOf(req.body)),
+    ),
+  );
+  app.post<{ Params: { chatId: string } }>("/chats/:chatId/peek/seen", async (req, reply) => {
+    const body = parseRecord(req.body);
+    return step(reply, req.params.chatId, "Peek reading", () =>
+      runner.peekSeen(req.params.chatId, String(body.characterId ?? ""), String(body.threadId ?? "")),
+    );
+  });
 }

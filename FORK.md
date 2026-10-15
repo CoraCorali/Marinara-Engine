@@ -771,6 +771,46 @@ fields, its own way into the scene, and its own wording for the model.
 - Regression: `fork-phone-agent` (reading the answer, now and later, cap, cooldown, one call at a
   time, undo, idle, skipping, the call lines in the writer's block, the prompt).
 
+### Pocket Phone, part 3: character phones and peeking
+
+- **Peeking is a story choice.** When the phone agent flags that the latest reply left a card
+  character's phone within reach ("sets his phone face-down on the counter"), a **👀 Peek at Theo's
+  phone** chip shows under that reply (with a ? explaining it). It is only there while that reply is
+  the newest message; the server checks the same.
+- **Their phone is written once.** The first look makes one streamed model call (summary connection,
+  prompt and answer logged in debug) that writes what is on it from the story, People and pairs and
+  what is already on their phone: up to 5 conversations with other card characters and side contacts
+  ("Mom", an ex, a supplier), photos sent in them, up to 3 unsent drafts, a camera roll of up to 6
+  photos described in words, up to 6 recent calls, and **a phone look that suits them**, picked from
+  the approved skins and colours (you can change it with the palette button while peeking). It is
+  saved, tied to no reply, so looking again shows the same phone and a swipe never rewrites it; it
+  never writes their conversation with you (that one is real). Stored as ordinary phone messages
+  plus `forkPhoneWritten` (the camera roll) in chat metadata.
+- **Read-only**: their conversations (newest first), Photos, Calls (↙ in, ↗ out, missed), Drafts.
+  Nothing can be typed; on a candybar the keys are only for the look.
+- **Putting it down** adds "_I glance around, then pick up Theo's phone._" to your next message
+  (once per look), through Marinara's own insert-into-message event.
+- **What the writer is told**: the phone block gains "Kyli looked at Theo's phone at 11 PM without
+  asking and saw the list of conversations" (each with its newest line, unsent drafts to you
+  included) and the lines of every conversation opened, then "Whether anyone noticed the look is up
+  to the story". Only texts that were there at the moment of the look count; looking twice reads as
+  one look. The last 6 looks are kept (`forkPhonePeeks`); a swipe of the reply takes its look back.
+- **A character who leaves the chat** keeps a greyed "Mira (left)" thread on your phone that you can
+  read but not write to, and is never owed a reply by the phone agent. The phone data now carries
+  every thread character's name for this.
+- **Keyboard fixes** (found while checking the keyboard): the slider's **C** key closed the
+  conversation; it now deletes a letter, and goes back only when the box is empty. The candybar's
+  QWERTY keys now type into a call too, and while they show, your own phone's keyboard stays down so
+  the two don't stack. Text in the slider's typing box was light pink on light pink; it now uses the
+  bubble's dark ink.
+- Live check (Fable 5.1 via LinkAPI, about 100 s): Theo's phone had Mira putting him on the open-mic
+  board as "??????", a terse dad ("Good. Keep the blue one."), an ex sorting out a box of cookbooks,
+  a co-worker short on rye, the oven-service man, a photo of an empty guitar-shaped gap in the
+  closet, and an unsent "front row is too far forward. sit somewhere you can leave if it's bad" to
+  Kyli, on a midnight slider.
+- Regression: `fork-phone-peek` (reading a written phone safely, the writer's block, looking twice,
+  texts after the look, undo, the write prompt).
+
 ## Upstream files touched
 
 Fork-only code lives in `packages/client/src/lib/fork/`, `Fork*` components, `packages/shared/src/features/fork-bond-shapes.ts`, `packages/server/src/services/import/fork/`
@@ -884,6 +924,8 @@ Edits to upstream files are marked with a `Fork:` comment.
 | `packages/server/src/routes/generate.routes.ts`                                            | The phone block in the fork note                                                                  |
 | `packages/client/src/hooks/use-generate.ts`                                                | Runs the phone agent after the saved reply                                                        |
 | `packages/client/src/components/chat/ChatRoleplaySurface.tsx`                              | Only your own phone's texts and calls show in the chat                                            |
+| `packages/client/src/components/chat/ChatRoleplaySurface.tsx`                              | The Peek chip under the reply that left a phone within reach                                      |
+| `packages/server/src/routes/generate.routes.ts`                                            | What you saw on a character's phone, in the phone block                                           |
 
 ## Known upstream issue kept as is
 

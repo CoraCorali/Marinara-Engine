@@ -54,6 +54,12 @@ export interface PhoneState {
   call: PhoneCall | null;
   /** Texts and calls written ahead that have not arrived yet. */
   waiting: number;
+  /** Character names for every thread, including characters who have left the chat. */
+  names: Record<string, string>;
+  /** Phones the latest reply left within your reach. */
+  reachable: { reply: string; ids: string[] } | null;
+  /** Characters whose phone has been written, with their camera roll. */
+  written: Record<string, { photos: string[] }>;
 }
 
 export const phoneKeys = { chat: (chatId: string | null) => ["fork-phone", chatId ?? "none"] as const };
@@ -213,3 +219,22 @@ export function deliverIdlePhone(qc: QueryClient, chatId: string) {
 
 /** Names for the toasts, kept by the phone pill of the open chat. */
 export const phoneNames = new Map<string, (side: string) => string>();
+
+/** Look at a character's phone the story left within reach (the first look writes it). */
+export function usePeek(chatId: string | null) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (characterId: string) =>
+      api.post<{ success: boolean }>(`/fork-phone/chats/${chatId}/peek`, {
+        characterId,
+        debugMode: useUIStore.getState().debugMode,
+      }),
+    onError: failed,
+    onSettled: () => void qc.invalidateQueries({ queryKey: phoneKeys.chat(chatId) }),
+  });
+}
+
+/** Tells the story you opened one of their conversations while peeking. */
+export function markPeekSeen(chatId: string, characterId: string, threadId: string) {
+  void api.post(`/fork-phone/chats/${chatId}/peek/seen`, { characterId, threadId }).catch(() => undefined);
+}

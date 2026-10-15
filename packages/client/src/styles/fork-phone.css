@@ -424,9 +424,14 @@
   border-radius: 1rem;
   padding: 0.45rem 0.7rem;
   background: var(--ps-them);
-  color: var(--ps-ink);
+  /* The box is a "them" bubble colour, so its text is too (light pink box, dark letters). */
+  color: var(--ps-them-ink);
   font-size: 0.8125rem;
   outline: none;
+}
+.fork-phone .fp-compose textarea::placeholder {
+  color: currentColor;
+  opacity: 0.55;
 }
 .fork-phone .fp-compose button {
   min-width: 2.25rem;

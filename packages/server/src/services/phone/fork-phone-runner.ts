@@ -16,6 +16,7 @@ import { logDebugOverride, logger } from "../../lib/logger.js";
 import { newId } from "../../utils/id-generator.js";
 import { createPhoneStorage, PHONE_PERSONA, type PhoneMessage } from "./fork-phone.js";
 import { phonePromptBlock, phoneSideName } from "./fork-phone-prompt.js";
+import { buildPhoneWriteMessages, readWrittenPhone, readWrittenPhones } from "./fork-phone-peek.js";
 import {
   buildCallLineMessages,
   buildPhoneAgentMessages,
@@ -146,7 +147,14 @@ export function createPhoneRunner(db: DB) {
       (answer) => (answer.finishReason === "error" ? ask(false) : answer),
       () => ask(false),
     );
-    logDebugOverride(debug, "[debug/fork-phone] %s answer for chat %s:\n%s", label, chat.id, result.content ?? "");
+    logDebugOverride(
+      debug,
+      "[debug/fork-phone] %s answer for chat %s (finish: %s):\n%s",
+      label,
+      chat.id,
+      result.finishReason ?? "",
+      result.content ?? "",
+    );
     return result.content ?? "";
   }
 
@@ -233,6 +241,112 @@ export function createPhoneRunner(db: DB) {
     return added;
   }
 
+  /** Writes a character's phone once, from the story so far, and saves it. */
+  async function writePhone(
+    chat: ChatRow,
+    owner: { id: string; name: string; about: string },
+    people: Awaited<ReturnType<typeof cast>>,
+    debug: boolean,
+  ) {
+    const threads = await phones.listThreads(chat.id);
+    const messages = await phones.listMessages(chat.id);
+    const existing = threads
+      .filter((thread) => thread.a === owner.id || thread.b === owner.id)
+      .map((thread) => {
+        const other = thread.a === owner.id ? thread.b : thread.a;
+        const lines = messages
+          .filter((message) => message.threadId === thread.id && message.kind !== "call_line")
+          .slice(-OTHER_THREAD_LINES)
+          .map((message) => `- ${people.side(message.sender)}: ${message.body}`);
+        return lines.length ? `With ${people.side(other)}:\n${lines.join("\n")}` : "";
+      })
+      .filter(Boolean)
+      .join("\n");
+    const { text: story } = await storyTranscript(chat, (message) =>
+      message.role === "user"
+        ? people.personaName
+        : message.role === "narrator"
+          ? "Narrator"
+          : people.nameFor(message.characterId ?? "") || "Character",
+    );
+    const raw = await complete(
+      chat,
+      buildPhoneWriteMessages({
+        ownerName: owner.name,
+        ownerAbout: owner.about,
+        personaName: people.personaName,
+        others: people.members.filter((member) => member.id !== owner.id).map((member) => member.name),
+        people: [
+          bondsPromptBlock(await listBondsBeforeTurn(db, chat.id), people.nameFor, people.personaName),
+          pairsPromptBlock(await listPairsBeforeTurn(db, chat.id), people.nameFor),
+        ]
+          .filter(Boolean)
+          .join("\n"),
+        story,
+        existing,
+      }),
+      "phone write",
+      debug,
+      // A whole phone is long, and thinking models spend part of the budget before writing it.
+      8000,
+    );
+    const written = readWrittenPhone(raw, owner.id, phoneSideResolver(people.personaName, people.members));
+    if (!written) throw new PhoneError("The phone would not unlock. Try again.", 502);
+    // Written ahead as part of their life so far: tied to no reply, so a swipe never rewrites it.
+    const add = async (input: {
+      with: string;
+      sender: string;
+      body: string;
+      kind: PhoneMessage["kind"];
+      time?: string;
+    }) => {
+      const thread = await phones.ensureThread(chat.id, owner.id, input.with);
+      await phones.addMessage({
+        chatId: chat.id,
+        threadId: thread.id,
+        sender: input.sender,
+        body: input.body,
+        kind: input.kind,
+        storyTime: input.time ?? "",
+        source: "agent",
+        read: true,
+      });
+    };
+    for (const thread of written.threads) {
+      for (const text of thread.texts) {
+        await add({
+          with: thread.with,
+          sender: text.mine ? owner.id : thread.with,
+          body: text.body,
+          kind: text.photo ? "photo" : "text",
+          time: text.time,
+        });
+      }
+    }
+    for (const draft of written.drafts)
+      await add({ with: draft.to, sender: owner.id, body: draft.body, kind: "draft" });
+    for (const call of written.calls) {
+      await add({
+        with: call.with,
+        sender: call.outgoing ? owner.id : call.with,
+        body: call.missed ? `(missed) ${call.about || "a call"}` : call.about || "a call",
+        kind: "call",
+        time: call.time,
+      });
+    }
+    await chats.patchMetadata(chat.id, (meta) => {
+      const phone = parseRecord(meta.forkPhone);
+      const looks = parseRecord(phone.characterLooks);
+      return {
+        forkPhoneWritten: { ...parseRecord(meta.forkPhoneWritten), [owner.id]: { photos: written.photos } },
+        // The AI picks a phone that suits them, unless you already chose one.
+        ...(written.look && !looks[owner.id]
+          ? { forkPhone: { ...phone, characterLooks: { ...looks, [owner.id]: written.look } } }
+          : {}),
+      };
+    });
+  }
+
   return {
     /**
      * After a story reply: takes back an earlier run for the same reply (a swipe), then asks the
@@ -254,7 +368,9 @@ export function createPhoneRunner(db: DB) {
         const where = await scene(chatId);
         const threads = await phones.listThreads(chatId);
         const messages = await phones.listMessages(chatId);
-        const owed = owedReplies(threads, messages);
+        // A character who left the chat owes nothing; their thread stays readable on your phone.
+        const castIds = new Set(people.members.map((member) => member.id));
+        const owed = new Set([...owedReplies(threads, messages)].filter((id) => castIds.has(id)));
         if (
           shouldSkipPhoneRun({
             castIds: people.members.map((member) => member.id),
@@ -507,6 +623,55 @@ export function createPhoneRunner(db: DB) {
         if (!said) await phones.removeMessage(call.id);
         else if (call.about && (await phones.getMessage(call.id))) await phones.editMessage(call.id, call.about);
         await saveState(chatId, { ...state, call: null });
+        return { success: true };
+      });
+    },
+
+    /**
+     * Looks at a character's phone while the latest reply left it within reach. The first look
+     * writes the phone (one model call) and saves it; every look is remembered for the writer.
+     */
+    async peek(chatId: string, characterId: string, debug: boolean) {
+      return withLock(chatId, async () => {
+        const chat = await getChat(chatId);
+        const meta = parseRecord(chat.metadata);
+        if (!readForkPhoneSettings(meta).on) throw new PhoneError("The phone is off for this chat", 400);
+        const reach = readPhoneRunState(meta).reachable;
+        const [latest] = (await chats.listMessagePreviews(chatId, 1)) as { id: string }[];
+        if (!reach || !reach.ids.includes(characterId) || reach.reply !== latest?.id) {
+          throw new PhoneError("That phone is not within reach right now", 400);
+        }
+        const people = await cast(chat);
+        const owner = people.members.find((member) => member.id === characterId);
+        if (!owner) throw new PhoneError("That character is not in this chat", 404);
+        if (!readWrittenPhones(meta)[characterId]) await writePhone(chat, owner, people, debug);
+        const state = readPhoneRunState(parseRecord((await getChat(chatId)).metadata));
+        if (!state.peeks.some((peek) => peek.characterId === characterId && peek.reply === reach.reply)) {
+          state.peeks.push({
+            characterId,
+            reply: reach.reply,
+            storyTime: (await scene(chatId)).time,
+            threadIds: [],
+            at: new Date().toISOString(),
+          });
+        } else {
+          for (const peek of state.peeks) if (peek.characterId === characterId) peek.at = new Date().toISOString();
+        }
+        await saveState(chatId, state);
+        return { success: true };
+      });
+    },
+
+    /** You opened one of their conversations while peeking: the writer is told its lines. */
+    async peekSeen(chatId: string, characterId: string, threadId: string) {
+      return withLock(chatId, async () => {
+        const state = readPhoneRunState(parseRecord((await getChat(chatId)).metadata));
+        const peek = [...state.peeks].reverse().find((entry) => entry.characterId === characterId);
+        const thread = await phones.getThread(threadId);
+        if (!peek || !thread || (thread.a !== characterId && thread.b !== characterId)) return { success: false };
+        if (!peek.threadIds.includes(threadId)) peek.threadIds.push(threadId);
+        peek.at = new Date().toISOString();
+        await saveState(chatId, state);
         return { success: true };
       });
     },

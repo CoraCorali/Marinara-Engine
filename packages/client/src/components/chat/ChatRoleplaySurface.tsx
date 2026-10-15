@@ -90,6 +90,7 @@ import { ForkFixPart } from "./ForkFixPart";
 import { ForkStoryLight } from "./ForkStoryLight";
 import { ForkSwipeFeel } from "./ForkSwipeFeel";
 import { ForkPhoneInlineCards, ForkPhonePill, type PhoneCastMember } from "./phone/ForkPhone";
+import { ForkPhonePeekChips } from "./phone/ForkPhonePeek";
 import { useForkPhone } from "../../hooks/use-fork-phone";
 import { useForkPhoneStore } from "../../stores/fork-phone.store";
 import { useForkSeason } from "../../hooks/use-fork-season";
@@ -1657,7 +1658,8 @@ export function ChatRoleplaySurface({
     ));
   const wrapForkChapterMessage = (msg: MessageWithSwipes, body: ReactNode): ReactNode => {
     const phoneCards = forkPhoneByMessage.get(msg.id);
-    if (!forkChapterLayout && !forkChapterSplitting && !phoneCards) return body;
+    const peekable = forkPhone?.settings.on && forkPhone.reachable?.reply === msg.id;
+    if (!forkChapterLayout && !forkChapterSplitting && !phoneCards && !peekable) return body;
     const chapter = forkChapterLayout?.chapterOf.get(msg.id) ?? null;
     const rows = forkChapterLayout?.rowsBefore.get(msg.id);
     const folded = chapter !== null && !forkOpenChapterIds.has(chapter.id);
@@ -1675,10 +1677,20 @@ export function ChatRoleplaySurface({
             messages={phoneCards}
             all={forkPhone.messages}
             ringingId={forkPhone.call?.state === "ringing" ? forkPhone.call.id : ""}
+            names={forkPhone.names}
             threads={forkPhone.threads}
             cast={forkPhoneCast}
             personaName={forkPersonaName}
             onOpen={(to) => openForkPhone(to)}
+          />
+        )}
+        {/* Fork: Pocket Phone — a phone the latest reply left within reach can be peeked at. */}
+        {!folded && !isStreaming && peekable && forkChaptersChatId && forkPhone.reachable && (
+          <ForkPhonePeekChips
+            chatId={forkChaptersChatId}
+            ids={forkPhone.reachable.ids}
+            cast={forkPhoneCast}
+            personaName={forkPersonaName}
           />
         )}
         {forkChapterSplitting && !chapter && msg.role !== "system" && !isMessageHiddenFromUser(msg) && (

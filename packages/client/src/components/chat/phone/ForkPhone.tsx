@@ -58,7 +58,7 @@ type View = { name: "home" } | { name: "thread"; to: string } | { name: "look" }
  */
 const IDLE_DELIVERY_MS = 3 * 60_000;
 
-function Avatar({ member }: { member?: PhoneCastMember }) {
+export function Avatar({ member }: { member?: PhoneCastMember }) {
   if (member?.avatarUrl) return <img className="fp-avatar" src={member.avatarUrl} alt="" draggable={false} />;
   return <span className="fp-avatar">{(member?.name ?? "?").slice(0, 1).toUpperCase()}</span>;
 }
@@ -79,7 +79,7 @@ export function ForkPhonePill({
   const { t: localizeUi } = useUiTranslation();
   const { data } = useForkPhone(chatId);
   const qc = useQueryClient();
-  const nameOf = useMemo(() => phoneNameOf(cast, personaName), [cast, personaName]);
+  const nameOf = useMemo(() => phoneNameOf(cast, personaName, data?.names), [cast, personaName, data?.names]);
   useEffect(() => {
     phoneNames.set(chatId, nameOf);
   }, [chatId, nameOf]);
@@ -150,11 +150,11 @@ export function ForkPhonePill({
   );
 }
 
-function phoneNameOf(cast: readonly PhoneCastMember[], personaName: string) {
+export function phoneNameOf(cast: readonly PhoneCastMember[], personaName: string, names: Record<string, string> = {}) {
   return (side: string) =>
     side === PHONE_PERSONA
       ? personaName
-      : (cast.find((member) => member.id === side)?.name ?? side.replace(/^contact:/, ""));
+      : (cast.find((member) => member.id === side)?.name ?? names[side] ?? side.replace(/^contact:/, ""));
 }
 
 /** Someone is calling: a card over the chat, with Answer and Decline. */
@@ -271,18 +271,32 @@ export function ForkPhoneApp({
   const callAction = useCallAction(chatId);
   const call = data?.call?.state === "live" ? data.call : null;
   const [draft, setDraft] = useState("");
+  const [callLine, setCallLine] = useState("");
   const [typing, setTyping] = useState(false);
   const send = useSendText(chatId);
   const look: ForkPhoneLook = data?.settings ?? DEFAULT_FORK_PHONE_LOOK;
+  // With the candybar's QWERTY keys showing, your own keyboard stays down so the two don't stack.
+  const caseKeys = look.skin === "candybar" && look.keys === "qwerty";
+  const nameOf = phoneNameOf(cast, personaName, data?.names);
+  const inCast = (side: string) => cast.some((member) => member.id === side);
 
   const threadFor = (to: string): PhoneThread | undefined =>
     data?.threads.find(
       (thread) => (thread.a === PHONE_PERSONA && thread.b === to) || (thread.b === PHONE_PERSONA && thread.a === to),
     );
   const sendDraft = () => {
-    if (view.name !== "thread" || !draft.trim() || send.isPending) return;
+    if (view.name !== "thread" || !inCast(view.to) || !draft.trim() || send.isPending) return;
     send.mutate({ to: view.to, body: draft }, { onSuccess: () => setDraft("") });
   };
+  const sayLine = () => {
+    if (!call || !callLine.trim() || callAction.isPending) return;
+    callAction.mutate({ action: "say", line: callLine }, { onSuccess: () => setCallLine("") });
+  };
+  // Whatever box is on screen: the text you are writing, or your line on the call.
+  const box =
+    view.name === "call"
+      ? { value: callLine, set: setCallLine, go: sayLine }
+      : { value: draft, set: setDraft, go: sendDraft };
 
   const screen = (
     <div className="fp-screen">
@@ -293,6 +307,8 @@ export function ForkPhoneApp({
         <PhoneHome
           cast={cast}
           messages={data?.messages ?? []}
+          threads={data?.threads ?? []}
+          nameOf={nameOf}
           threadFor={threadFor}
           onOpen={(to) => setView({ name: "thread", to })}
           onLook={() => setView({ name: "look" })}
@@ -306,6 +322,9 @@ export function ForkPhoneApp({
           chatId={chatId}
           to={view.to}
           member={cast.find((member) => member.id === view.to)}
+          name={nameOf(view.to)}
+          left={!inCast(view.to)}
+          caseKeys={caseKeys}
           personaName={personaName}
           thread={threadFor(view.to)}
           messages={data?.messages ?? []}
@@ -316,7 +335,7 @@ export function ForkPhoneApp({
           sending={send.isPending}
           onBack={() => setView({ name: "home" })}
           onCall={
-            cast.some((member) => member.id === view.to) && !data?.call
+            inCast(view.to) && !data?.call
               ? () => callAction.mutate({ action: "call", to: view.to }, { onSuccess: () => setView({ name: "call" }) })
               : undefined
           }
@@ -331,6 +350,11 @@ export function ForkPhoneApp({
           member={call ? cast.find((member) => member.id === call.from) : undefined}
           personaName={personaName}
           messages={data?.messages ?? []}
+          line={callLine}
+          onLine={setCallLine}
+          onSay={sayLine}
+          saying={callAction.isPending && callAction.variables?.action === "say"}
+          caseKeys={caseKeys}
           onBack={() => setView(call ? { name: "thread", to: call.from } : { name: "home" })}
         />
       )}
@@ -343,7 +367,7 @@ export function ForkPhoneApp({
       <ForkPhoneShell
         look={look}
         screen={screen}
-        typing={typing || draft.length > 0}
+        typing={typing || box.value.length > 0}
         labels={{
           back: localizeUi("ui.chat.forkphone.back"),
           ok: localizeUi("ui.chat.forkphone.send"),
@@ -353,12 +377,16 @@ export function ForkPhoneApp({
           space: localizeUi("ui.chat.forkphone.spaceKey"),
         }}
         onBack={() => setView({ name: "home" })}
-        onOk={() => (view.name === "thread" ? sendDraft() : undefined)}
-        // The keys type into a text, not into a call: the call has its own box.
+        onOk={() => (view.name === "thread" || view.name === "call" ? box.go() : undefined)}
+        onClear={() =>
+          (view.name === "thread" || view.name === "call") && box.value
+            ? box.set(box.value.slice(0, -1))
+            : setView({ name: "home" })
+        }
         onKey={(key) => {
-          if (view.name !== "thread") return;
-          if (key === "\n") return sendDraft();
-          setDraft((current) => (key === "⌫" ? current.slice(0, -1) : current + key));
+          if (view.name !== "thread" && view.name !== "call") return;
+          if (key === "\n") return box.go();
+          box.set(key === "⌫" ? box.value.slice(0, -1) : box.value + key);
         }}
       />
     </div>
@@ -368,6 +396,8 @@ export function ForkPhoneApp({
 function PhoneHome({
   cast,
   messages,
+  threads,
+  nameOf,
   threadFor,
   onOpen,
   onLook,
@@ -377,6 +407,8 @@ function PhoneHome({
 }: {
   cast: readonly PhoneCastMember[];
   messages: readonly PhoneMessage[];
+  threads: readonly PhoneThread[];
+  nameOf: (side: string) => string;
   threadFor: (to: string) => PhoneThread | undefined;
   onOpen: (to: string) => void;
   onLook: () => void;
@@ -385,7 +417,13 @@ function PhoneHome({
   onCall: () => void;
 }) {
   const { t: localizeUi } = useUiTranslation();
-  const rows = cast
+  // A character who left the chat keeps a greyed thread you can still read.
+  const former = threads
+    .filter((thread) => thread.a === PHONE_PERSONA || thread.b === PHONE_PERSONA)
+    .map((thread) => otherSide(thread))
+    .filter((side) => !side.startsWith("contact:") && !cast.some((member) => member.id === side))
+    .map((side) => ({ id: side, name: nameOf(side), left: true }));
+  const rows = [...cast.map((member) => ({ ...member, left: false })), ...former]
     .map((member) => {
       const thread = threadFor(member.id);
       const own = thread ? messages.filter((message) => message.threadId === thread.id) : [];
@@ -416,14 +454,23 @@ function PhoneHome({
           <p className="m-0 p-2 text-xs opacity-75">{localizeUi("ui.chat.forkphone.noContacts")}</p>
         )}
         {rows.map(({ member, last, unread }) => (
-          <button key={member.id} type="button" className="fp-row" onClick={() => onOpen(member.id)}>
+          <button
+            key={member.id}
+            type="button"
+            className={cn("fp-row", member.left && "opacity-55")}
+            onClick={() => onOpen(member.id)}
+          >
             <Avatar member={member} />
             <span className="min-w-0 flex-1">
-              <span className="block truncate text-[0.8125rem] font-bold">{member.name}</span>
+              <span className="block truncate text-[0.8125rem] font-bold">
+                {member.left ? localizeUi("ui.chat.forkphone.leftName", { name: member.name }) : member.name}
+              </span>
               <span className="block truncate text-[0.6875rem] opacity-75">
                 {last
                   ? last.kind === "call"
-                    ? localizeUi("ui.chat.forkphone.callPreview", { about: last.body })
+                    ? last.body.startsWith("(missed)")
+                      ? localizeUi("ui.chat.forkphone.callMissed", { name: member.name })
+                      : localizeUi("ui.chat.forkphone.callPreview", { about: last.body })
                     : last.body
                   : localizeUi("ui.chat.forkphone.sayHi")}
               </span>
@@ -440,6 +487,9 @@ function PhoneThreadView({
   chatId,
   to,
   member,
+  name,
+  left,
+  caseKeys,
   personaName,
   thread,
   messages,
@@ -457,6 +507,11 @@ function PhoneThreadView({
   chatId: string;
   to: string;
   member?: PhoneCastMember;
+  name: string;
+  /** They left the chat: the thread can be read but not written to. */
+  left: boolean;
+  /** The case's own keys do the typing. */
+  caseKeys: boolean;
   personaName: string;
   thread?: PhoneThread;
   messages: readonly PhoneMessage[];
@@ -512,14 +567,14 @@ function PhoneThreadView({
         <button type="button" onClick={onBack} aria-label={localizeUi("ui.chat.forkphone.back")}>
           <ArrowLeft size="0.875rem" />
         </button>
-        <Avatar member={member} />
-        <span className="min-w-0 flex-1 truncate">{member?.name ?? to}</span>
+        <Avatar member={member ?? { id: to, name }} />
+        <span className="min-w-0 flex-1 truncate">{name}</span>
         {onCall && (
           <button
             type="button"
             onClick={onCall}
             disabled={calling}
-            aria-label={localizeUi("ui.chat.forkphone.callButton", { name: member?.name ?? to })}
+            aria-label={localizeUi("ui.chat.forkphone.callButton", { name: name })}
           >
             {calling ? <Loader2 size="0.875rem" className="animate-spin" /> : <Phone size="0.875rem" />}
           </button>
@@ -528,7 +583,7 @@ function PhoneThreadView({
       <div className="fp-scroll">
         {shown.length === 0 && (
           <p className="m-0 p-2 text-center text-xs opacity-75">
-            {localizeUi("ui.chat.forkphone.emptyThread", { name: member?.name ?? to })}
+            {localizeUi("ui.chat.forkphone.emptyThread", { name: name })}
           </p>
         )}
         {shown.map((message) => {
@@ -538,7 +593,7 @@ function PhoneThreadView({
             return (
               <details key={message.id} className="self-center text-center text-[0.6875rem] opacity-85">
                 <summary className="cursor-pointer list-none">
-                  {callCardText(message, lines.length, member?.name ?? to, message.id === ringingId, localizeUi)}
+                  {callCardText(message, lines.length, name, message.id === ringingId, localizeUi)}
                   {message.body && !message.body.startsWith("(missed)")
                     ? localizeUi("ui.chat.forkphone.callAbout", { about: message.body })
                     : ""}
@@ -547,7 +602,7 @@ function PhoneThreadView({
                   <p key={line.id} className="m-0 text-left">
                     <b>
                       {localizeUi("ui.chat.forkphone.callLine", {
-                        name: line.sender === PHONE_PERSONA ? personaName : (member?.name ?? to),
+                        name: line.sender === PHONE_PERSONA ? personaName : name,
                       })}
                     </b>{" "}
                     {line.body}
@@ -577,35 +632,42 @@ function PhoneThreadView({
         })}
         <div ref={endRef} />
       </div>
-      <div className="fp-compose">
-        <label className="sr-only" htmlFor="fork-phone-draft">
-          {localizeUi("ui.chat.forkphone.writeTo", { name: member?.name ?? to, me: personaName })}
-        </label>
-        <textarea
-          id="fork-phone-draft"
-          rows={1}
-          value={draft}
-          placeholder={localizeUi("ui.chat.forkphone.placeholder")}
-          onFocus={() => onTyping(true)}
-          onBlur={() => onTyping(false)}
-          onChange={(event) => onDraft(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
-              event.preventDefault();
-              onSend();
-            }
-          }}
-          className="fork-keep-size"
-        />
-        <button
-          type="button"
-          onClick={onSend}
-          disabled={!draft.trim() || sending}
-          aria-label={localizeUi("ui.chat.forkphone.send")}
-        >
-          {sending ? <Loader2 size="0.875rem" className="animate-spin" /> : <SendHorizontal size="0.875rem" />}
-        </button>
-      </div>
+      {left ? (
+        <p className="m-0 border-t border-[var(--ps-line)] p-2 text-center text-[0.6875rem] opacity-75">
+          {localizeUi("ui.chat.forkphone.leftChat", { name })}
+        </p>
+      ) : (
+        <div className="fp-compose">
+          <label className="sr-only" htmlFor="fork-phone-draft">
+            {localizeUi("ui.chat.forkphone.writeTo", { name: name, me: personaName })}
+          </label>
+          <textarea
+            id="fork-phone-draft"
+            rows={1}
+            inputMode={caseKeys ? "none" : undefined}
+            value={draft}
+            placeholder={localizeUi("ui.chat.forkphone.placeholder")}
+            onFocus={() => onTyping(true)}
+            onBlur={() => onTyping(false)}
+            onChange={(event) => onDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+                event.preventDefault();
+                onSend();
+              }
+            }}
+            className="fork-keep-size"
+          />
+          <button
+            type="button"
+            onClick={onSend}
+            disabled={!draft.trim() || sending}
+            aria-label={localizeUi("ui.chat.forkphone.send")}
+          >
+            {sending ? <Loader2 size="0.875rem" className="animate-spin" /> : <SendHorizontal size="0.875rem" />}
+          </button>
+        </div>
+      )}
     </>
   );
 }
@@ -627,6 +689,11 @@ function PhoneCallView({
   member,
   personaName,
   messages,
+  line,
+  onLine,
+  onSay,
+  saying,
+  caseKeys,
   onBack,
 }: {
   chatId: string;
@@ -634,11 +701,15 @@ function PhoneCallView({
   member?: PhoneCastMember;
   personaName: string;
   messages: readonly PhoneMessage[];
+  line: string;
+  onLine: (line: string) => void;
+  onSay: () => void;
+  saying: boolean;
+  caseKeys: boolean;
   onBack: () => void;
 }) {
   const { t: localizeUi } = useUiTranslation();
   const action = useCallAction(chatId);
-  const [line, setLine] = useState("");
   const endRef = useRef<HTMLDivElement>(null);
   const lines = useMemo(
     () => (call ? messages.filter((message) => message.kind === "call_line" && message.callId === call.id) : []),
@@ -646,12 +717,8 @@ function PhoneCallView({
   );
   useEffect(() => {
     endRef.current?.scrollIntoView({ block: "end" });
-  }, [lines.length, action.isPending]);
+  }, [lines.length, saying]);
   const name = member?.name ?? call?.from ?? "";
-  const say = () => {
-    if (!line.trim() || action.isPending) return;
-    action.mutate({ action: "say", line }, { onSuccess: () => setLine("") });
-  };
   return (
     <>
       <div className="fp-bar">
@@ -686,9 +753,7 @@ function PhoneCallView({
             </div>
           );
         })}
-        {action.isPending && action.variables?.action === "say" && (
-          <Loader2 size="0.875rem" className="animate-spin self-start opacity-75" />
-        )}
+        {saying && <Loader2 size="0.875rem" className="animate-spin self-start opacity-75" />}
         <div ref={endRef} />
       </div>
       {call && (
@@ -699,21 +764,22 @@ function PhoneCallView({
           <textarea
             id="fork-phone-call-line"
             rows={1}
+            inputMode={caseKeys ? "none" : undefined}
             value={line}
             placeholder={localizeUi("ui.chat.forkphone.sayPlaceholder")}
-            onChange={(event) => setLine(event.target.value)}
+            onChange={(event) => onLine(event.target.value)}
             onKeyDown={(event) => {
               if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
                 event.preventDefault();
-                say();
+                onSay();
               }
             }}
             className="fork-keep-size"
           />
           <button
             type="button"
-            onClick={say}
-            disabled={!line.trim() || action.isPending}
+            onClick={onSay}
+            disabled={!line.trim() || saying}
             aria-label={localizeUi("ui.chat.forkphone.say")}
           >
             <SendHorizontal size="0.875rem" />
@@ -730,11 +796,23 @@ const SKIN_LABEL_KEYS: Record<ForkPhoneSkin, string> = {
   smartphone: "ui.chat.forkphone.skin.smartphone",
 };
 
-function PhoneLook({ chatId, look, onBack }: { chatId: string; look: ForkPhoneLook; onBack: () => void }) {
+export function PhoneLook({
+  chatId,
+  look,
+  onBack,
+  characterId,
+}: {
+  chatId: string;
+  look: ForkPhoneLook;
+  onBack: () => void;
+  /** A character's phone instead of yours. */
+  characterId?: string;
+}) {
   const { t: localizeUi } = useUiTranslation();
   const update = useUpdatePhoneSettings(chatId);
   const { data: pins } = useBoardPins({ scopeType: "chat", scopeId: chatId });
-  const set = (patch: Partial<ForkPhoneLook> & { on?: boolean }) => update.mutate(patch);
+  const set = (patch: Partial<ForkPhoneLook> & { on?: boolean }) =>
+    update.mutate(characterId ? { characterLook: { id: characterId, look: { ...look, ...patch } } } : patch);
   // The settings sit on the phone's own screen, so they use the page's colours on a card.
   return (
     <>
@@ -849,13 +927,15 @@ function PhoneLook({ chatId, look, onBack }: { chatId: string; look: ForkPhoneLo
               </div>
             </>
           )}
-          <button
-            type="button"
-            onClick={() => set({ on: false })}
-            className="mt-1 flex min-h-9 items-center justify-center rounded-xl border border-[var(--border)] font-semibold text-foreground/80"
-          >
-            {localizeUi("ui.chat.forkphone.turnOff")}
-          </button>
+          {!characterId && (
+            <button
+              type="button"
+              onClick={() => set({ on: false })}
+              className="mt-1 flex min-h-9 items-center justify-center rounded-xl border border-[var(--border)] font-semibold text-foreground/80"
+            >
+              {localizeUi("ui.chat.forkphone.turnOff")}
+            </button>
+          )}
         </div>
       </div>
     </>
@@ -871,9 +951,11 @@ export function ForkPhoneInlineCards({
   personaName,
   onOpen,
   ringingId,
+  names,
 }: {
   /** The call card that is ringing right now, if any. */
   ringingId: string;
+  names?: Record<string, string>;
   messages: readonly PhoneMessage[];
   /** Every phone message of the chat, for a call's length. */
   all: readonly PhoneMessage[];
@@ -883,7 +965,7 @@ export function ForkPhoneInlineCards({
   onOpen: (to: string) => void;
 }) {
   const { t: localizeUi } = useUiTranslation();
-  const nameOf = phoneNameOf(cast, personaName);
+  const nameOf = phoneNameOf(cast, personaName, names);
   return (
     <div className="mx-auto my-1 flex w-full max-w-[min(42rem,100%)] flex-col gap-1 px-2">
       {messages.map((message) => {

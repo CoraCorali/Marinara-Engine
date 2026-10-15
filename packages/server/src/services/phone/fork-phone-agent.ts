@@ -56,7 +56,22 @@ export type PhoneRunState = {
   call: PhoneCall | null;
   /** Card characters whose phone the story left within the persona's reach (for peeking). */
   reachable: { reply: string; ids: string[] } | null;
+  /** Times the persona looked at a character's phone, newest last. */
+  peeks: PhonePeek[];
 };
+
+export type PhonePeek = {
+  characterId: string;
+  /** The reply that left the phone within reach. */
+  reply: string;
+  storyTime: string;
+  /** Threads the persona opened, beyond the list of conversations. */
+  threadIds: string[];
+  /** When the phone was last looked at (ISO): texts that came later were not seen. */
+  at: string;
+};
+
+export const PHONE_PEEKS_KEPT = 6;
 
 function record(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
@@ -110,11 +125,24 @@ export function readPhoneRunState(metadata: Record<string, unknown>): PhoneRunSt
       typeof reachable.reply === "string"
         ? { reply: reachable.reply, ids: list(reachable.ids).filter((id): id is string => typeof id === "string") }
         : null,
+    peeks: list(metadata.forkPhonePeeks)
+      .map(record)
+      .filter((peek) => typeof peek.characterId === "string" && typeof peek.reply === "string")
+      .map((peek) => ({
+        characterId: String(peek.characterId),
+        reply: String(peek.reply),
+        storyTime: str(peek.storyTime, 60),
+        threadIds: list(peek.threadIds)
+          .filter((id): id is string => typeof id === "string")
+          .slice(0, 24),
+        at: str(peek.at, 40),
+      })),
   };
 }
 
 export function phoneRunMetadata(state: PhoneRunState): Record<string, unknown> {
   return {
+    forkPhonePeeks: state.peeks.slice(-PHONE_PEEKS_KEPT),
     forkPhoneQueue: state.queue,
     forkPhoneRuns: state.runs.slice(-PHONE_RUNS_KEPT),
     forkPhoneLog: state.log.slice(-PHONE_LOG_KEPT),
@@ -138,6 +166,7 @@ export function rewindPhoneRun(state: PhoneRunState, replyIds: readonly string[]
     log: state.log.filter((entry) => !gone.has(entry.reply)),
     call: state.call && state.call.state === "ringing" && gone.has(state.call.reply) ? null : state.call,
     reachable: state.reachable && gone.has(state.reachable.reply) ? null : state.reachable,
+    peeks: state.peeks.filter((peek) => !gone.has(peek.reply)),
   };
 }
 

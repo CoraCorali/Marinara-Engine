@@ -5,6 +5,7 @@ import type { ReactNode } from "react";
 import { ArrowLeft, Check, CornerDownLeft, Delete } from "lucide-react";
 import type { ForkPhoneLook } from "@marinara-engine/shared";
 import "../../../styles/fork-phone.css";
+import { cn } from "../../../lib/utils";
 
 const QWERTY = "QWERTYUIOPASDFGHJKL".split("");
 const QWERTY_LAST = "ZXCVBNM".split("");
@@ -59,6 +60,7 @@ export function ForkPhoneShell({
   onKey,
   onBack,
   onOk,
+  onClear,
   labels,
 }: {
   look: ForkPhoneLook;
@@ -70,6 +72,8 @@ export function ForkPhoneShell({
   onKey?: (key: string) => void;
   onBack?: () => void;
   onOk?: () => void;
+  /** The slider's C key: deletes a letter while typing, otherwise goes back like an old phone. */
+  onClear?: () => void;
   labels: { back: string; ok: string; text: string; brand: string; clear: string; space: string };
 }) {
   const press = (key: string) => () => onKey?.(key);
@@ -102,7 +106,7 @@ export function ForkPhoneShell({
             <button type="button" className="fp-pad" onClick={onOk} aria-label={labels.ok}>
               <Check size="0.875rem" />
             </button>
-            <button type="button" className="fp-soft" onClick={onBack} aria-label={labels.back}>
+            <button type="button" className="fp-soft" onClick={onClear ?? onBack} aria-label={labels.clear}>
               {labels.clear}
             </button>
           </div>
@@ -122,7 +126,7 @@ export function ForkPhoneShell({
               </button>
               <span aria-hidden="true">👽</span>
             </div>
-            {look.keys === "qwerty" ? (
+            {look.keys === "qwerty" && onKey ? (
               <div className="fp-keys is-qwerty">
                 {QWERTY.map((key) => (
                   <button key={key} type="button" onClick={press(key.toLowerCase())}>
@@ -163,9 +167,9 @@ export function ForkPhoneShell({
                 </button>
               </div>
             ) : (
-              // Number keys are for the look: typing still happens on your own keyboard.
-              <div className="fp-keys is-number" aria-hidden="true">
-                {NUMBER_KEYS.map((key) => (
+              // Number keys, and any keys on a phone you can only look at, are for the look.
+              <div className={cn("fp-keys", look.keys === "qwerty" ? "is-qwerty" : "is-number")} aria-hidden="true">
+                {(look.keys === "qwerty" ? [...QWERTY, ...QWERTY_LAST] : NUMBER_KEYS).map((key) => (
                   <button key={key} type="button" tabIndex={-1}>
                     {key}
                   </button>
