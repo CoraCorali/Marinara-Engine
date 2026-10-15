@@ -898,6 +898,16 @@ contacts, peeking, branches, deletes), then fixed:
   the colour kept in the glow (the low sun at dawn, the warm corner at golden hour, the lamp at
   night) and the flat tint over the whole screen cut back, so the theme's own background shows
   through. Seasons were never a tint: they only add a few petals, pollen, leaves or flurries.
+- **In step with the weather's sky.** The light now reads the sky exactly as Marinara's weather
+  does: the same weather and time (the weather panel's picks included), the same clock and words,
+  in the same order. Night lighting shows only while the moon is out (from 9 PM; it used to start
+  at 8 PM while the weather still drew a setting sun), golden hour and dusk only while the sun is
+  setting, and "morning" is sunrise for both. The warm glow sits where the sun is drawn (left at
+  dawn, right at golden hour and dusk) and follows a sun placed by hand. Weather that hides the
+  sun (rain, storms, fog, cloud, snow) turns the glow into an even, muted grey; the night lamp stays,
+  since it is indoors. A change of light, weather or time crossfades over 20 seconds.
+- Regression: `fork-story-light` now checks the light against the sky at every hour, for word
+  times, for the sun's place and for weather that hides it.
 
 ## Upstream files touched
 
