@@ -765,7 +765,9 @@ fields, its own way into the scene, and its own wording for the model.
   `forkPhoneLog` (what reached you, for the cap and cooldown), `forkPhoneCall`, `forkPhoneReachable`.
 - Live check (Fable 5.1 via LinkAPI, Kyli in the bakery with Theo): no text to Kyli, who was right
   there; Mira privately texted Theo "so you're actually doing it saturday?? kyli confirmed??". A call
-  to Mira about Saturday answered in her voice, two short lines at a time.
+  to Mira about Saturday answered in her voice, two short lines at a time. Right after that call,
+  Opus 5.5 and Opus 4.6 each had Mira follow up by text ("babe i will be so gentle with him", "babe
+  he ASKED for this / i'll be nice i promise"): the call reached the agent.
 - Regression: `fork-phone-agent` (reading the answer, now and later, cap, cooldown, one call at a
   time, undo, idle, skipping, the call lines in the writer's block, the prompt).
 
