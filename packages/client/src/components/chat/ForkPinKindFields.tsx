@@ -5,7 +5,7 @@
 // place's building and room with a look per time of day, a thing's owner and holder, a person's role
 // and card, a vibe's palette and mood words. Every field saves into the pin's `details`, which the
 // server merges key by key, so clearing one ("nobody") never disturbs the others.
-import { useRef, useState, type ChangeEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ChangeEvent, type ReactNode } from "react";
 import { Plus, X } from "lucide-react";
 import { useTranslation as useUiTranslation } from "react-i18next";
 import {
@@ -24,6 +24,8 @@ import { useAddAlbumPicture, useRemoveAlbumPicture, type BoardPin } from "../../
 import { useForkChapters } from "../../hooks/use-fork-chapters";
 import { useForkDraftField } from "../../hooks/use-fork-draft-field";
 import { FORK_SWITCH_CLASS } from "../../lib/fork/switch";
+import { showConfirmDialog } from "../../lib/app-dialogs";
+import { forkCardLinkOptions } from "../../lib/fork/board-groups";
 import { cn } from "../../lib/utils";
 import { HelpTooltip } from "../ui/HelpTooltip";
 import type { PinCastMember, PinSave } from "./ForkPinEditor";
@@ -167,11 +169,27 @@ export function ForkPinKindFields({ pin, cast, personaName, chatId, allPins, sav
     );
   }
   if (pin.category === "person") {
-    return <PersonFields details={details} saveDetails={saveDetails} localizeUi={localizeUi} people={people} />;
+    return (
+      <PersonFields
+        pin={pin}
+        details={details}
+        save={save}
+        saveDetails={saveDetails}
+        localizeUi={localizeUi}
+        cards={forkCardLinkOptions(cast)}
+      />
+    );
   }
   if (pin.category === "vibe") {
     return (
-      <VibeFields details={details} save={save} saveDetails={saveDetails} localizeUi={localizeUi} chatId={chatId} />
+      <VibeFields
+        pin={pin}
+        details={details}
+        save={save}
+        saveDetails={saveDetails}
+        localizeUi={localizeUi}
+        chatId={chatId}
+      />
     );
   }
   return null;
@@ -218,8 +236,22 @@ function PlaceFields({
     const file = event.target.files?.[0];
     event.target.value = "";
     if (!file) return;
-    // The server replaces a look's old picture with the new one and deletes the old file.
-    await addPicture.mutateAsync({ id: pin.id, file, look: lookRef.current });
+    // The server replaces a look's old picture with the new one and deletes the old file. A failed
+    // upload is already toasted by the hook.
+    await addPicture.mutateAsync({ id: pin.id, file, look: lookRef.current }).catch(() => undefined);
+  };
+  // A picture goes only after a confirm, so a thumb that just wanted to look loses nothing.
+  const remove = async (path: string) => {
+    if (
+      !(await showConfirmDialog({
+        title: localizeUi("ui.chat.forkboard.albumRemove"),
+        message: localizeUi("ui.chat.forkboard.albumRemoveBody"),
+        confirmLabel: localizeUi("ui.chat.forkboard.remove"),
+        chatStyle: true,
+      }))
+    )
+      return;
+    removePicture.mutate({ id: pin.id, path });
   };
 
   return (
@@ -245,18 +277,25 @@ function PlaceFields({
             return (
               <div key={look} className="flex flex-col items-center gap-1">
                 {picture ? (
-                  <button
-                    type="button"
-                    onClick={() => removePicture.mutate({ id: pin.id, path: picture.path })}
-                    aria-label={localizeUi("ui.chat.forkboard.albumRemove")}
-                    title={localizeUi("ui.chat.forkboard.albumRemove")}
-                    className="relative block h-14 w-14 overflow-hidden rounded-lg ring-1 ring-[var(--border)]"
-                  >
-                    <img src={picture.path} alt="" className="h-full w-full object-cover" draggable={false} />
-                    <span className="absolute right-0 top-0 flex h-5 w-5 items-center justify-center rounded-bl-lg bg-black/60 text-white">
-                      <X size="0.625rem" />
-                    </span>
-                  </button>
+                  <div className="relative h-14 w-14">
+                    <img
+                      src={picture.path}
+                      alt={localizeUi(LOOK_LABEL_KEYS[look])}
+                      className="h-full w-full rounded-lg object-cover ring-1 ring-[var(--border)]"
+                      draggable={false}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => void remove(picture.path)}
+                      aria-label={localizeUi("ui.chat.forkboard.albumRemove")}
+                      title={localizeUi("ui.chat.forkboard.albumRemove")}
+                      className="absolute -right-2.5 -top-2.5 flex h-8 w-8 items-center justify-center"
+                    >
+                      <span className="flex h-5 w-5 items-center justify-center rounded-full bg-black/70 text-white ring-1 ring-white/40">
+                        <X size="0.625rem" />
+                      </span>
+                    </button>
+                  </div>
                 ) : (
                   <button
                     type="button"
@@ -489,6 +528,8 @@ function ThingFields({
             <input
               type="text"
               value={feelingText}
+              placeholder={localizeUi("ui.chat.forkboard.feelingPlaceholder")}
+              aria-label={localizeUi("ui.chat.forkboard.feelingPlaceholder")}
               onChange={(event) => setFeelingText(event.target.value)}
               onKeyDown={(event) => {
                 if (event.key === "Enter") addFeeling();
@@ -547,19 +588,30 @@ function ThingFields({
 // ── Person: a face for someone without a card, linked to one when there is one ──
 
 function PersonFields({
+  pin,
   details,
+  save,
   saveDetails,
   localizeUi,
-  people,
+  cards,
 }: {
+  pin: BoardPin;
   details: ForkPinDetails;
+  save: (data: PinSave) => void;
   saveDetails: SaveDetails;
   localizeUi: Localize;
-  people: { id: string; label: string }[];
+  /** The chat's cast: the cards a person can be linked to. */
+  cards: { id: string; label: string }[];
 }) {
   const linked = details.characterId ?? "";
   return (
     <>
+      <DraftLine
+        label={localizeUi("ui.chat.forkboard.personName")}
+        value={pin.name}
+        placeholder={localizeUi("ui.chat.forkboard.personNamePlaceholder")}
+        onCommit={(next) => save({ name: next })}
+      />
       <DraftLine
         label={localizeUi("ui.chat.forkboard.personRole")}
         value={details.role ?? ""}
@@ -569,7 +621,7 @@ function PersonFields({
       <div className="flex flex-col gap-1.5">
         <Label>{localizeUi("ui.chat.forkboard.linkACard")}</Label>
         <div className="flex flex-wrap gap-1.5">
-          {people.map((person) => (
+          {cards.map((person) => (
             <Chip
               key={person.id}
               on={linked === person.id}
@@ -597,12 +649,14 @@ function PersonFields({
 // ── Vibe: a palette and a few mood words, sent as tone only ──
 
 function VibeFields({
+  pin,
   details,
   save,
   saveDetails,
   localizeUi,
   chatId,
 }: {
+  pin: BoardPin;
   details: ForkPinDetails;
   save: (data: PinSave) => void;
   saveDetails: SaveDetails;
@@ -616,6 +670,29 @@ function VibeFields({
   const span = details.span === "chapter" ? "chapter" : "story";
   const [word, setWord] = useState("");
 
+  // The colour is added when the picker closes (the native change event). React's onChange fires on
+  // every movement inside the picker, so one drag used to fill every slot.
+  const colorRef = useRef<HTMLInputElement>(null);
+  const paletteRef = useRef(palette);
+  paletteRef.current = palette;
+  const saveRef = useRef(saveDetails);
+  saveRef.current = saveDetails;
+  const paletteFull = palette.length >= MAX_FORK_VIBE_COLORS;
+  useEffect(() => {
+    const input = colorRef.current;
+    if (!input) return;
+    const onPicked = () => {
+      const color = input.value.toLowerCase();
+      const current = paletteRef.current;
+      if (current.length < MAX_FORK_VIBE_COLORS && !current.includes(color))
+        saveRef.current("palette", [...current, color]);
+      input.value = "#ff8cc6";
+    };
+    input.addEventListener("change", onPicked);
+    return () => input.removeEventListener("change", onPicked);
+    // The input comes and goes with the palette's room; re-attach when it does.
+  }, [paletteFull]);
+
   const addWord = () => {
     const next = word.trim();
     if (!next || words.length >= MAX_FORK_VIBE_WORDS || words.includes(next)) return;
@@ -625,6 +702,12 @@ function VibeFields({
 
   return (
     <>
+      <DraftLine
+        label={localizeUi("ui.chat.forkboard.vibeTitle")}
+        value={pin.name}
+        placeholder={localizeUi("ui.chat.forkboard.vibeTitlePlaceholder")}
+        onCommit={(next) => save({ name: next })}
+      />
       <div className="flex flex-col gap-1.5">
         <Label>{localizeUi("ui.chat.forkboard.vibePalette")}</Label>
         <div className="flex flex-wrap items-center gap-2">
@@ -646,12 +729,10 @@ function VibeFields({
           ))}
           {palette.length < MAX_FORK_VIBE_COLORS && (
             <input
+              ref={colorRef}
               type="color"
+              defaultValue="#ff8cc6"
               aria-label={localizeUi("ui.chat.forkboard.vibeAddColour")}
-              onChange={(event) => {
-                const color = event.target.value.toLowerCase();
-                if (!palette.includes(color)) saveDetails("palette", [...palette, color]);
-              }}
               className="h-7 w-7 cursor-pointer rounded-lg border border-dashed border-[var(--border)] bg-transparent"
             />
           )}
@@ -682,6 +763,8 @@ function VibeFields({
               <input
                 type="text"
                 value={word}
+                placeholder={localizeUi("ui.chat.forkboard.vibeWordPlaceholder")}
+                aria-label={localizeUi("ui.chat.forkboard.vibeWordPlaceholder")}
                 onChange={(event) => setWord(event.target.value)}
                 onKeyDown={(event) => {
                   if (event.key === "Enter") addWord();

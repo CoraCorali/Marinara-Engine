@@ -11,7 +11,9 @@ import assert from "node:assert/strict";
 
 const {
   FORK_BOARD_FILTERS,
+  forkBoardCanReorder,
   forkBoardGroups,
+  forkCardLinkOptions,
   forkHeldThingNames,
   forkHerePlaceIds,
   forkPinBadges,
@@ -32,8 +34,18 @@ const pin = (over = {}) => ({
 const loc = (location, place) => forkHerePlaceIds([place], location);
 
 // ── Places group by building, with the named ones first ──
-const kitchen = pin({ category: "place", name: "Theo's apartment", caption: "narrow kitchen", details: { room: "kitchen" } });
-const bedroom = pin({ category: "place", name: "Theo's apartment", caption: "soft bedroom", details: { room: "bedroom" } });
+const kitchen = pin({
+  category: "place",
+  name: "Theo's apartment",
+  caption: "narrow kitchen",
+  details: { room: "kitchen" },
+});
+const bedroom = pin({
+  category: "place",
+  name: "Theo's apartment",
+  caption: "soft bedroom",
+  details: { room: "bedroom" },
+});
 const bakery = pin({ category: "place", name: "the bakery", caption: "warm light" });
 const nowhere = pin({ category: "place", name: "", caption: "a place with no name" });
 const places = forkBoardGroups([kitchen, bedroom, bakery, nowhere], "place");
@@ -84,11 +96,7 @@ assert.equal(loc("Theo's apartment · bedroom", kitchen).size, 0, "the same buil
 assert.equal(loc("Theo's apartment · kitchen", bedroom).size, 0);
 assert.equal(loc("the bakery", bakery).size, 1, "a place named in the location is here");
 assert.equal(loc("", kitchen).size, 0, "no location recorded is nowhere");
-assert.equal(
-  forkHerePlaceIds([theos], "the bakery").size,
-  0,
-  "only places can be the place the story is in",
-);
+assert.equal(forkHerePlaceIds([theos], "the bakery").size, 0, "only places can be the place the story is in");
 
 // ── Owner and holder are two different things ──
 const borrowed = pin({ category: "thing", name: "umbrella", details: { owner: "char-theo", holder: "persona" } });
@@ -130,13 +138,21 @@ assert.equal(
 );
 assert.equal(
   forkThingGiftFrom(
-    pin({ category: "thing", details: { memories: [{ chapter: 2, text: "A gift from Theo, handed down from his mother." }] } }),
+    pin({
+      category: "thing",
+      details: { memories: [{ chapter: 2, text: "A gift from Theo, handed down from his mother." }] },
+    }),
   ),
   "",
   "a memory has no author to name, so the badge stays off",
 );
 assert.equal(
-  forkThingGiftFrom(pin({ category: "thing", details: { owner: "char-theo", feelings: [{ who: "char-theo", text: "gave it to her" }] } })),
+  forkThingGiftFrom(
+    pin({
+      category: "thing",
+      details: { owner: "char-theo", feelings: [{ who: "char-theo", text: "gave it to her" }] },
+    }),
+  ),
   "",
   "the owner giving their own thing is not a gift from someone else",
 );
@@ -148,17 +164,21 @@ const badges = (entry, here = false) => forkPinBadges(entry, { here, nameFor }).
 assert.deepEqual(badges(kitchen, true), ["ui.chat.forkboard.badgeHere"], "here only on a place, where it matters");
 assert.deepEqual(badges(kitchen, false), []);
 assert.deepEqual(
-  badges(pin({ category: "thing", details: { status: "low on gas", important: true, owner: "char-theo", holder: "persona" } })),
-  [
-    "ui.chat.forkboard.badgeStatus",
-    "ui.chat.forkboard.badgeImportant",
-    "ui.chat.forkboard.badgeHasIt",
-  ],
+  badges(
+    pin({
+      category: "thing",
+      details: { status: "low on gas", important: true, owner: "char-theo", holder: "persona" },
+    }),
+  ),
+  ["ui.chat.forkboard.badgeStatus", "ui.chat.forkboard.badgeImportant", "ui.chat.forkboard.badgeHasIt"],
   "status, then ★, then has it",
 );
 assert.deepEqual(
   forkPinBadges(
-    pin({ category: "thing", details: { owner: "persona", feelings: [{ who: "char-theo", text: "gave it as a gift" }] } }),
+    pin({
+      category: "thing",
+      details: { owner: "persona", feelings: [{ who: "char-theo", text: "gave it as a gift" }] },
+    }),
     { here: false, nameFor },
   ).map((badge) => [badge.key, badge.values]),
   [["ui.chat.forkboard.badgeFrom", { name: "Theo" }]],
@@ -167,5 +187,24 @@ assert.deepEqual(
 
 // ── The filter list is the chips, in order ──
 assert.deepEqual([...FORK_BOARD_FILTERS], ["all", "wearing", "place", "thing", "person", "vibe"]);
+
+// ── Reordering and card links ──
+assert.equal(forkBoardCanReorder("mine", "all", false), true, "the whole flat board can be reordered");
+assert.equal(forkBoardCanReorder("mine", "person", false), false, "a filtered drag would collide with hidden pins");
+assert.equal(forkBoardCanReorder("mine", "wearing", false), false);
+assert.equal(forkBoardCanReorder("mine", "all", true), false, "a grouped shelf is not reordered by hand");
+assert.equal(forkBoardCanReorder("newest", "all", false), false);
+assert.deepEqual(
+  forkCardLinkOptions([
+    { id: "char-theo", name: "Theo" },
+    { id: "char-mira", name: "Mira" },
+  ]),
+  [
+    { id: "char-theo", label: "Theo" },
+    { id: "char-mira", label: "Mira" },
+  ],
+  "a person links to the cast only; the persona is never offered",
+);
+assert.deepEqual(forkCardLinkOptions([]), []);
 
 console.log("fork board grouping: ok");

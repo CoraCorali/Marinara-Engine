@@ -21,6 +21,7 @@ import { useGameStateStore } from "../../stores/game-state.store";
 import {
   FORK_BOARD_FILTERS,
   FORK_BOARD_FILTER_LABEL_KEYS,
+  forkBoardCanReorder,
   forkBoardGroups,
   forkHerePlaceIds,
   forkPinBadges,
@@ -96,8 +97,9 @@ export function ForkReferenceBoard({ chatScope, personaScope, personaName = "", 
   // Order matters: filter first, so a drag never reorders pins the filter is hiding.
   const sorted = sortPins(pins ?? [], sort).filter((pin) => filter === "all" || pin.category === filter);
   const grouped = forkBoardGroups(sorted as ForkBoardPinLike[], filter);
-  // Reordering by hand only makes sense on a flat, ungrouped grid.
-  const canReorder = sort === "mine" && !grouped;
+  // Reordering by hand only makes sense on the whole, flat board: a filtered drag would renumber
+  // the visible pins only and collide with the hidden ones.
+  const canReorder = forkBoardCanReorder(sort, filter, Boolean(grouped));
   const shown = dragOrder
     ? dragOrder.map((id) => sorted.find((pin) => pin.id === id)).filter((pin): pin is BoardPin => Boolean(pin))
     : sorted;

@@ -8,6 +8,7 @@ import type {
   PresentCharacter,
 } from "@marinara-engine/shared";
 import { useUpdateAgent, type AgentConfigRow } from "../../../hooks/use-agents";
+import { useHeldThingNames } from "../../../hooks/use-fork-board";
 import type { GameStatePatchField } from "../../../hooks/use-game-state-patcher";
 import type {
   TrackerPanelCollapsedSections,
@@ -107,6 +108,8 @@ export function TrackerSectionList({
   afterCustomSections?: ReactNode;
 }) {
   const updateAgent = useUpdateAgent();
+  // Fork: the board's thing pins the persona is holding, for the card's Holding list.
+  const heldThingNames = useHeldThingNames(activeChatId);
   const autoGenerateCharacterAvatars = characterTrackerSettings.autoGenerateAvatars === true;
   const { featuredCharacterCards, removeFeaturedCharacterCard, toggleFeaturedCharacterCard } =
     useFeaturedCharacterCards({

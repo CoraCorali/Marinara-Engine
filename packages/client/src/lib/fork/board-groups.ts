@@ -138,7 +138,8 @@ export function forkHeldThingNames(pins: readonly ForkBoardPinLike[]): string[] 
     .filter(Boolean);
 }
 
-/** The little notes a polaroid wears, in the order they read best. */ export function forkPinBadges(
+/** The little notes a polaroid wears, in the order they read best. */
+export function forkPinBadges(
   pin: ForkBoardPinLike,
   context: { here: boolean; nameFor: (id: string) => string },
 ): ForkPinBadge[] {
@@ -156,4 +157,17 @@ export function forkHeldThingNames(pins: readonly ForkBoardPinLike[]): string[] 
   }
   if (forkThingHeldByOther(pin)) badges.push({ key: "ui.chat.forkboard.badgeHasIt" });
   return badges;
+}
+
+/**
+ * Hand reordering saves `order` 0, 1, 2… for the pins on screen, so it is only safe when every pin
+ * is on screen: the unfiltered, ungrouped board in its own order.
+ */
+export function forkBoardCanReorder(sort: string, filter: ForkBoardFilter, grouped: boolean): boolean {
+  return sort === "mine" && filter === "all" && !grouped;
+}
+
+/** A person pin links to a character card: the chat's cast, never the persona. */
+export function forkCardLinkOptions(cast: readonly { id: string; name: string }[]): { id: string; label: string }[] {
+  return cast.map((member) => ({ id: member.id, label: member.name }));
 }

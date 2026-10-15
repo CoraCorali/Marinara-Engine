@@ -651,6 +651,13 @@ fields, its own way into the scene, and its own wording for the model.
   list, beside the inventory rows, through `useHeldThingNames`.
 - Every field on a card saves through the pin's merged `details`, so clearing one field never
   disturbs the others, and text fields wait until you stop typing.
+- After review: a person has a **Name** and a vibe a **Title**; "Link a card" lists only the cast,
+  never the persona; a vibe colour is added once, when the colour picker closes; hand reordering
+  works only on the **All** view, since a filtered drag renumbered just the visible pins; an album
+  picture has its own small × with a confirm, so tapping a thumbnail never deletes it; the feeling
+  and vibe-word boxes have placeholders and labels; a failed album upload is caught (the hook
+  already says so); the tracker panel's persona card reads the held things again (it used a name it
+  never declared, which broke the build).
 - Regression: `fork-board-grouping`. The board's own strings live under `ui.chat.forkboard.*`.
 
 ## Upstream files touched
@@ -753,7 +760,6 @@ Edits to upstream files are marked with a `Fork:` comment.
 | `packages/server/src/routes/chats.routes.ts`                                               | A branch copies the chapters it fully contains                                                    |
 | `packages/server/src/routes/index.ts`                                                      | Registers the chapters routes                                                                     |
 | `packages/client/src/components/chat/ChatRoleplaySurface.tsx`                              | Chapter rows, the chapter marker, split mode and the Chapter pill                                 |
-| `packages/client/src/components/chat/ChatArea.tsx`                                         | Passes the board's cast into the pin editor                                                       |
 | `packages/client/src/components/chat/RoleplayHUDPanels.tsx`                                | Board things the persona holds, in the card's Holding list                                        |
 | `packages/client/src/features/tracker-panel/components/TrackerSectionList.tsx`             | Same, for the tracker panel's persona card                                                        |
 | `packages/server/src/routes/fork-board.routes.ts`                                          | Name and details on PATCH; the album's add and remove routes                                      |
