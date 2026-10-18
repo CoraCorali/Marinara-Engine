@@ -13,6 +13,26 @@ const MAX_AVOID_PHRASES = 80;
 export const DEFAULT_FIX_INSTRUCTION =
   "Make it fresher and less clichéd. Keep what happens and what is said; change how it is written.";
 
+/**
+ * The quick asks arrive as their short English labels. Each one is spelled out here, because "Show
+ * it, don't tell it" alone leaves the model to guess what the Player means. A label in another
+ * language, or the Player's own words, is passed on as written.
+ */
+const QUICK_ASKS: Record<string, string> = {
+  "less cliché, same meaning":
+    "Keep what happens and what is said. Replace stock phrasing with concrete, specific detail that only this scene would have, in plain everyday words.",
+  "make it more in character":
+    "Make everyone in the passage act and speak the way their card and the story so far say they would, flaws, edges and voice included. Nobody softens, explains their feelings or gives in unless the original already had them do it.",
+  "shorter and tighter":
+    "Cut it to about two thirds of its length. Keep every action and line that matters; drop restatement, decoration and anything said twice.",
+  "show it, don't tell it":
+    "Replace named emotions and explanations with what can be seen and heard: actions, bodies, objects and the words people actually say. Let the reader work out the feeling.",
+};
+
+function spellOut(instruction: string): string {
+  return QUICK_ASKS[instruction.trim().toLocaleLowerCase()] ?? instruction;
+}
+
 export interface FixPartRequest {
   /** The whole reply, as stored. */
   reply: string;
@@ -26,6 +46,8 @@ export interface FixPartRequest {
   previousTurn?: string | null;
   /** The writer's own character, so the rewrite never speaks for them. */
   writerName?: string | null;
+  /** The characters in the chat, "Name: card text", so "more in character" has something to go on. */
+  characters?: readonly string[];
 }
 
 export function isValidFixRange(reply: string, start: number, end: number): boolean {
@@ -59,10 +81,12 @@ export function buildFixPartMessages(request: FixPartRequest): Array<{ role: "sy
     "- Everything outside the markers stays exactly as it is. Your text replaces only what is between them.",
     "- It must read seamlessly with the text right before and after it: the same point of view, tense, voice and names, and the same formatting conventions, such as asterisks for actions and quotation marks for speech.",
     "- Keep it about the same length unless the writer asks otherwise.",
+    "- Characters keep their own voices and edges: a cold one stays cold, a smooth one stays smooth, and nobody turns nicer or more agreeable than the original had them.",
+    "- Use plain, specific words, and commas or periods where an em dash might go.",
     `- Never write dialogue, thoughts or actions for ${writer} unless the original passage already did.`,
     ...(avoid.length > 0
       ? [
-          "- Do not use any of these overused phrases, or close variants of them:",
+          "- These overused phrases are on the writer's slop list, so choose other wording for them and their close variants:",
           ...avoid.map((phrase) => `  - ${phrase}`),
         ]
       : []),
@@ -71,8 +95,11 @@ export function buildFixPartMessages(request: FixPartRequest): Array<{ role: "sy
   ].join("\n");
 
   const previousTurn = (request.previousTurn ?? "").trim().slice(-MAX_TURN_CHARS);
-  const instruction = (request.instruction ?? "").trim().slice(0, MAX_INSTRUCTION_CHARS) || DEFAULT_FIX_INSTRUCTION;
+  const instruction =
+    spellOut((request.instruction ?? "").trim().slice(0, MAX_INSTRUCTION_CHARS)) || DEFAULT_FIX_INSTRUCTION;
+  const cards = (request.characters ?? []).map((card) => card.trim()).filter(Boolean);
   const user = [
+    ...(cards.length > 0 ? [`<characters>\n${cards.join("\n\n")}\n</characters>`, ""] : []),
     ...(previousTurn ? [`<the_turn_it_answered>\n${previousTurn}\n</the_turn_it_answered>`, ""] : []),
     `<reply>\n${replyWindow(marked, start)}\n</reply>`,
     "",

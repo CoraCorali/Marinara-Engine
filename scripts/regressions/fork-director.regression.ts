@@ -79,7 +79,7 @@ const full = buildDirectorContext({
 });
 
 // All four sources she asked about reach the model, each under its own heading.
-for (const tag of ["<characters>", "<the_writers_character>", "<lore_in_play>", "<story_so_far>", "<recent_scene>"]) {
+for (const tag of ["<characters>", "<the_players_character>", "<lore_in_play>", "<story_so_far>", "<recent_scene>"]) {
   assert.ok(full.includes(tag), `${tag} is in the context`);
 }
 assert.ok(full.includes("Name: Theo"), "the card's name");
@@ -89,10 +89,10 @@ assert.ok(full.includes("Personality: Short-tempered"), "the card's personality"
 assert.ok(full.includes("Name: Kyli"), "who the writer plays");
 assert.ok(full.includes("The ranch: Forty acres outside Bisbee."), "a lore entry reads as name and content");
 assert.ok(full.includes("feed store in April"), "the chat's running summary");
-assert.ok(full.includes("Writer: I set the keys on the counter."), "the writer's own turn is labelled as theirs");
+assert.ok(full.includes("Player: I set the keys on the counter."), "the writer's own turn is labelled as theirs");
 assert.ok(full.includes("Story: He does not look up."), "a reply reads as the story");
 // Order matters: background first, then what just happened.
-const positions = ["<characters>", "<the_writers_character>", "<lore_in_play>", "<story_so_far>", "<recent_scene>"].map(
+const positions = ["<characters>", "<the_players_character>", "<lore_in_play>", "<story_so_far>", "<recent_scene>"].map(
   (tag) => full.indexOf(tag),
 );
 for (const [index, position] of positions.slice(1).entries()) {
@@ -112,13 +112,13 @@ const bare = buildDirectorContext({
   scene: [{ role: "user", content: "hi" }],
 });
 assert.ok(bare.includes("<characters>"));
-for (const tag of ["<the_writers_character>", "<lore_in_play>", "<story_so_far>"]) {
+for (const tag of ["<the_players_character>", "<lore_in_play>", "<story_so_far>"]) {
   assert.ok(!bare.includes(tag), `${tag} is left out when there is nothing to put in it`);
 }
 // Nothing at all is an empty string, so the route sends the system prompt alone.
 assert.equal(buildDirectorContext({ cards: [], scene: [] }), "");
 // A blank message is dropped rather than sent as a bare label.
-assert.ok(!buildDirectorContext({ cards: [], scene: [{ role: "user", content: "   " }] }).includes("Writer:"));
+assert.ok(!buildDirectorContext({ cards: [], scene: [{ role: "user", content: "   " }] }).includes("Player:"));
 
 // The reply being discussed is read whole, so "the ending felt off" has an ending to look at.
 // Older messages are cut shorter, since they are only background.

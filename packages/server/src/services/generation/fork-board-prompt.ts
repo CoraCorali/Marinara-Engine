@@ -135,8 +135,8 @@ export function boardPinsAsImageEntries(
     id: `fork-board-${pin.id}`,
     name: describePin(pin, nameFor, lookup),
     heading: mentioned.has(pin.id)
-      ? `Reference picture, mentioned in the latest message — ${describePin(pin, nameFor, lookup)}`
-      : `Reference picture — ${describePin(pin, nameFor, lookup)}`,
+      ? `Reference picture, mentioned in the latest message: ${describePin(pin, nameFor, lookup)}`
+      : `Reference picture: ${describePin(pin, nameFor, lookup)}`,
     content: "",
     position: 2,
     images: [{ path: pin.imagePath, caption: pin.caption.trim() }],

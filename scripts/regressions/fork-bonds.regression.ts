@@ -270,6 +270,27 @@ assert.equal(
   1,
 );
 const empty = { changes: [], creations: [], moments: [] };
+
+// The user's own character is never a bond: the tracker once filed Kyli as Kyli's love interest.
+assert.deepEqual(
+  planBondUpdates({ bonds: [{ who: " kyli ", kind: "love", rung: "Noticed" }] }, current, resolve, {
+    personaName: "Kyli",
+  }),
+  empty,
+);
+
+// A bond that moved recently holds its rung and status; its fields still update.
+const held = planBondUpdates(
+  { bonds: [{ who: "Vee", rung: "Confidant", status: "engaged", tell: "Taps the ring — twice." }] },
+  current,
+  resolve,
+  { holdRung: new Set([veeId]) },
+);
+assert.equal(held.changes[0]!.rung, undefined, "no second rung right after the last one");
+assert.equal(held.changes[0]!.status, undefined);
+assert.equal(held.moments.length, 0);
+assert.equal(held.changes[0]!.fields?.tell, "Taps the ring, twice.", "em dashes become commas");
+
 assert.deepEqual(planBondUpdates(null, current, resolve), empty);
 assert.deepEqual(planBondUpdates({ bonds: "no" }, current, resolve), empty);
 assert.deepEqual(planBondUpdates({ bonds: [{ who: "   " }] }, current, resolve), empty);

@@ -104,15 +104,15 @@ export function buildDirectorContext(sources: DirectorContextSources): string {
     .map((message, index) => {
       const limit = index >= latestFrom ? MAX_LATEST_MESSAGE_CHARS : MAX_SCENE_MESSAGE_CHARS;
       const content = clampPlainText(message.content, limit);
-      // Narration and other characters all read as the story; only the writer's own turns are theirs.
-      return content ? `${message.role === "user" ? "Writer" : "Story"}: ${content}` : "";
+      // Narration and other characters all read as the story; only the Player's own turns are theirs.
+      return content ? `${message.role === "user" ? "Player" : "Story"}: ${content}` : "";
     })
     .filter(Boolean)
     .join("\n\n");
 
   return [
     cards && `<characters>\n${cards}\n</characters>`,
-    persona && `<the_writers_character>\n${persona}\n</the_writers_character>`,
+    persona && `<the_players_character>\n${persona}\n</the_players_character>`,
     lore && `<lore_in_play>\n${lore}\n</lore_in_play>`,
     summary && `<story_so_far>\n${summary}\n</story_so_far>`,
     standing && `<where_things_stand>\n${standing}\n</where_things_stand>`,

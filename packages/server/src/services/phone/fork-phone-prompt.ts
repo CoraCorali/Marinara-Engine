@@ -91,7 +91,16 @@ export function phonePromptBlock(
  * the narration would be one the phone never shows and its sender never remembers.
  */
 export const PHONE_WRITER_RULE =
-  "Texts and calls happen on the phones, not in the narration: never write out the words of a new text, call or message in the story. The story can say a phone buzzed or someone is typing; the text itself arrives on the phone. Characters can quote or react to texts already on the phones. This holds over any other instruction to show phone screens, chat bubbles or texts in the reply.";
+  "New texts and calls arrive on the phones rather than in the narration. The story can say a phone buzzed or someone is typing, and characters can quote or react to texts already on the phones, while the words of a new text, call or message stay on the phone. This holds over any other instruction to show phone screens, chat bubbles or texts in the reply.";
+
+/**
+ * How anyone on the phone sounds. A character who is furious in the story should not text like a
+ * greeting card, and models drift sweet on a phone more than anywhere else.
+ */
+export function phoneVoiceRule(personaName: string): string {
+  const persona = personaName || "the user's character";
+  return `They text and talk the way they feel about ${persona} right now: annoyed stays short, distant stays distant, a grudge or a secret still shows, and nobody gets sweeter just because it is a phone. Typos, caps and lowercase only if that is how they type. Commas or periods where an em dash might go.`;
+}
 
 /**
  * Who a contact is close to, by name, when that is more than just the persona (the default):

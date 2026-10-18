@@ -48,6 +48,7 @@ import {
   type BondPair,
 } from "./fork-bond-pairs.js";
 import { createBoardPinsStorage } from "../board/fork-board-pins.js";
+import { listRecentBondChanges, recentReplyIds } from "./fork-bond-recent.js";
 import {
   applyThingUpdates,
   thingsAgentFormatLine,
@@ -59,6 +60,17 @@ import {
 
 /** The most rungs a romance's status may travel in one reply. People do not go from talking to married. */
 export const MAX_STATUS_STEP = 1;
+
+/**
+ * A bond that moved a rung or a status this many replies ago or fewer holds where it is. Models read
+ * "one rung per scene" as one rung per reply, and a stranger became a confidant in seven replies.
+ */
+export const RUNG_COOLDOWN_REPLIES = 3;
+
+/** Em dashes the agent slips in anyway become commas, like the rest of the story's text. */
+function plainDashes(text: string): string {
+  return text.replace(/\s*\u2014\s*/g, ", ");
+}
 
 export type BondChange = {
   id: string;
@@ -127,8 +139,17 @@ function sameName(left: string, right: string): boolean {
  */
 function readFields(kind: ForkBondKind, update: Record<string, unknown>): Record<string, string> {
   const nested = update.fields && typeof update.fields === "object" ? (update.fields as Record<string, unknown>) : {};
-  return cleanFields(kind, { ...update, ...nested });
+  return Object.fromEntries(
+    Object.entries(cleanFields(kind, { ...update, ...nested })).map(([key, value]) => [key, plainDashes(value)]),
+  );
 }
+
+export type BondPlanOptions = {
+  /** The user's character. A bond is always with someone else, so an update naming them is dropped. */
+  personaName?: string;
+  /** Bonds that moved a rung or status within the last few replies: their rung and status hold. */
+  holdRung?: ReadonlySet<string>;
+};
 
 function stepStatus(current: ForkLoveStatus | null, wanted: unknown): ForkLoveStatus | undefined {
   const target = readForkLoveStatus(wanted);
@@ -158,6 +179,7 @@ export function planBondUpdates(
   data: unknown,
   existing: readonly Bond[],
   resolveCharacterId: (name: string) => string | null,
+  options: BondPlanOptions = {},
 ): AppliedBondUpdates {
   const changes: BondChange[] = [];
   const creations: BondCreation[] = [];
@@ -170,6 +192,8 @@ export function planBondUpdates(
   for (const update of readUpdates(data)) {
     const who = typeof update.who === "string" ? update.who.trim() : "";
     if (!who) continue;
+    // The tracker once filed the user's own character as the love interest. Bonds are with others.
+    if (options.personaName?.trim() && sameName(who, options.personaName)) continue;
     const nameKey = who.toLocaleLowerCase();
     if (seen.has(nameKey)) continue;
     seen.add(nameKey);
@@ -216,7 +240,8 @@ export function planBondUpdates(
     const kindChanged = kind !== match.kind;
 
     // A new kind is a new ladder, so its rung is taken as named; on the same ladder it steps.
-    const wantedRung = normalizeForkBondRung(kind, update.rung);
+    const holding = !kindChanged && options.holdRung?.has(match.id) === true;
+    const wantedRung = holding ? null : normalizeForkBondRung(kind, update.rung);
     const fromRung = kindChanged ? defaultForkBondRung(kind) : match.rung;
     const rung = wantedRung ? (kindChanged ? wantedRung : stepForkBondRung(kind, match.rung, wantedRung)) : fromRung;
     if (rung !== match.rung || kindChanged) {
@@ -227,7 +252,9 @@ export function planBondUpdates(
     if (kind === "love") {
       const status = kindChanged
         ? (normalizeForkLoveStatus("love", wantedStatus) ?? "talking")
-        : stepStatus(match.status, wantedStatus);
+        : holding
+          ? undefined
+          : stepStatus(match.status, wantedStatus);
       if (status) {
         change.status = status;
         touched = true;
@@ -302,7 +329,14 @@ export async function applyBondsAgentResult(
   const store = createBondsStorage(db);
   if (messageId) await undoBondTurn(db, chatId, messageId);
   const before = await store.listForChat(chatId);
-  const plan = planBondUpdates(data, before, resolveCharacterId);
+  // This reply's own turn was taken back above, so only earlier replies' moves hold a bond in place.
+  const recent = await listRecentBondChanges(db, chatId, await recentReplyIds(db, chatId), RUNG_COOLDOWN_REPLIES + 1);
+  const holdRung = new Set(
+    recent
+      .filter((change) => !change.pair && (change.key === "rung" || change.key === "status"))
+      .map((change) => change.id),
+  );
+  const plan = planBondUpdates(data, before, resolveCharacterId, { personaName, holdRung });
   for (const { id, ...patch } of plan.changes) await store.update(id, patch);
   for (const creation of plan.creations) await store.create({ chatId, ...creation });
   for (const moment of plan.moments) await store.addMoment({ bondId: moment.id, chatId, messageId, ...moment });
@@ -460,9 +494,10 @@ export function bondsAgentFormatBlock(): string {
     "What each field asks for:",
     ...guide,
     "Rules:",
-    "- Everything is words, never numbers. Write every field as specific, lived detail from this story.",
-    "- Heart and trust are separate truths and may disagree.",
-    "- Move at most one rung per scene, and only when the scene earned it; most scenes move nothing. Name the moment in turn.",
+    '- "who" is always the other person in the bond, never the user\'s character.',
+    "- Everything is words, never numbers. Each field is one short line (about twenty words at most) of specific detail from this story, in your own words rather than copied narration, with no em dashes. Use each moment in one field only.",
+    "- Heart and trust are separate truths and may disagree. Hurt, suspicion and anger stay on the card until the story actually resolves them.",
+    "- A rung is where the relationship stands across the whole story, not the mood of one scene. Move at most one rung, only when something really changed between them, and expect several scenes between moves; most replies move nothing, and a bond that moved recently holds. Name the moment in turn, in one sentence.",
     "- Likes and dislikes are discoveries; grow them as the story reveals more.",
     "- Memory is a keepsake: replace it only when a new moment clearly outshines it.",
     "- Leave out any person the scene said nothing about, and any field you are not sure changed. Never send an empty field to clear one.",
@@ -480,6 +515,7 @@ export function bondsAgentStateBlock(
   nameFor: (characterId: string) => string,
   pairs: readonly BondPair[] = [],
   thingLines: readonly string[] = [],
+  personaName = "",
 ): string {
   const current = allBonds.map((bond) => ({
     who: bond.label.trim() || nameFor(bond.characterId) || bond.characterId,
@@ -491,8 +527,14 @@ export function bondsAgentStateBlock(
     ...(bond.drift ? { drift: bond.drift } : {}),
     ...bond.fields,
   }));
+  const persona = personaName.trim();
   return [
     bondsAgentFormatBlock(),
+    ...(persona
+      ? [
+          `${persona} is the user's character. Every bond is between ${persona} and someone else, so "${persona}" never goes in "who".`,
+        ]
+      : []),
     "<current_relationships>",
     current.length > 0
       ? 'What the relationship tracker holds right now. Use these exact names in "who", and report only what this scene changed.'
@@ -531,6 +573,7 @@ export async function loadBondsAgentState(
     nameFor,
     await listPairsBeforeTurn(db, chatId, messageId),
     thingsAgentStateLines(thingsBeforeChanges(pins, thingChanges), nameFor, personaName),
+    personaName === "the user's character" ? "" : personaName,
   );
 }
 

@@ -3,6 +3,7 @@
 // The newest text from a character (or a contact) keeps its versions like a story reply does: a
 // new version, or back to an earlier one. Any of their texts can be fixed, and your own edited.
 import { PHONE_PERSONA, type PhoneMessage } from "./fork-phone.js";
+import { phoneVoiceRule } from "./fork-phone-prompt.js";
 
 export const MAX_TEXT_SWIPES = 12;
 const MAX_TEXT = 600;
@@ -65,6 +66,7 @@ export function buildTextSwipeMessages(input: {
           : "",
         `\nVersions of ${input.name}'s newest text so far:\n${input.versions.map((version) => `- ${version}`).join("\n")}`,
         `\nWrite a different version of that same text: the same moment and what ${input.name} means to say, in their own voice, with different words. About as long. Never write ${persona}'s words.`,
+        phoneVoiceRule(persona),
         "Reply with the text only: no name label, no quotation marks, no notes.",
       ]
         .filter(Boolean)

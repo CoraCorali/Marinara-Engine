@@ -14,6 +14,10 @@ import { logDebugOverride, logger } from "../lib/logger.js";
 // Fork: Pocket Phone — a phone text can be fixed too.
 import { createPhoneStorage, PHONE_PERSONA } from "../services/phone/fork-phone.js";
 import { textItAnswered } from "../services/phone/fork-phone-texts.js";
+import { clampPlainText } from "../services/generation/fork-director-context.js";
+
+/** How much of each card a fix reads: enough to know who they are, not the whole card. */
+const FIX_CARD_CHARS = 1500;
 
 export async function forkFixRoutes(app: FastifyInstance) {
   const chats = createChatsStorage(app.db);
@@ -78,6 +82,30 @@ export async function forkFixRoutes(app: FastifyInstance) {
       phoneAnswered ??
       (index > 0 ? ([...recent.slice(0, index)].reverse().find((row) => row.role === "user")?.content ?? null) : null);
     const identity = await resolveChatUserIdentity(characters, chat).catch(() => null);
+    // The cards in the chat, short, so "more in character" is judged against who they really are.
+    const cardIds = (() => {
+      try {
+        const parsed = typeof chat.characterIds === "string" ? JSON.parse(chat.characterIds) : chat.characterIds;
+        return Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === "string") : [];
+      } catch {
+        return [];
+      }
+    })();
+    const cardTexts = (await Promise.all(cardIds.slice(0, 4).map((id) => characters.getById(id).catch(() => null))))
+      .map((row) => {
+        if (!row) return "";
+        let card: { name?: unknown; personality?: unknown; description?: unknown } = {};
+        try {
+          card = typeof row.data === "string" ? JSON.parse(row.data) : ((row.data ?? {}) as typeof card);
+        } catch {
+          return "";
+        }
+        const name = clampPlainText(card.name, 120);
+        const about =
+          clampPlainText(card.personality, FIX_CARD_CHARS) || clampPlainText(card.description, FIX_CARD_CHARS);
+        return name && about ? `${name}: ${about}` : "";
+      })
+      .filter(Boolean);
 
     const messages = buildFixPartMessages({
       reply: content,
@@ -87,6 +115,7 @@ export async function forkFixRoutes(app: FastifyInstance) {
       avoid: Array.isArray(body.avoid) ? body.avoid.filter((item): item is string => typeof item === "string") : [],
       previousTurn: typeof previousTurn === "string" ? previousTurn : null,
       writerName: identity?.name ?? null,
+      characters: cardTexts,
     });
     logDebugOverride(
       body.debugMode === true || isDebugAgentsEnabled(),

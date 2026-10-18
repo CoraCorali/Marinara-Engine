@@ -71,7 +71,7 @@ Title: a short title for the chapter, story-flavoured, at most six words
 The events in order, as prose paragraphs. Use names, places and story dates or times when they are known. Say who did what and why it mattered.
 
 ## Where people stand
-One line per relationship, as it stands at the chapter's end: "- Name and Name: where they stand, and what changed this chapter".
+One line per relationship, as it stands at the chapter's end: "- Name and Name: where they stand, and what changed this chapter". Keep tension, grudges and power between them as sharp as the chapter left them.
 
 ## Open threads
 One line each: promises, secrets, plans, unanswered questions, and anything a character is hiding.
@@ -80,7 +80,7 @@ One line each: promises, secrets, plans, unanswered questions, and anything a ch
 One line each: objects, outfits, injuries, places and running jokes that matter later.
 
 ## Lines to remember
-Two or three exact quotes worth calling back, each as: - "the quote" — who said it`;
+Two or three exact quotes worth calling back, each as: - "the quote" (who said it)`;
 
 function contextLines(context: RecapContext): string {
   return [
@@ -99,7 +99,9 @@ function contextLines(context: RecapContext): string {
 const RULES = `Rules:
 - Only what happened in the chapter. Never invent events, and never continue the story.
 - Detailed enough that the story can be continued from the recap alone, without the messages.
-- Third person, past tense. No commentary about the writing, the roleplay or the user.`;
+- Third person, past tense. No commentary about the writing, the roleplay or the user.
+- Record things as they actually stand. A fight that ended unresolved stays unresolved, a lie that was never found out is still a secret, and nobody is kinder or closer in the recap than they were in the story.
+- Plain words, with commas or periods where an em dash might go.`;
 
 /** One call for a chapter short enough to read whole. */
 export function buildRecapMessages(messages: readonly RecapSourceMessage[], context: RecapContext): ChatMessage[] {
@@ -166,7 +168,7 @@ export function buildEarlierMergeMessages(
   return [
     {
       role: "system",
-      content: `You condense the early chapters of a long roleplay into one recap of the story so far. Keep every event that later chapters might depend on, every open thread that is still open, and how each relationship developed. Drop moment-to-moment detail. Plain text with the same section headings as the recaps you are given (## What happened, ## Where people stand, ## Open threads, ## Keep in mind). Never invent anything.`,
+      content: `You condense the early chapters of a long roleplay into one recap of the story so far. Keep every event that later chapters might depend on, every open thread that is still open, and how each relationship developed, including the tension and grudges that are still live. Drop moment-to-moment detail. Plain text with the same section headings as the recaps you are given (## What happened, ## Where people stand, ## Open threads, ## Keep in mind). Never invent anything.`,
     },
     {
       role: "user",

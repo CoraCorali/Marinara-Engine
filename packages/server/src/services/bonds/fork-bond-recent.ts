@@ -19,6 +19,8 @@ export type RecentBondChange = {
   to: string;
   /** 0 for the newest reply, 1 for the one before, and so on. */
   repliesAgo: number;
+  /** What moved: the rung, the status, the kind or only the drift. */
+  key: "rung" | "status" | "kind" | "drift";
   /** A step up a warm ladder, or a romance moving forward: worth marking in the story. */
   milestone: boolean;
 };
@@ -94,6 +96,7 @@ export async function listRecentBondChanges(
         from: move.from,
         to: move.to,
         repliesAgo,
+        key: move.key as RecentBondChange["key"],
         milestone: isBondMilestone(
           // A kind that changed in this turn has no ladder to climb; a pair records its kind every time.
           change.after?.kind && change.after.kind !== change.before?.kind ? undefined : kinds.get(change.bondId),

@@ -1100,6 +1100,39 @@ From an audit of every fork switch (31 of them) and of features reading the same
 - Marinara's own browser smoke tests pass on desktop (7/7) and phone size (5 passed, 2 skip there
   by design).
 
+### The fork's own prompts, rewritten
+
+A pass over every prompt the fork sends, using what rebuilding the preset taught: say what to do
+and why, keep characters' edges, keep em dashes out, and back the rules that matter with code. It
+started from a screen recording of the relationship tracker.
+
+- **The tracker filed the user's own character as the love interest.** A Gabriel story got a bond
+  named "Kyli". The agent is now told that every bond is with someone else and given the persona's
+  name, and an update naming the persona is dropped on the server, whatever the agent says.
+- **A stranger became a confidant in seven replies.** The agent read "one rung per scene" as one rung
+  per reply. It is now told a rung is where the relationship stands across the story and usually
+  takes several scenes, and the server holds a bond's rung and status for three replies after it
+  moves. Fields still update while it holds.
+- **Fields were long retellings of the scene**, the same moment copied into heart, trust, what moved
+  them and the moment line, with em dashes. Every field is now one short line in the agent's own
+  words, each moment in one field only, and an em dash the agent sends anyway becomes a comma.
+- **The tracker reads the scene as it happened, not as a romance should go**: hurt, suspicion and
+  anger count as much as warmth, and stay on the card until the story resolves them. Agents made
+  with the earlier prompt are upgraded the next time People opens.
+- **The Director** now calls you the Player and the story model the storyteller, so "the writer" no
+  longer means two people. It steers away from fixes that make a character nicer than their card,
+  finds the version of a soft moment that still sounds like them, and its note never scripts your
+  character.
+- **Fix this part** spells out the four quick asks instead of sending the short label (what "show,
+  don't tell" actually means), reads the chat's cards so "more in character" has something to go
+  on, keeps characters' voices and edges, and avoids em dashes.
+- **Chapter recaps** keep a fight unresolved if it ended unresolved, keep secrets secret, and never
+  make anyone kinder or closer than the story did. The quote line no longer uses an em dash, which
+  the recaps then copied.
+- **The phone**: everyone texts and talks the way they feel about you right now, so an angry
+  character's texts stay short and a grudge still shows. The rule for the story model is worded as
+  what to do. Board picture headings use a colon instead of an em dash.
+
 ## Upstream files touched
 
 Fork-only code lives in `packages/client/src/lib/fork/`, `Fork*` components, `packages/shared/src/features/fork-bond-shapes.ts`, `packages/server/src/services/import/fork/`

@@ -102,6 +102,18 @@ assert.ok(user!.content.includes("<the_turn_it_answered>\nI reach for her hand."
 assert.ok(user!.content.includes(DEFAULT_FIX_INSTRUCTION), "no instruction means the default one");
 const noAvoid = buildFixPartMessages({ reply, start, end, instruction: "Shorter." })[0]!.content;
 assert.ok(!noAvoid.includes("overused phrases"), "no list, no avoid section");
+const [, spelled] = buildFixPartMessages({
+  reply,
+  start,
+  end,
+  instruction: "Show it, don't tell it",
+  characters: ["Vee: Guarded, dry, slow to forgive.", "  "],
+});
+assert.ok(spelled!.content.includes("Replace named emotions"), "a quick ask is spelled out");
+assert.ok(spelled!.content.includes("<characters>\nVee: Guarded, dry, slow to forgive.\n</characters>"));
+const [, ownWords] = buildFixPartMessages({ reply, start, end, instruction: "Make him angrier." });
+assert.ok(ownWords!.content.includes("What to change in the marked passage: Make him angrier."));
+assert.ok(!ownWords!.content.includes("<characters>"), "no cards, no characters block");
 
 // ── Cleaning up the model's answer ──
 const original = " A shiver down her spine.";

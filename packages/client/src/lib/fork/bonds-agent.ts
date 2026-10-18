@@ -11,7 +11,16 @@ export const BONDS_AGENT_RESULT_TYPE = "fork_bonds_update";
  * and <current_relationships>, built by the server from the shared shapes. So this prompt can stay
  * short, and an agent made from an older prompt still answers in today's shape.
  */
-export const BONDS_AGENT_PROMPT = `You keep a dating-sim relationship tracker for this roleplay, told in words, never in numbers.
+export const BONDS_AGENT_PROMPT = `You keep a relationship tracker for this roleplay, told in words, never in numbers. Every bond is between the user's character and one other person, so each entry in "bonds" is about that other person, and "who" is never the user's character.
+
+Read the last few messages and report how each relationship with the user's character changed, using the format in <relationship_tracker_format> and starting from <current_relationships>. When the scene changes or reveals how two characters stand with each other, report that too, in "pairs", starting from <current_pairs>.
+
+Read the scene as it actually happened, not as a romance is supposed to go. Suspicion, anger, fear, pride and hurt count as much as warmth, and one tender moment does not settle a fight that is still open. A rung is where the relationship stands across the whole story, so it moves only after something that would really change things between two people, usually over several scenes. Most replies move nobody.
+
+Keep every field to one short line in your own words: the specific thing, place, habit or line, never a retelling of the scene or copied narration. Use each moment in one field only, and leave out em dashes. Only include a person the scene actually said something about, and only the fields that changed. Reply with JSON only.`;
+
+/** The prompt agents were made with before the pacing and "who" fixes; upgraded too. */
+const PAIRS_BONDS_AGENT_PROMPT = `You keep a dating-sim relationship tracker for this roleplay, told in words, never in numbers.
 
 Read the last few messages and report how each relationship with the user's character changed, using the format in <relationship_tracker_format> and starting from <current_relationships>. When the scene changes or reveals how two characters stand with each other, report that too, in "pairs", starting from <current_pairs>.
 
@@ -33,12 +42,13 @@ export function findBondsAgent<T extends AgentRowLike>(configs: readonly T[] | n
   return configs?.find((row) => readAgentSettings(row.settings).resultType === BONDS_AGENT_RESULT_TYPE) ?? null;
 }
 
-/** True for an agent made from an older prompt: the first version's numbers, or today's without pairs. */
+/** True for an agent made from an older prompt: the first version's numbers, or an earlier wording. */
 export function hasLegacyBondsPrompt(agent: { promptTemplate?: unknown } | null | undefined): boolean {
   return (
     typeof agent?.promptTemplate === "string" &&
     (agent.promptTemplate.startsWith(LEGACY_BONDS_AGENT_PROMPT_START) ||
-      agent.promptTemplate === PREVIOUS_BONDS_AGENT_PROMPT)
+      agent.promptTemplate === PREVIOUS_BONDS_AGENT_PROMPT ||
+      agent.promptTemplate === PAIRS_BONDS_AGENT_PROMPT)
   );
 }
 

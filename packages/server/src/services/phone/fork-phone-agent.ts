@@ -5,6 +5,7 @@
 // agent's answer, the safety caps, the queue of texts waiting to arrive, and taking a run back when
 // its reply is swiped or deleted.
 import { PHONE_CONTACT, PHONE_PERSONA, PHONE_UNKNOWN, type PhoneMessage, type PhoneThread } from "./fork-phone.js";
+import { phoneVoiceRule } from "./fork-phone-prompt.js";
 
 /** Texts and calls from characters to the persona per story day, whatever the agent asks for. */
 export const PHONE_DAILY_CAP = 10;
@@ -558,6 +559,7 @@ export function buildPhoneAgentMessages(context: PhoneAgentContext): { role: "us
     `- Anyone can text ${persona} at any time, even from across the room mid-scene, but only when that is something they would really do.`,
     `- Answer ${persona}'s unanswered texts when the character would have seen them and wants to reply.`,
     "- Texts read like that person's real texts: short, in their voice, no narration, no quotation marks, no stage directions.",
+    `- ${phoneVoiceRule(persona)}`,
     `- Never write ${persona}'s texts or words.`,
     '- "when": "now" arrives right after this reply; "later" waits "after" story replies (1 to 3).',
     `- Calls are for things that cannot wait or a voice they want to hear, from a card character, one of ${persona}'s contacts or an unknown number. About: a few words. Opening: their first line when picked up.`,
@@ -596,6 +598,7 @@ export function buildCallLineMessages(input: {
         input.story ? `\nThe latest story (oldest first):\n${input.story}` : "",
         `\nThe call so far:\n${input.lines.map((line) => `${line.name}: ${line.text}`).join("\n") || "(just picked up)"}`,
         `\nWrite ${input.characterName}'s next spoken line only, in their own voice: one to three short sentences, the way people talk on the phone. No narration, no name label, no quotation marks. Never write ${persona}'s words.`,
+        phoneVoiceRule(persona),
       ]
         .filter(Boolean)
         .join("\n"),
@@ -660,6 +663,7 @@ export function buildContactReplyMessages(input: {
         input.knows ?? "",
         `\nTheir texts so far (oldest first):\n${input.texts.map((text) => `- ${text.time ? `[${text.time}] ` : ""}${text.name}: ${text.text}`).join("\n")}`,
         `\nWrite ${input.name}'s reply: one to three short texts in their own voice, the way they would really text ${persona}. Only mention things ${persona} has texted about or that are part of ${input.name}'s own life; never anything else that happened to ${persona}. No narration, no quotation marks. Never write ${persona}'s texts.`,
+        phoneVoiceRule(persona),
         'Reply with JSON only: {"texts":["text","text"]}',
       ]
         .filter(Boolean)
@@ -699,6 +703,7 @@ export function buildCharacterReplyMessages(input: {
           .join(" "),
         `\nTheir texts so far (oldest first):\n${input.texts.map((text) => `- ${text.time ? `[${text.time}] ` : ""}${text.name}: ${text.text}`).join("\n")}`,
         `\nWrite ${input.name}'s reply: one to three short texts in their own voice, the way they would really text ${persona}, true to what is happening in the story right now. If the story has ${input.name} unable to answer (asleep, busy, phone away, right next to ${persona}), send nothing. No narration, no quotation marks. Never write ${persona}'s texts.`,
+        phoneVoiceRule(persona),
         'Reply with JSON only: {"texts":["text","text"]}, or {"texts":[]} to send nothing.',
       ]
         .filter(Boolean)
