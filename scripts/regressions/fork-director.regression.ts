@@ -117,6 +117,19 @@ for (const tag of ["<the_players_character>", "<lore_in_play>", "<story_so_far>"
 }
 // Nothing at all is an empty string, so the route sends the system prompt alone.
 assert.equal(buildDirectorContext({ cards: [], scene: [] }), "");
+// A preset's margin notes and ledger are not the story, so they never reach the Director.
+const noted = buildDirectorContext({
+  cards: [],
+  scene: [
+    {
+      role: "assistant",
+      content:
+        '<margin_notes colors="BLUSH">\n· Tasha: secretly plans to leave\n</margin_notes>\nThe gate swung open.\n<story_ledger turn="2">\n## Secrets\n· a secret\n</story_ledger>',
+    },
+  ],
+});
+assert.match(noted, /Story: The gate swung open\./);
+assert.ok(!noted.includes("secretly plans") && !noted.includes("a secret"));
 // A blank message is dropped rather than sent as a bare label.
 assert.ok(!buildDirectorContext({ cards: [], scene: [{ role: "user", content: "   " }] }).includes("Player:"));
 

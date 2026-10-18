@@ -2,6 +2,7 @@
 //
 // What the Director gets to see, and how it reads. The route fetches the pieces; the shape lives
 // here so a regression can pin it instead of it sitting inline in a route.
+import { stripStoryScratch } from "./fork-story-scratch.js";
 
 /** How far back the Director reads. Enough to judge the last reply, never the whole story. */
 export const DIRECTOR_SCENE_MESSAGES = 10;
@@ -103,7 +104,10 @@ export function buildDirectorContext(sources: DirectorContextSources): string {
   const scene = sources.scene
     .map((message, index) => {
       const limit = index >= latestFrom ? MAX_LATEST_MESSAGE_CHARS : MAX_SCENE_MESSAGE_CHARS;
-      const content = clampPlainText(message.content, limit);
+      const content = clampPlainText(
+        typeof message.content === "string" ? stripStoryScratch(message.content) : message.content,
+        limit,
+      );
       // Narration and other characters all read as the story; only the Player's own turns are theirs.
       return content ? `${message.role === "user" ? "Player" : "Story"}: ${content}` : "";
     })

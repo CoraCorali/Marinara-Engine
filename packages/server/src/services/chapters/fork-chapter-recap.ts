@@ -3,6 +3,8 @@
 // The recap is the story's long-term memory once a chapter folds away, so it is written in a fixed
 // shape the writer can rely on, and long enough to continue from. A long chapter is cut into slices
 // that are each noted down first, then merged, so its middle is not lost to one model call.
+import { stripStoryScratch } from "../generation/fork-story-scratch.js";
+
 type ChatMessage = { role: "system" | "user"; content: string };
 
 export const RECAP_SLICE_MESSAGES = 40;
@@ -20,7 +22,7 @@ export const RECAP_SECTIONS = [
 
 /** Markup out, words kept: a reply's HTML panels still say what happened. */
 export function plainMessageText(content: string): string {
-  return content
+  return stripStoryScratch(content)
     .replace(/<(script|style)[^>]*>[\s\S]*?<\/\1>/gi, " ")
     .replace(/<br\s*\/?>/gi, "\n")
     .replace(/<[^>]+>/g, " ")
@@ -71,10 +73,10 @@ Title: a short title for the chapter, story-flavoured, at most six words
 The events in order, as prose paragraphs. Use names, places and story dates or times when they are known. Say who did what and why it mattered.
 
 ## Where people stand
-One line per relationship, as it stands at the chapter's end: "- Name and Name: where they stand, and what changed this chapter". Keep tension, grudges and power between them as sharp as the chapter left them.
+One line per relationship, as it stands at the chapter's end: "- Name and Name: where they stand, what each now believes about the other, and what changed this chapter". Keep tension, grudges and power between them as sharp as the chapter left them, and keep a belief that is wrong as the character holds it.
 
 ## Open threads
-One line each: promises, secrets, plans, unanswered questions, and anything a character is hiding.
+One line each: promises, secrets, plans, unanswered questions, and anything a character is hiding. For a secret, say who knows it, who only suspects it, and who believes something else instead.
 
 ## Keep in mind
 One line each: objects, outfits, injuries, places and running jokes that matter later.

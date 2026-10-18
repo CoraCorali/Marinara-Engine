@@ -1133,6 +1133,16 @@ started from a screen recording of the relationship tracker.
   character's texts stay short and a grudge still shows. The rule for the story model is worded as
   what to do. Board picture headings use a colon instead of an em dash.
 
+### Ready for Undertow 2.0
+
+- **Recaps and the Director read only the story.** Undertow 2.0 writes margin notes before each
+  story and a ledger after it, and each message is cut to a fixed length before a recap or the
+  Director reads it, so those notes used to crowd the story out. They (and plans in think tags, and
+  the older GFX ledger) are now dropped first, in one shared helper.
+- **Recaps track who knows what.** "Where people stand" says what each person now believes about the
+  other, wrong beliefs included, and every secret in "Open threads" says who knows it, who only
+  suspects it, and who believes something else.
+
 ## Upstream files touched
 
 Fork-only code lives in `packages/client/src/lib/fork/`, `Fork*` components, `packages/shared/src/features/fork-bond-shapes.ts`, `packages/server/src/services/import/fork/`

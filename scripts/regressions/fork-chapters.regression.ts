@@ -186,6 +186,17 @@ assert.match(sliceNote[1]!.content, /Notes on part 1, for context only[^\n]*\nTh
 assert.equal(targetSentences(10), 8, "never under about 200 words");
 assert.equal(targetSentences(112), 32, "about one sentence per three or four messages");
 assert.equal(plainMessageText("<details><summary>Stats</summary>HP 3</details><p>She ran.</p>"), "Stats HP 3 She ran.");
+// A preset's notes around the story are not the story: they never eat the message's budget.
+assert.equal(
+  plainMessageText(
+    '<margin_notes colors="BLUSH">\n✎ Next moves\n· Tasha: hugs her\n</margin_notes>\nShe ran.\n<story_ledger turn="3">\n## Secrets\n· a secret\n</story_ledger>',
+  ),
+  "She ran.",
+);
+assert.equal(
+  plainMessageText("She ran.<!-- GFX_START --><internal_states>old ledger</internal_states><!-- GFX_END -->"),
+  "She ran.",
+);
 const prompt = buildRecapMessages([{ role: "user", name: "Kyli", content: "Hi <b>Theo</b>" }], {
   chapterNumber: 2,
   messageCount: 1,
@@ -194,6 +205,8 @@ const prompt = buildRecapMessages([{ role: "user", name: "Kyli", content: "Hi <b
   previousTitles: ["The Night of the Storm"],
 });
 assert.match(prompt[0]!.content, /## Where people stand/);
+assert.match(prompt[0]!.content, /who knows it, who only suspects it/);
+assert.match(prompt[0]!.content, /what each now believes about the other/);
 assert.match(prompt[1]!.content, /Kyli: Hi Theo/);
 assert.match(prompt[1]!.content, /must agree with this:\nTheo: Close/);
 assert.match(prompt[1]!.content, /1\. The Night of the Storm/);
