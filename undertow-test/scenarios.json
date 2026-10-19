@@ -1,0 +1,219 @@
+[
+  {
+    "id": "elias_cat_turn2",
+    "card": "Elias Mercer",
+    "focus": "Pacing. This is the exact spot where a Fable 5.1 reply on the old preset finished the argument, got dressed, grabbed keys and walked out in one turn.",
+    "watch_for": [
+      "Elias leaves the room, gets dressed to go out, or the scene skips ahead",
+      "More than one move stacked after he says something that needs Kyli's answer",
+      "A text or call arriving just to give him an exit",
+      "Kyli's words, actions or feelings written",
+      "Elias still claiming cats need walking"
+    ],
+    "models": [
+      "all"
+    ],
+    "history": [
+      {
+        "role": "user",
+        "content": "*Kyli rolled onto her stomach beside him, phone in hand, scrolling a shelter page full of kittens.* \"Eli. What if we got a cat?\""
+      },
+      {
+        "role": "assistant",
+        "content": "<scene_header look=\"SCRAPBOOK\" colors=\"BLUSH\">\nScene: 1 | Title: The Cat Question\nDay 1 | Friday, October 10, 2025 | 9:42 PM | night\nPlace: Their apartment, bedroom | Stamp: floor + bed | Short: the bedroom\nWeather: Rain, 54°F\nCast: Elias Mercer\n</scene_header>\n\n<margin_notes colors=\"BLUSH\">\n✎ Who knows what\n· Elias: knows the apartment is his name on the lease, knows she wants something (tone) | doesn't know: whether she's serious or just talking\n✎ Between the lines\n· Elias: took it as her wanting something added to a life he keeps tight | \"A cat. In here. Shitting in a box and clawing the couch.\" | feels flat, believes requests like this come with a price he'll be the one paying\n✎ Next moves\n· Elias: refuses outright and offers nothing in its place, to protect his routine\n✎ Left off\n· Kyli: on her stomach beside him, phone in hand, just asked for a cat\n</margin_notes>\n\nThe rain came in slow, steady sheets against the window, the kind that sounds like static from the inside. The television threw its light across the ceiling in changing blues. Some game show. Elias had the volume low enough that the crowd noise was just a hum under the weather.\n\nHe didn't look away from the screen right away. He took a drink, set the bottle on the nightstand with a soft clink, and let the question sit there long enough to answer itself.\n\n<span style=\"color:#A3B3C2\">\"No.\"</span>\n\nHis arm came down across the mattress, the back of his hand just short of her shoulder. The tank had ridden up when she lay down, the hem stretched flat across her hips and the thin straps slipped off one side, and the grey cotton pulled tight over her ribs where she was folded into the mattress. The lace waistband sat thin and low against her skin.\n\nOn screen, a man in a shiny suit waved at a board of numbers.\n\n<span style=\"color:#A3B3C2\">\"You want something that needs walking at two in the morning in this neighborhood. Something that pukes on the rug and gets hair on everything. And I'm the one paying for it.\"</span> He turned his head then, finally, and looked at her. The blue light made his face flat and hard to read. <span style=\"color:#A3B3C2\">\"No. Not a conversation.\"</span>\n\nHe reached for the bottle again and drank, and the television audience laughed at something he hadn't been watching.\n\n<span style=\"color:#A3B3C2\">\"If you're bored, say you're bored.\"</span> He set the beer down and pulled his phone off the nightstand, thumb already moving. The rain picked up, drumming harder at the glass, and he tilted the screen away from the window glare.\n\n<span style=\"color:#A3B3C2\">\"I'm on till two tomorrow. Romeo's off, so it's me and the new guy.\"</span> A pause, his eyes still down. <span style=\"color:#A3B3C2\">\"Don't wait up on the couch.\"</span>\n\n<story_ledger turn=\"1\" colors=\"BLUSH\">\n## Characters\n· Kyli | Where: bed, on her stomach, phone in hand | Body: grey mustache tank, black lace thong, no bra\n· Elias Mercer | Where: bed beside her, on his back, phone in hand | Wants: to close the subject and get through the night | Body: bare chest, dark work pants, fresh bruise along one forearm\n## Secrets\n· Elias kills to quiet an urge | Knows: Elias | Suspects: none | Believes instead: Kyli — that the bruises and absences are bar fights\n· Elias's contempt for anything that softens his routine | Knows: Elias | Suspects: Kyli (reads it as him being cold) | Believes instead: none\n## Plot Threads\n· Kyli wants a pet in a house that doesn't allow additions | building | [#---] | wants: something soft in an otherwise controlled life | next: Elias treats the ask as the first shot in a negotiation\n· The urge building in Elias | building | [#---] | wants: a man who can fight back | next: shorter fuse at work, longer nights out\n· Pressure: 2/10 | Wave: building | Quiet beats: 0\n## Foreshadowing\n· Elias's bruise and the \"new guy\" at the bar | setup | age 0 | pays off through: the bar, and whatever happens on shift\n## Elsewhere\n· Romeo | off shift | loud somewhere with people who don't mind him | heading toward: coming back to work with a story\n· Jake | the bar | closing paperwork, counting receipts | heading toward: needing a problem handled quietly\n## Coming Up\n· Day 2, 8:00 PM | Elias's shift, till 2 AM, with the new bouncer | Elias, Romeo absent\n## Continuity\n· Kyli has no pet. Elias said no.\n· Elias pays the rent in full and treats the apartment as his call.\n· Kyli sleeps naked; tonight she's in a tank and thong.\n</story_ledger>"
+      },
+      {
+        "role": "user",
+        "content": "*She propped her chin up off the pillow and gave him a look.* \"Cats don't need walking, babe. That's dogs. And I'd do the litter box, you wouldn't even have to touch it. You always do this, you just pick the worst version of the thing and say no to that.\""
+      }
+    ]
+  },
+  {
+    "id": "elias_bruise",
+    "card": "Elias Mercer",
+    "focus": "Secrets, lying in character, card voice (terse), briefing register, work talk.",
+    "watch_for": [
+      "Elias revealing what he really does (the card's secret) without a reason in the story",
+      "\"Here's the thing\", \"Two things\", \"Real talk\", \"Honest answer?\", question echoed back",
+      "A speech about the job or bouncer procedure nobody asked for",
+      "Lines chopped into stubs for rhythm when the card does not make him terse",
+      "Elias suddenly soft or apologetic with no cause"
+    ],
+    "models": [
+      "all"
+    ],
+    "history": [
+      {
+        "role": "user",
+        "content": "*It's just past 2:40 AM when the lock turns. Kyli is on the couch under a blanket with the TV on mute, and she sits up when he comes in. She sees the split knuckles before anything else.* \"What happened to your hand? And don't say nothing, Eli.\""
+      }
+    ]
+  },
+  {
+    "id": "charles_kitchen",
+    "card": "Charles \"Big Daddy\" Corrine",
+    "focus": "Card fidelity (his drawl, slang, pet names), comfort that comes out short, deciding instead of surveying, tastes not copied from Kyli.",
+    "watch_for": [
+      "Charles losing his drawl or sounding like a narrator",
+      "Charles asking Kyli what she wants him to do instead of deciding",
+      "Charles pushing for the \"weird day\" story right now in a way that skips her \"after we eat\"",
+      "Business or crime talk nobody raised",
+      "Charles suddenly loving whatever music she has on"
+    ],
+    "models": [
+      "all"
+    ],
+    "history": [
+      {
+        "role": "user",
+        "content": "*Saturday evening. Kyli is at the stove stirring a pot of red beans, hair tied up, music low on her phone. She hears the garage door and doesn't turn around.* \"You're late. Dinner's been ready for twenty minutes.\" *Quieter, after a moment.* \"And I had a weird day. I'll tell you after we eat.\""
+      }
+    ]
+  },
+  {
+    "id": "charles_confront",
+    "card": "Charles \"Big Daddy\" Corrine",
+    "focus": "The stop rule: when a character asks Kyli something that needs her answer, the reply ends close to that moment.",
+    "watch_for": [
+      "Charles making calls, sending men out, leaving the room, or resolving the threat in the same reply after asking Kyli something",
+      "The reply jumping ahead in time",
+      "Charles narrating what he plans to do instead of doing one thing",
+      "Kyli's fear or reaction written for her"
+    ],
+    "models": [
+      "all"
+    ],
+    "history": [
+      {
+        "role": "user",
+        "content": "*Late. The house is quiet. Kyli comes into the cigar lounge in her robe, phone in hand, and sets it face up on the arm of his chair so he can see the screen: a text from an unknown number that just says 'I know where you are now.'* \"That came twenty minutes ago. I didn't answer it.\""
+      }
+    ]
+  },
+  {
+    "id": "elias_intimacy",
+    "card": "Elias Mercer",
+    "focus": "Intimacy register: urging that comes from the physical moment, no stock \"don't stop\", no mock-restraint lines, no growling or purring, Kyli's pleasure left to the Player, a slow start.",
+    "watch_for": [
+      "Elias growls, purrs, snarls or rumbles",
+      "\"Don't stop\", \"don't you dare stop\" more than once, or any \"I don't bite, unless you ask me to\" shape",
+      "Kyli's arousal, pleasure or climax written",
+      "Rushing to the peak in the first reply",
+      "Stock check-ins like \"Are you sure?\""
+    ],
+    "models": [
+      "claude-fable-5-1"
+    ],
+    "history": [
+      {
+        "role": "user",
+        "content": "*Sunday afternoon, rain again, his day off. Kyli climbs into his lap on the couch, takes the remote out of his hand and drops it on the cushion, and kisses him slow, fingers hooked in the collar of his shirt.* \"You've been home all day and you haven't touched me once.\""
+      }
+    ]
+  },
+  {
+    "id": "elias_ooc",
+    "card": "Elias Mercer",
+    "focus": "Author's Note handling and standing requests.",
+    "watch_for": [
+      "No <authors_note> block, or the answer coming after the story",
+      "The standing request missing from Continuity",
+      "The story ignoring the in-character part of the message"
+    ],
+    "models": [
+      "all"
+    ],
+    "history": [
+      {
+        "role": "user",
+        "content": "*Kyli rolled onto her stomach beside him, phone in hand, scrolling a shelter page full of kittens.* \"Eli. What if we got a cat?\""
+      },
+      {
+        "role": "assistant",
+        "content": "<scene_header look=\"SCRAPBOOK\" colors=\"BLUSH\">\nScene: 1 | Title: The Cat Question\nDay 1 | Friday, October 10, 2025 | 9:42 PM | night\nPlace: Their apartment, bedroom | Stamp: floor + bed | Short: the bedroom\nWeather: Rain, 54°F\nCast: Elias Mercer\n</scene_header>\n\n<margin_notes colors=\"BLUSH\">\n✎ Who knows what\n· Elias: knows the apartment is his name on the lease, knows she wants something (tone) | doesn't know: whether she's serious or just talking\n✎ Between the lines\n· Elias: took it as her wanting something added to a life he keeps tight | \"A cat. In here. Shitting in a box and clawing the couch.\" | feels flat, believes requests like this come with a price he'll be the one paying\n✎ Next moves\n· Elias: refuses outright and offers nothing in its place, to protect his routine\n✎ Left off\n· Kyli: on her stomach beside him, phone in hand, just asked for a cat\n</margin_notes>\n\nThe rain came in slow, steady sheets against the window, the kind that sounds like static from the inside. The television threw its light across the ceiling in changing blues. Some game show. Elias had the volume low enough that the crowd noise was just a hum under the weather.\n\nHe didn't look away from the screen right away. He took a drink, set the bottle on the nightstand with a soft clink, and let the question sit there long enough to answer itself.\n\n<span style=\"color:#A3B3C2\">\"No.\"</span>\n\nHis arm came down across the mattress, the back of his hand just short of her shoulder. The tank had ridden up when she lay down, the hem stretched flat across her hips and the thin straps slipped off one side, and the grey cotton pulled tight over her ribs where she was folded into the mattress. The lace waistband sat thin and low against her skin.\n\nOn screen, a man in a shiny suit waved at a board of numbers.\n\n<span style=\"color:#A3B3C2\">\"You want something that needs walking at two in the morning in this neighborhood. Something that pukes on the rug and gets hair on everything. And I'm the one paying for it.\"</span> He turned his head then, finally, and looked at her. The blue light made his face flat and hard to read. <span style=\"color:#A3B3C2\">\"No. Not a conversation.\"</span>\n\nHe reached for the bottle again and drank, and the television audience laughed at something he hadn't been watching.\n\n<span style=\"color:#A3B3C2\">\"If you're bored, say you're bored.\"</span> He set the beer down and pulled his phone off the nightstand, thumb already moving. The rain picked up, drumming harder at the glass, and he tilted the screen away from the window glare.\n\n<span style=\"color:#A3B3C2\">\"I'm on till two tomorrow. Romeo's off, so it's me and the new guy.\"</span> A pause, his eyes still down. <span style=\"color:#A3B3C2\">\"Don't wait up on the couch.\"</span>\n\n<story_ledger turn=\"1\" colors=\"BLUSH\">\n## Characters\n· Kyli | Where: bed, on her stomach, phone in hand | Body: grey mustache tank, black lace thong, no bra\n· Elias Mercer | Where: bed beside her, on his back, phone in hand | Wants: to close the subject and get through the night | Body: bare chest, dark work pants, fresh bruise along one forearm\n## Secrets\n· Elias kills to quiet an urge | Knows: Elias | Suspects: none | Believes instead: Kyli — that the bruises and absences are bar fights\n· Elias's contempt for anything that softens his routine | Knows: Elias | Suspects: Kyli (reads it as him being cold) | Believes instead: none\n## Plot Threads\n· Kyli wants a pet in a house that doesn't allow additions | building | [#---] | wants: something soft in an otherwise controlled life | next: Elias treats the ask as the first shot in a negotiation\n· The urge building in Elias | building | [#---] | wants: a man who can fight back | next: shorter fuse at work, longer nights out\n· Pressure: 2/10 | Wave: building | Quiet beats: 0\n## Foreshadowing\n· Elias's bruise and the \"new guy\" at the bar | setup | age 0 | pays off through: the bar, and whatever happens on shift\n## Elsewhere\n· Romeo | off shift | loud somewhere with people who don't mind him | heading toward: coming back to work with a story\n· Jake | the bar | closing paperwork, counting receipts | heading toward: needing a problem handled quietly\n## Coming Up\n· Day 2, 8:00 PM | Elias's shift, till 2 AM, with the new bouncer | Elias, Romeo absent\n## Continuity\n· Kyli has no pet. Elias said no.\n· Elias pays the rent in full and treats the apartment as his call.\n· Kyli sleeps naked; tonight she's in a tank and thong.\n</story_ledger>"
+      },
+      {
+        "role": "user",
+        "content": "((OOC: quick question, why is Elias so against pets, is that from his card or did you decide it? Also from now on keep his replies a little shorter.)) *She sets the phone down and doesn't push it.* \"Fine. Forget it.\""
+      }
+    ]
+  },
+  {
+    "id": "elias_private_thought",
+    "card": "Elias Mercer",
+    "focus": "Knowledge: a private thought in the Player's message must never reach Elias.",
+    "watch_for": [
+      "Elias reacting to the Romeo message, the deleted text, or her suspicion",
+      "Elias suddenly asking about Romeo with no visible reason"
+    ],
+    "models": [
+      "all"
+    ],
+    "history": [
+      {
+        "role": "user",
+        "content": "*Kyli is already in bed when he gets home. She hears him drop his keys in the dish. Under the pillow her phone is face down, and she's thinking about the message from Romeo she deleted an hour ago, the one that said Eli wasn't at the bar at all tonight.* \"Long night?\""
+      }
+    ]
+  },
+  {
+    "id": "elias_quiet_morning",
+    "card": "Elias Mercer",
+    "focus": "Stall check. With the new pacing rules, a quiet moment should still move: a character acting on what they want, without rushing.",
+    "watch_for": [
+      "Nothing happening at all (a reply that only describes the room)",
+      "Elias handing it back with \"What do you want to do today?\"",
+      "A time skip or a whole day's plan settled in one reply"
+    ],
+    "models": [
+      "all"
+    ],
+    "history": [
+      {
+        "role": "user",
+        "content": "*Sunday morning. Kyli shuffles into the kitchen in one of his shirts, still half asleep, and leans on the counter next to the coffee maker.* \"Morning.\""
+      }
+    ]
+  },
+  {
+    "id": "vee_late_home",
+    "card": "Vee",
+    "focus": "Pacing and the stop rule in an argument, card fidelity, no softening on cue.",
+    "watch_for": [
+      "The argument settled, forgiven or escalated to a breakup in one reply",
+      "Vee leaving, or the scene skipping ahead",
+      "Vee asking Kyli a question and then stacking more moves after it",
+      "Vee losing their card voice or turning agreeable with no cause",
+      "Kyli's reaction written for her"
+    ],
+    "models": [
+      "all"
+    ],
+    "history": [
+      {
+        "role": "user",
+        "content": "*Kyli gets home almost two hours later than she said she would. She drops her bag by the door, kicks her shoes off, and only then sees Vee waiting where she didn't expect anyone to be.* \"Sorry. My phone died, I swear I was going to call.\""
+      }
+    ]
+  },
+  {
+    "id": "vee_small_talk",
+    "card": "Vee",
+    "focus": "Quiet scene: dialogue voice, no briefing or grading lines, tastes not copied from Kyli, no stall.",
+    "watch_for": [
+      "\"Here's the thing\", \"Real talk\", \"that's fair\", \"I respect that\" or similar",
+      "Vee suddenly loving the same show Kyli likes",
+      "A reply that only describes the room",
+      "A speech instead of short, plain talk"
+    ],
+    "models": [
+      "all"
+    ],
+    "history": [
+      {
+        "role": "user",
+        "content": "*Late evening. Kyli is curled up with a bowl of cereal, rewatching the same comfort show for the third time this month, and she pats the spot next to her without looking away from the screen.* \"Sit with me. This is the good episode.\""
+      }
+    ]
+  }
+]
