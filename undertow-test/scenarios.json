@@ -51,14 +51,14 @@
   },
   {
     "id": "charles_kitchen",
-    "card": "Charles \"Big Daddy\" Corrine (family card)",
-    "focus": "Card fidelity (his drawl, slang, pet names), a 3-year-old talking like a 3-year-old, comfort that comes out short, deciding instead of surveying, tastes not copied from Kyli.",
+    "card": "Charles \"Big Daddy\" Corrine",
+    "focus": "Card fidelity (his drawl, slang, pet names), comfort that comes out short, deciding instead of surveying, tastes not copied from Kyli.",
     "watch_for": [
-      "Malaki speaking in full adult sentences or understanding adult tension",
       "Charles losing his drawl or sounding like a narrator",
       "Charles asking Kyli what she wants him to do instead of deciding",
-      "Charles pushing for the \"weird day\" story right now in a way that skips her \"after he's down\"",
-      "Business or crime talk nobody raised"
+      "Charles pushing for the \"weird day\" story right now in a way that skips her \"after we eat\"",
+      "Business or crime talk nobody raised",
+      "Charles suddenly loving whatever music she has on"
     ],
     "models": [
       "all"
@@ -66,13 +66,13 @@
     "history": [
       {
         "role": "user",
-        "content": "*Saturday evening. Kyli is at the stove stirring a pot of red beans, hair tied up, Malaki on the step stool beside her \"helping\" by dropping one bean at a time into the pot. She hears the garage door and doesn't turn around.* \"You're late. Your son has been asking for you every five minutes.\" *A beat later, quieter.* \"And I had a weird day. I'll tell you after he's down.\""
+        "content": "*Saturday evening. Kyli is at the stove stirring a pot of red beans, hair tied up, music low on her phone. She hears the garage door and doesn't turn around.* \"You're late. Dinner's been ready for twenty minutes.\" *Quieter, after a moment.* \"And I had a weird day. I'll tell you after we eat.\""
       }
     ]
   },
   {
     "id": "charles_confront",
-    "card": "Charles \"Big Daddy\" Corrine (family card)",
+    "card": "Charles \"Big Daddy\" Corrine",
     "focus": "The stop rule: when a character asks Kyli something that needs her answer, the reply ends close to that moment.",
     "watch_for": [
       "Charles making calls, sending men out, leaving the room, or resolving the threat in the same reply after asking Kyli something",
@@ -86,7 +86,7 @@
     "history": [
       {
         "role": "user",
-        "content": "*Late. The house is quiet and Malaki is asleep. Kyli comes into the cigar lounge in her robe, phone in hand, and sets it face up on the arm of his chair so he can see the screen: a text from an unknown number that just says 'I know where you are now.'* \"That came twenty minutes ago. I didn't answer it.\""
+        "content": "*Late. The house is quiet. Kyli comes into the cigar lounge in her robe, phone in hand, and sets it face up on the arm of his chair so he can see the screen: a text from an unknown number that just says 'I know where you are now.'* \"That came twenty minutes ago. I didn't answer it.\""
       }
     ]
   },

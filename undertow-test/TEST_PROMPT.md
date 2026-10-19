@@ -15,7 +15,7 @@ Everything is in the `undertow-test/` folder on this branch, and this repo is my
 - `Undertow 2.0 (Jules) OLD before Oct 19.marinara.json`: the version from before the latest changes, used as the baseline.
 - `scenarios.json`: 10 test scenarios, each with the card to use, what it tests, the chat history up to the reply being tested, and what to watch for.
 - `tools/render.ts`: a small helper that renders the preset with this repo's macro engine (run it from `undertow-test/` with `npx tsx tools/render.ts <preset> <MODEL> <out.txt>`). Use it, or build your own from it.
-- `cards/`: my character cards (Marinara exports) for Elias Mercer, Charles "Big Daddy" Corrine (family card) and Vee. Scenarios name the card they need. If a card is missing, stop and ask me for it.
+- My character cards (Marinara exports) are attached to this chat: Elias, Charles (organized) and Vee. Save them into `undertow-test/cards/` as `Elias.marinara.json`, `Charles (organized).marinara.json` and `Vee.marinara.json`, and don't commit them. Scenarios name the card they need. If a card is missing, stop and ask me for it.
 - The two Vee scenarios use a generic opener. If a detail in one contradicts Vee's card (where they live, who they are to Kyli), change only that detail to fit the card and note the change in the report.
 - My persona is Kyli (she/her). If you can't find a persona file, ask me for her description before you start.
 
@@ -86,4 +86,4 @@ Write one Markdown file, `undertow-test/Undertow test report.md`:
 8. **Long chat** (if run): drift, repeated gestures, ledger health, pacing over time.
 9. **Appendix**: settings, model IDs, call count and token cost, and where the raw requests and replies are saved.
 
-Keep the report readable on a phone: short paragraphs, small tables, no em dashes. Put all raw outputs in `undertow-test/results/`, then zip the report with that folder into `undertow-test/Undertow test results.zip` so I can send it back in one file. Then commit the report, the zip and the `results/` folder to this branch and push, so I can download the zip from GitHub.
+Keep the report readable on a phone: short paragraphs, small tables, no em dashes. Put all raw outputs in `undertow-test/results/`, then zip the report with that folder into `undertow-test/Undertow test results.zip` so I can send it back in one file. Then commit the report and the zip (not the `cards/` folder) to this branch and push, so I can download the zip from GitHub.
