@@ -152,3 +152,11 @@ const [, longUser] = buildFixPartMessages({ reply: longReply, start: longStart, 
 assert.ok(longUser!.content.includes("⟦The last line.⟧"), "a passage near the end of a long reply keeps its markers");
 
 console.log("fork fix part: ok");
+
+// The slop list is checked on the rewrite itself.
+import { findAvoidedPhrases } from "../../packages/server/src/services/generation/fork-fix-part.js";
+assert.deepEqual(findAvoidedPhrases("He lifted the weight of her cheek.", ["the weight of", "ozone"]), [
+  "the weight of",
+]);
+assert.deepEqual(findAvoidedPhrases("Velvety skin.", ["velvet"]), [], "whole words only");
+assert.deepEqual(findAvoidedPhrases("She didn’t flinch", ["didn't flinch"]), ["didn't flinch"]);
