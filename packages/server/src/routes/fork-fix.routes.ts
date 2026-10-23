@@ -8,7 +8,12 @@ import { createChatsStorage } from "../services/storage/chats.storage.js";
 import { createCharactersStorage } from "../services/storage/characters.storage.js";
 import { resolveChatUserIdentity } from "../services/chat-user-identity.js";
 import { resolveForkChatProvider } from "../services/generation/fork-chat-provider.js";
-import { buildFixPartMessages, isValidFixRange, readFixPartReply } from "../services/generation/fork-fix-part.js";
+import {
+  buildFixPartMessages,
+  findAvoidedPhrases,
+  isValidFixRange,
+  readFixPartReply,
+} from "../services/generation/fork-fix-part.js";
 import { isDebugAgentsEnabled } from "../config/runtime-config.js";
 import { logDebugOverride, logger } from "../lib/logger.js";
 // Fork: Pocket Phone — a phone text can be fixed too.
@@ -134,7 +139,31 @@ export async function forkFixRoutes(app: FastifyInstance) {
         .status(502)
         .send({ error: error instanceof Error ? error.message : "The model could not rewrite that" });
     }
-    const replacement = readFixPartReply(raw, content.slice(start, end));
+    let replacement = readFixPartReply(raw, content.slice(start, end));
+    // The slop list is a hard rule: one more try, naming exactly what slipped through.
+    const avoidList = Array.isArray(body.avoid)
+      ? body.avoid.filter((item): item is string => typeof item === "string")
+      : [];
+    const slipped = findAvoidedPhrases(replacement, avoidList);
+    if (replacement.trim() && slipped.length > 0) {
+      try {
+        const retry = await resolved.provider.chatComplete(
+          [
+            ...messages,
+            { role: "assistant", content: replacement.trim() },
+            {
+              role: "user",
+              content: `That still uses ${slipped.map((p) => `"${p}"`).join(", ")} from the slop list. Rewrite it again without those phrases, keeping every detail. Return only the passage.`,
+            },
+          ],
+          { model: resolved.model, temperature: 0.8 },
+        );
+        const second = readFixPartReply(retry.content ?? "", content.slice(start, end));
+        if (second.trim() && findAvoidedPhrases(second, avoidList).length < slipped.length) replacement = second;
+      } catch (error) {
+        logger.warn(error, "[fork-fix] Slop retry failed; keeping the first rewrite");
+      }
+    }
     if (!replacement.trim()) return reply.status(502).send({ error: "The model returned an empty rewrite" });
     return { replacement };
   });

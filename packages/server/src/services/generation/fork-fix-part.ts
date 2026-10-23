@@ -22,7 +22,7 @@ const QUICK_ASKS: Record<string, string> = {
   "less cliché, same meaning":
     "Keep what happens and what is said. Replace stock phrasing with concrete, specific detail that only this scene would have, in plain everyday words.",
   "make it more in character":
-    "Make everyone in the passage act and speak the way their card and the story so far say they would, flaws, edges and voice included. Nobody softens, explains their feelings or gives in unless the original already had them do it.",
+    "Make it sound and move like these specific people. In dialogue, use the words, rhythm and attitude their card gives them. In narration, change the verbs and the details the camera lands on so they fit how this character carries himself or herself and what he or she would actually do or notice. Keep every action, body detail and image the original had; rewrite how they are told, do not drop them. Nobody softens, explains their feelings or gives in unless the original already had them do it.",
   "shorter and tighter":
     "Cut it to about two thirds of its length. Keep every action and line that matters; drop restatement, decoration and anything said twice.",
   "show it, don't tell it":
@@ -80,13 +80,18 @@ export function buildFixPartMessages(request: FixPartRequest): Array<{ role: "sy
     "",
     "- Everything outside the markers stays exactly as it is. Your text replaces only what is between them.",
     "- It must read seamlessly with the text right before and after it: the same point of view, tense, voice and names, and the same formatting conventions, such as asterisks for actions and quotation marks for speech.",
+    "- Keep what is there. Every action, object, body detail and line of dialogue in the passage stays in the rewrite unless the writer asks to cut it. You change how it is written, not what is in it.",
     "- Keep it about the same length unless the writer asks otherwise.",
+    "- Write it the way a sharp, unsentimental novelist would film it: concrete, physical, specific. Name the exact thing in everyday words (shoulder, thigh, sink) instead of a vague or grand one.",
+    "- Fold features into motion instead of listing them, and vary sentence length. Do not stack three parallel adjectives or clauses; keep the strongest one or two.",
+    "- Swap a stock verb or image for a plain specific one. Do not reach for dramatic words like loomed, hefted, smirked or predatory, and add no new metaphor unless the original had one.",
+    '- Say what a thing is, never what it isn\'t: no "not X, but Y" shapes. No "really", "truly" or "genuinely" for emphasis.',
     "- Characters keep their own voices and edges: a cold one stays cold, a smooth one stays smooth, and nobody turns nicer or more agreeable than the original had them.",
     "- Use plain, specific words, and commas or periods where an em dash might go.",
     `- Never write dialogue, thoughts or actions for ${writer} unless the original passage already did.`,
     ...(avoid.length > 0
       ? [
-          "- These overused phrases are on the writer's slop list, so choose other wording for them and their close variants:",
+          "- Hard rule: the rewrite must not contain any of these phrases from the writer's slop list, or close variants of them. If the original used one, replace it with different, plain wording:",
           ...avoid.map((phrase) => `  - ${phrase}`),
         ]
       : []),
@@ -130,4 +135,18 @@ export function readFixPartReply(raw: string, original: string): string {
   const lead = original.match(/^\s*/)?.[0] ?? "";
   const trail = original.match(/\s*$/)?.[0] ?? "";
   return text ? `${lead}${text}${trail}` : "";
+}
+
+/** Slop-list phrases that turn up in a rewrite: case-insensitive, whole words, curly apostrophes as straight. */
+export function findAvoidedPhrases(text: string, avoid: readonly string[]): string[] {
+  const norm = (value: string) => value.replace(/[\u2018\u2019]/g, "'").toLocaleLowerCase();
+  const haystack = norm(text);
+  const hits: string[] = [];
+  for (const phrase of avoid) {
+    const needle = norm(phrase.trim());
+    if (!needle) continue;
+    const escaped = needle.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    if (new RegExp(`(?<![\\p{L}\\p{N}])${escaped}(?![\\p{L}\\p{N}])`, "u").test(haystack)) hits.push(phrase.trim());
+  }
+  return hits;
 }
