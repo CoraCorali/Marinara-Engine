@@ -375,8 +375,9 @@ tokens of thinking and a reply cut off mid-sentence.
   alone.
 - **Blocked replies are named as blocked** (content filter, safety, prohibited content and the
   like), with what to try next, instead of "returned an empty response".
-- **Try again.** A reply that failed shows **Try again** on its error. A message of yours the
-  server already saved is not sent twice; one it never saved is sent again.
+- **Try again** gave way to Marinara 2.5.1's own **Failed · Retry** line under your message. It
+  shows only when your message is the newest one, so a failed swipe or regenerate is tried again
+  with another swipe.
 - **A backup model** was already in Marinara: Connections, then Defaults and fallbacks, then a
   **Fallback** for Main. When the main connection fails before writing anything (LinkAPI busy, a
   model with no channel), the fallback connection takes the turn. A second LinkAPI connection with
@@ -414,8 +415,6 @@ A full review of every fork feature, with a test for each fix that has logic in 
   opens rather than in app startup, so nothing that opens storage can fail with "Unsupported table".
 - **Updating a preset keeps scripts you wrote for it.** Only scripts with the same name as one in the
   new file's pack are replaced, and a file with no pack leaves the preset's scripts alone.
-- **Try again** is not offered once part of the run was saved (it would add a second reply), and on
-  a turn with a map move it now generates the reply instead of quietly doing nothing.
 - **Wait until the reply is finished** works in Conversation mode too.
 - **Stars and fireflies are drawn at all.** They were born with no opacity, and the renderer skips
   anything invisible, so the night sky and the Stars switch only ever showed the shooting stars.
@@ -1198,7 +1197,7 @@ Edits to upstream files are marked with a `Fork:` comment.
 | `packages/client/src/components/chat/ChatRoleplaySurface.tsx`                              | Feeds the weather panel's picks to the weather                                                    |
 | `packages/server/src/routes/generate.routes.ts`                                            | Lifts a leaked Task plan into thinking; notices a reply cut short by thinking                     |
 | `packages/server/src/services/generation/empty-response-reason.ts`                         | Names a blocked reply as blocked                                                                  |
-| `packages/client/src/hooks/use-generate.ts`                                                | Try again on a failed reply; the cut-short warning                                                |
+| `packages/client/src/hooks/use-generate.ts`                                                | The cut-short warning; the phone agent after a reply                                               |
 | `packages/client/src/hooks/use-apply-regex.ts`                                             | Skips scripts that wait for a reply to finish                                                     |
 | `packages/client/src/components/chat/ChatMessage.tsx`                                      | Passes those scripts while a reply streams                                                        |
 | `packages/client/src/components/agents/RegexScriptEditor.tsx`                              | The wait-until-finished checkbox                                                                  |

@@ -2652,6 +2652,8 @@ const LocalChatArea = memo(function LocalChatArea({
       const index = messages?.findIndex((message) => message.id === messageId) ?? -1;
       const reply = messages?.[index + 1];
       await updateMessageAsync({ messageId, content });
+      // An edited message no longer carries its old failure, as with the plain edit paths.
+      if (messageId === failedReplyMessageId) setDismissedFailedReplyId(messageId);
       // Manual group order: an empty Send never auto-replies either, so pick the speaker as usual.
       const manualGroupOrder =
         chatCharIds.length > 1 && groupChatMode === "individual" && chatMeta.groupResponseOrder === "manual";
@@ -2669,6 +2671,7 @@ const LocalChatArea = memo(function LocalChatArea({
       activeChatId,
       chatCharIds.length,
       chatMeta.groupResponseOrder,
+      failedReplyMessageId,
       generate,
       groupChatMode,
       isStreaming,
