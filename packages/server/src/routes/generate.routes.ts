@@ -8564,10 +8564,12 @@ export async function generateRoutes(app: FastifyInstance, options: GenerateRout
                 contextKind: "injection" as const,
               };
               // A preset's assistant prefill has to stay the last turn, or the model starts a fresh
-              // reply and the prefill is glued onto the front of it. The note goes just before it.
-              const last = preparedMessagesForGen[preparedMessagesForGen.length - 1];
-              if (last?.role === "assistant") preparedMessagesForGen.splice(-1, 0, forkNote);
-              else preparedMessagesForGen.push(forkNote);
+              // reply and the prefill is glued onto the front of it. Gemini's rewrite instruction
+              // for a swiped user message stays last too (#7558). The note goes just before both.
+              const rewriteTail = tailMessages.googleUserRegenerationInjected ? 1 : 0;
+              const beforeRewrite = preparedMessagesForGen[preparedMessagesForGen.length - 1 - rewriteTail];
+              const prefillTail = beforeRewrite?.role === "assistant" ? 1 : 0;
+              preparedMessagesForGen.splice(preparedMessagesForGen.length - rewriteTail - prefillTail, 0, forkNote);
             }
           }
           // The group reply format is for the characters' replies. Impersonation and a user-message rewrite write the
