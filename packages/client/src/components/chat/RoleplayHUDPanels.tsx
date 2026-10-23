@@ -662,7 +662,7 @@ export function CombinedPlayerPanel({
                       />
                       <button
                         onClick={() => removeCharacter(idx)}
-                        className="text-[var(--muted-foreground)]/40 hover:text-red-500 transition-colors shrink-0"
+                        className="text-[var(--muted-foreground)]/40 hover:text-[var(--marinara-app-accent-static)] transition-colors shrink-0"
                         title={localizeUi("ui.chat.combinedplayerpanel.removeCharacter")}
                       >
                         <X size="0.625rem" />
@@ -897,7 +897,7 @@ export function CombinedPlayerPanel({
                     />
                     <button
                       onClick={() => removeCustomField(idx)}
-                      className="text-[var(--muted-foreground)]/40 hover:text-red-500 transition-colors shrink-0"
+                      className="text-[var(--muted-foreground)]/40 hover:text-[var(--marinara-app-accent-static)] transition-colors shrink-0"
                       title={localizeUi("ui.chat.combinedplayerpanel.removeField")}
                     >
                       <X size="0.5625rem" />
@@ -1238,7 +1238,7 @@ export function CharactersPanel({
                 />
                 <button
                   onClick={() => removeCharacter(idx)}
-                  className="text-[var(--muted-foreground)]/40 hover:text-red-500 transition-colors shrink-0"
+                  className="text-[var(--muted-foreground)]/40 hover:text-[var(--marinara-app-accent-static)] transition-colors shrink-0"
                   title={localizeUi("ui.chat.combinedplayerpanel.removeCharacter")}
                 >
                   <X size="0.625rem" />
@@ -1535,7 +1535,7 @@ export function CustomTrackerPanel({
               />
               <button
                 onClick={() => removeField(idx)}
-                className="text-[var(--muted-foreground)]/40 hover:text-red-500 transition-colors shrink-0"
+                className="text-[var(--muted-foreground)]/40 hover:text-[var(--marinara-app-accent-static)] transition-colors shrink-0"
                 title={localizeUi("ui.chat.combinedplayerpanel.removeField")}
               >
                 <X size="0.5625rem" />
@@ -2239,7 +2239,7 @@ function QuestCardEditable({
         )}
         <button
           onClick={onRemove}
-          className="text-[var(--muted-foreground)]/40 hover:text-red-500 transition-colors shrink-0"
+          className="text-[var(--muted-foreground)]/40 hover:text-[var(--marinara-app-accent-static)] transition-colors shrink-0"
           title={localizeUi("ui.chat.questcardeditable.removeQuest")}
         >
           <X size="0.5625rem" />
@@ -2286,8 +2286,9 @@ function QuestCardEditable({
                     never removed by an invisible tap at the end of its row. */}
                 <button
                   onClick={() => removeObjective(idx)}
-                  aria-label={localizeUi("ui.chat.questcardeditable.removeObjective")}
-                  className="opacity-0 group-hover:opacity-100 max-md:opacity-100 max-md:-m-1.5 max-md:p-1.5 text-[var(--muted-foreground)]/40 hover:text-red-500 transition-all shrink-0"
+                  title={localizeUi("ui.trackerPanel.questobjectiverow.removeObjective")}
+                  aria-label={localizeUi("ui.trackerPanel.questobjectiverow.removeObjective")}
+                  className="text-[var(--muted-foreground)]/40 hover:text-[var(--marinara-app-accent-static)] transition-all shrink-0 [@media(pointer:fine)]:opacity-0 [@media(pointer:fine)]:group-hover/field:opacity-100 [@media(pointer:fine)]:group-focus-within/field:opacity-100"
                 >
                   <X size="0.4375rem" />
                 </button>

@@ -23,7 +23,9 @@ import { createPromptsStorage } from "../services/storage/prompts.storage.js";
 import type { DB } from "../db/connection.js";
 import { createRegexScriptsStorage } from "../services/storage/regex-scripts.storage.js";
 import { buildPresetRegexPack } from "../services/import/fork/preset-regex-pack.js";
-import { assemblePrompt, type AssemblerInput } from "../services/prompt/index.js";
+import { assemblePrompt, normalizeChatMacroVariables, type AssemblerInput } from "../services/prompt/index.js";
+import { parsePresetParameters } from "../services/prompt/assembler.js";
+import { resolveReasoningMacroValue } from "../services/generation/provider-generation-runtime.js";
 import { cardPromptText } from "../services/prompt/card-text.js";
 import { resolveLorebookScopeExclusions } from "../services/lorebook/game-lorebook-scope.js";
 import { createChatsStorage } from "../services/storage/chats.storage.js";
@@ -557,11 +559,22 @@ export async function promptsRoutes(app: FastifyInstance) {
     const assemblerInput: AssemblerInput = {
       db: app.db,
       model: connection?.model,
+      reasoning: connection
+        ? resolveReasoningMacroValue({
+            connection,
+            chatMode: chat.mode,
+            isSceneChat: chatMeta.sceneStatus === "active",
+            chatParameters: chatMeta.chatParameters,
+            baseReasoningEffort: parsePresetParameters(preset.parameters).reasoningEffort ?? null,
+          })
+        : undefined,
       preset: preset as any,
       sections: sections as any,
       groups: groups as any,
       choiceBlocks: choiceBlocks as any,
       chatChoices: choices ?? {},
+      // Chat variables win over built-in macros of the same name, as in generation.
+      localVariables: normalizeChatMacroVariables(chatMeta.macroVariables),
       chatId,
       characterIds,
       lorebookCharacterIds,

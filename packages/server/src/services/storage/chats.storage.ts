@@ -29,6 +29,7 @@ import {
   chatImages,
   gameSceneVideos,
   gameDicePools,
+  gameWorldSnapshots,
   gameTurnStoryboardKeyframes,
   gameTurnStoryboards,
   oocInfluences,
@@ -48,6 +49,7 @@ import { join } from "path";
 import { DATA_DIR } from "../../utils/data-dir.js";
 import {
   getRoleplayCommandActivity,
+  reanchorRoleplayCommandActivity,
   TRANSLATOR_DEFAULTS_SETTINGS_KEY,
   normalizeTranslatorSettings,
   getChatWindowDefaultSettingsKey,
@@ -58,6 +60,8 @@ import {
 } from "@marinara-engine/shared";
 import { prepareRoleplayInterruption } from "../generation/roleplay-interrupt.js";
 import { prepareUserRoleplayCommands } from "../generation/roleplay-commands.js";
+import { resolveChatUserIdentity } from "../chat-user-identity.js";
+import { createCharactersStorage } from "./characters.storage.js";
 import {
   ensureTimestampAfter,
   latestTrustedTimestamp,
@@ -669,11 +673,15 @@ function freshSwipeMessageExtra(value: unknown): Record<string, unknown> {
   for (const key of [
     "hiddenFromAI",
     "hiddenFromAICharacterIds",
+    "autoVisibility",
+    "visibilityManual",
     "hiddenFromUser",
     "isConversationStart",
     "conversationStartForCharacterIds",
     "reactions",
     "personaSnapshot",
+    // An earlier part of a reply split at a scene break stays one (#7481).
+    "continuesAfterSceneBreak",
     ...MESSAGE_MARK_EXTRA_KEYS,
   ]) {
     if (current.commandOnly === true && (key === "hiddenFromAI" || key === "hiddenFromUser")) continue;
@@ -841,7 +849,8 @@ export function createChatsStorage(db: DB) {
   const newestFirst = (a: VariableChanges, b: VariableChanges) =>
     b.createdAt.localeCompare(a.createdAt) || b.index - a.index;
 
-  async function userRoleplayPreparer(chatId: string) {
+  /** `persona`: a character's or narrator's message, whose own whispers may go to the chat's persona. */
+  async function userRoleplayPreparer(chatId: string, persona = false) {
     const [chat] = await db.select().from(chats).where(eq(chats.id, chatId)).limit(1);
     if (chat?.mode !== "roleplay") return null;
     const ids = parseCharacterIds(chat.characterIds);
@@ -856,8 +865,17 @@ export function createChatsStorage(db: DB) {
       return typeof name === "string" ? [{ id: row.id, name }] : [];
     });
     const metadata = parseExtraRecord(chat.metadata);
+    // The same identity and "User" fallback a generated reply's whispers resolve against.
+    const identity = persona ? await resolveChatUserIdentity(createCharactersStorage(db), chat) : null;
+    const recipientPersona = persona ? { id: identity?.id ?? "user", name: identity?.name ?? "User" } : undefined;
     return (content: string, extra: unknown) =>
-      prepareUserRoleplayCommands({ content, extra: parseExtraRecord(extra), metadata, characters: roster });
+      prepareUserRoleplayCommands({
+        content,
+        extra: parseExtraRecord(extra),
+        metadata,
+        characters: roster,
+        persona: recipientPersona,
+      });
   }
 
   let scanCompactionByChat = lorebookScanCompactionStates.get(db);
@@ -1004,25 +1022,34 @@ export function createChatsStorage(db: DB) {
     targets: string[] = [],
   ): Promise<T> {
     const keys = new Set([...ids, ...targets]);
+    const advancementChats = new Set<string>();
     // Keep bulk deletion bounded to two scoped reads per pass, including chats with no commands.
     const readTargetIds = async () => {
       const [owners, swipes] = await Promise.all([
-        db.select({ extra: messages.extra }).from(messages).where(inArray(messages.id, ids)),
+        db.select({ extra: messages.extra, chatId: messages.chatId }).from(messages).where(inArray(messages.id, ids)),
         db.select({ extra: messageSwipes.extra }).from(messageSwipes).where(inArray(messageSwipes.messageId, ids)),
       ]);
+      if ([...owners, ...swipes].some((row) => parseExtraRecord(row.extra).rulesetAdvancement)) {
+        for (const owner of owners) advancementChats.add(owner.chatId);
+      }
       return [...owners, ...swipes].flatMap((row) => receipts(row.extra).map((receipt) => receipt.targetMessageId));
     };
     for (const targetId of await readTargetIds()) keys.add(targetId);
     let retry = false;
-    const result = await withPatchQueues(messageExtraPatchQueues, [...keys], async () => {
-      for (const targetId of await readTargetIds()) {
-        if (!keys.has(targetId)) {
-          keys.add(targetId);
-          retry = true;
+    const metadataKeys = [...advancementChats];
+    // Advancement follows metadata -> message queues -> transaction, like a player sheet edit.
+    const result = await withPatchQueues(metadataPatchQueues, metadataKeys, () =>
+      withPatchQueues(messageExtraPatchQueues, [...keys], async () => {
+        for (const targetId of await readTargetIds()) {
+          if (!keys.has(targetId)) {
+            keys.add(targetId);
+            retry = true;
+          }
         }
-      }
-      return retry ? undefined : db.transaction(() => operation(keys));
-    });
+        if ([...advancementChats].some((id) => !metadataKeys.includes(id))) retry = true;
+        return retry ? undefined : db.transaction(() => operation(keys));
+      }),
+    );
     // A queued commit may have added a receipt after the first read. Reacquire all keys together.
     return retry ? withInterruptionQueue(ids, operation, [...keys]) : (result as T);
   }
@@ -1097,9 +1124,18 @@ export function createChatsStorage(db: DB) {
     return active ? readMessage(target.id) : null;
   }
 
-  async function reconcileEffects(owner: MessageRow | null, restore: boolean, locked: Set<string>) {
+  async function reconcileEffects(
+    owner: MessageRow | null,
+    restore: boolean,
+    locked: Set<string>,
+    excluded?: ReadonlySet<string>,
+  ) {
     const changed: MessageRow[] = [];
     if (!owner) return changed;
+    if (parseExtraRecord(owner.extra).rulesetAdvancement) {
+      const { reconcileGameRulesetAdvancement } = await import("../game/ruleset-sheet-turn.service.js");
+      await reconcileGameRulesetAdvancement(db, owner, restore, excluded);
+    }
     for (const receipt of receipts(owner.extra)) {
       if (receipt.restored) continue;
       try {
@@ -1475,6 +1511,7 @@ export function createChatsStorage(db: DB) {
     await database.delete(gameTurnStoryboards).where(eq(gameTurnStoryboards.chatId, chatId));
     await database.delete(gameSceneVideos).where(eq(gameSceneVideos.chatId, chatId));
     await database.delete(gameDicePools).where(eq(gameDicePools.chatId, chatId));
+    await database.delete(gameWorldSnapshots).where(eq(gameWorldSnapshots.chatId, chatId));
     const galleryFiles = await database
       .select({ filePath: chatImages.filePath })
       .from(chatImages)
@@ -1977,9 +2014,9 @@ export function createChatsStorage(db: DB) {
       ) =>
         | { metadata: MetadataPatch; characterIds: string[] }
         | Promise<{ metadata: MetadataPatch; characterIds: string[] }>,
-      opts: { touchUpdatedAt?: boolean } = {},
+      opts: { touchUpdatedAt?: boolean; metadataQueueHeld?: boolean } = {},
     ) {
-      return withChatMetadataPatchQueue(id, async () => {
+      const apply = async () => {
         const existing = await this.getById(id);
         if (!existing) return null;
 
@@ -2012,7 +2049,10 @@ export function createChatsStorage(db: DB) {
           })
           .where(eq(chats.id, id));
         return this.getById(id);
-      });
+      };
+      // The caller may already hold the queue (a checkpoint load takes it before opening the
+      // transaction that also saves the world snapshot), and the queue is not reentrant.
+      return opts.metadataQueueHeld ? apply() : withChatMetadataPatchQueue(id, apply);
     },
 
     async markAutonomousUnread(id: string, input?: { characterId?: string | null; count?: number }) {
@@ -2149,6 +2189,7 @@ export function createChatsStorage(db: DB) {
         await db.delete(gameTurnStoryboards).where(eq(gameTurnStoryboards.chatId, chat.id));
         await db.delete(gameSceneVideos).where(eq(gameSceneVideos.chatId, chat.id));
         await db.delete(gameDicePools).where(eq(gameDicePools.chatId, chat.id));
+        await db.delete(gameWorldSnapshots).where(eq(gameWorldSnapshots.chatId, chat.id));
         await cleanupChatGallery(chat.id);
         // Fork: the board and the relationships, same as a single delete.
         await removeForkChatData(db, chat.id);
@@ -2599,10 +2640,15 @@ export function createChatsStorage(db: DB) {
     },
 
     /** Branch/JSONL copies retain receipts while replacing chat-local message/swipe identities. */
-    async remapRoleplayInterruptionTargets(chatId: string, messageIdMap: ReadonlyMap<string, string>) {
+    async remapRoleplayInterruptionTargets(
+      chatId: string,
+      messageIdMap: ReadonlyMap<string, string>,
+      swipeIndexMaps?: ReadonlyMap<string, ReadonlyMap<number, number>>,
+    ) {
       const rows = await this.listMessages(chatId);
+      const swipesByMessageId = await this.getSwipesByMessageId(rows.map((row) => row.id));
       for (const owner of rows) {
-        for (const swipe of await readSwipes(owner.id)) {
+        for (const swipe of swipesByMessageId.get(owner.id) ?? []) {
           const extra = {
             ...parseExtraRecord(swipe.extra),
             ...(swipe.index === owner.activeSwipeIndex ? parseExtraRecord(owner.extra) : {}),
@@ -2614,12 +2660,18 @@ export function createChatsStorage(db: DB) {
             if (!receipt) continue;
             changed = true;
             const targetId = messageIdMap.get(receipt.targetMessageId);
-            const targetSwipe = targetId
-              ? (await readSwipes(targetId)).find((row) => row.index === receipt.targetSwipeIndex)
-              : null;
+            const swipeIndexes = swipeIndexMaps?.get(receipt.targetMessageId);
+            const targetSwipeIndex = swipeIndexes
+              ? swipeIndexes.get(receipt.targetSwipeIndex)
+              : receipt.targetSwipeIndex;
+            const targetSwipe =
+              targetId && targetSwipeIndex !== undefined
+                ? swipesByMessageId.get(targetId)?.find((row) => row.index === targetSwipeIndex)
+                : null;
             item.interruption = {
               ...receipt,
               targetMessageId: targetId ?? receipt.targetMessageId,
+              targetSwipeIndex: targetSwipeIndex ?? receipt.targetSwipeIndex,
               targetSwipeId: targetSwipe?.id,
             };
             if (!targetId || !targetSwipe) {
@@ -2642,10 +2694,30 @@ export function createChatsStorage(db: DB) {
         const existing = await this.getMessage(id);
         const prepare =
           existing && (existing.role === "user" || options.authored)
-            ? await userRoleplayPreparer(existing.chatId)
+            ? // Only a typed whisper needs the persona, so other edits skip its lookup.
+              await userRoleplayPreparer(existing.chatId, existing.role !== "user" && /\[whisper/iu.test(content))
             : null;
         const prepared = prepare?.(content, existing?.extra);
         content = prepared?.content ?? content;
+        // Inline whispers keep their place when the text around them changes. Each saved list moves from the
+        // text it was anchored to. Commands typed into this edit come last and already point into the new text.
+        const typedCount = prepared
+          ? getRoleplayCommandActivity(prepared.extra).length -
+            getRoleplayCommandActivity(parseExtraRecord(existing?.extra)).length
+          : 0;
+        const withActivity = (extra: Record<string, unknown>, before: string) => {
+          const activity = getRoleplayCommandActivity(extra);
+          if (!existing || before === content || !activity.some((item) => item.contentOffset !== undefined))
+            return extra;
+          const kept = activity.length - Math.max(0, typedCount);
+          return {
+            ...extra,
+            roleplayCommandActivity: [
+              ...reanchorRoleplayCommandActivity(before, content, activity.slice(0, kept)),
+              ...activity.slice(kept),
+            ],
+          };
+        };
 
         // Conversation-mode prompt history prefers `conversationCommandContent` (the raw
         // reply before command stripping) over `content`, so a rewrite of the visible text
@@ -2661,9 +2733,10 @@ export function createChatsStorage(db: DB) {
           content !== (existing?.content ?? "");
 
         const messagePatch: Record<string, unknown> = { content };
-        if (prepared || clearCommandContent) {
+        const messageExtra = withActivity(prepared?.extra ?? existingExtra, existing?.content ?? "");
+        if (prepared || clearCommandContent || messageExtra !== existingExtra) {
           messagePatch.extra = JSON.stringify({
-            ...(prepared?.extra ?? existingExtra),
+            ...messageExtra,
             ...(clearCommandContent ? { conversationCommandContent: null } : {}),
           });
         }
@@ -2686,11 +2759,15 @@ export function createChatsStorage(db: DB) {
             const activeSwipe = swipes.find((s: any) => s.index === msg.activeSwipeIndex);
             if (activeSwipe) {
               const swipePatch: Record<string, unknown> = { content };
-              if (prepared) {
-                swipePatch.extra = JSON.stringify({ ...parseExtraRecord(activeSwipe.extra), ...prepared.extra });
-              }
+              // With typed commands the swipe takes the message's list, anchored to the message's text;
+              // otherwise it keeps its own list, anchored to its own text.
+              const swipeBase = { ...parseExtraRecord(activeSwipe.extra), ...prepared?.extra };
+              const swipeExtra = withActivity(
+                swipeBase,
+                prepared || typeof activeSwipe.content !== "string" ? (existing?.content ?? "") : activeSwipe.content,
+              );
+              if (prepared || swipeExtra !== swipeBase) swipePatch.extra = JSON.stringify(swipeExtra);
               if (clearCommandContent) {
-                const swipeExtra = { ...parseExtraRecord(activeSwipe.extra), ...prepared?.extra };
                 // Clear only a raw copy this swipe itself carries, and never a
                 // command-only carrier's.
                 if (
@@ -2824,8 +2901,9 @@ export function createChatsStorage(db: DB) {
       swipeIndex: number,
       partial: Record<string, unknown>,
       expectedContent?: string,
+      opts: { messageQueueHeld?: boolean } = {},
     ) {
-      return withPatchQueue(messageExtraPatchQueues, id, async () => {
+      const apply = async () => {
         const msg = await this.getMessage(id);
         if (!msg) return null;
         const swipes = await this.getSwipes(id);
@@ -2854,7 +2932,8 @@ export function createChatsStorage(db: DB) {
         }
 
         return this.getMessage(id);
-      });
+      };
+      return opts.messageQueueHeld ? apply() : withPatchQueue(messageExtraPatchQueues, id, apply);
     },
 
     /** Atomically claim a marker in one swipe's extra data. */
@@ -2895,7 +2974,13 @@ export function createChatsStorage(db: DB) {
      * pre-mutation snapshot. The request is scoped to this chat; use `.length` for
      * a count of changed messages.
      */
-    async bulkSetHiddenFromAI(chatId: string, messageIds: string[], hidden: boolean): Promise<string[]> {
+    async bulkSetHiddenFromAI(
+      chatId: string,
+      messageIds: string[],
+      hidden: boolean,
+      /** Extra fields saved with the flag, e.g. a user's `visibilityManual` choice (#7192). */
+      extra: Record<string, unknown> = {},
+    ): Promise<string[]> {
       if (messageIds.length === 0) return [];
       const uniqueIds = Array.from(new Set(messageIds));
       const scopedRows: { id: string; extra: string | null }[] = [];
@@ -2924,14 +3009,14 @@ export function createChatsStorage(db: DB) {
           } catch {
             wasHidden = false;
           }
-          await this.updateMessageExtra(row.id, { hiddenFromAI: hidden });
+          await this.updateMessageExtra(row.id, { ...extra, hiddenFromAI: hidden });
           // Mirror what the single-message /extra route does: propagate the flag to
           // all swipe rows so setActiveSwipe() cannot clobber it. Done for every
           // scoped row (idempotent when already in the target state) so swipe
           // consistency never depends on whether the main row happened to flip.
           const swipes = await this.getSwipes(row.id);
           for (const swipe of swipes) {
-            await this.updateSwipeExtra(row.id, swipe.index, { hiddenFromAI: hidden });
+            await this.updateSwipeExtra(row.id, swipe.index, { ...extra, hiddenFromAI: hidden });
           }
           if (wasHidden !== hidden) flipped.push(row.id);
         }
@@ -3308,10 +3393,17 @@ export function createChatsStorage(db: DB) {
             // are captured and a failed delete cannot leave a second copy in the trash.
             await beforeDelete?.(existingRows);
             // Undo newest effects first when a whole interrupted exchange is removed.
+            const excludedAdvancementMessages = new Set<string>();
             for (const row of existingRows
-              .filter((row) => receipts(row.extra).some((receipt) => !receipt.restored))
-              .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id)))
-              await reconcileEffects(await readMessage(row.id), true, locked);
+              .filter(
+                (row) =>
+                  parseExtraRecord(row.extra).rulesetAdvancement ||
+                  receipts(row.extra).some((receipt) => !receipt.restored),
+              )
+              .sort((a, b) => b.createdAt.localeCompare(a.createdAt) || b.id.localeCompare(a.id))) {
+              await reconcileEffects(await readMessage(row.id), true, locked, excludedAdvancementMessages);
+              excludedAdvancementMessages.add(row.id);
+            }
             await deleteGameStateForMessages(
               existingRows.map((row) => row.id),
               existingRows.map((row) => row.chatId),
@@ -3362,6 +3454,21 @@ export function createChatsStorage(db: DB) {
     async listSwipesByMessageIds(messageIds: string[]) {
       if (messageIds.length === 0) return [];
       return db.select().from(messageSwipes).where(inArray(messageSwipes.messageId, messageIds));
+    },
+
+    /**
+     * The swipes of many messages from one read, each list in index order like getSwipes. A getSwipes per
+     * message scans every swipe each time, so whole-chat copies and exports grew with the square of their length (#7445).
+     */
+    async getSwipesByMessageId(messageIds: string[]) {
+      const grouped = new Map<string, (typeof messageSwipes.$inferSelect)[]>();
+      for (const swipe of await this.listSwipesByMessageIds(messageIds)) {
+        const list = grouped.get(swipe.messageId);
+        if (list) list.push(swipe);
+        else grouped.set(swipe.messageId, [swipe]);
+      }
+      for (const list of grouped.values()) list.sort((left, right) => left.index - right.index);
+      return grouped;
     },
 
     async addSwipe(messageId: string, content: string, silent?: boolean) {
@@ -3657,12 +3764,19 @@ export function createChatsStorage(db: DB) {
       });
     },
 
-    /** Atomically append an attachment to a swipe's extra JSON field. */
-    async appendSwipeAttachment(messageId: string, swipeIndex: number, attachment: Record<string, unknown>) {
+    /**
+     * Atomically append an attachment to a swipe's extra JSON field. Returns false when that swipe (or its message)
+     * no longer exists, so nothing was written.
+     */
+    async appendSwipeAttachment(
+      messageId: string,
+      swipeIndex: number,
+      attachment: Record<string, unknown>,
+    ): Promise<boolean> {
       return withPatchQueue(messageExtraPatchQueues, messageId, async () => {
         const swipes = await this.getSwipes(messageId);
         const target = swipes.find((s: any) => s.index === swipeIndex);
-        if (!target) return;
+        if (!target) return false;
         const existing = typeof target.extra === "string" ? JSON.parse(target.extra) : (target.extra ?? {});
         const attachments = Array.isArray(existing.attachments) ? existing.attachments : [];
         const merged = { ...existing, attachments: [...attachments, attachment] };
@@ -3670,7 +3784,56 @@ export function createChatsStorage(db: DB) {
           .update(messageSwipes)
           .set({ extra: JSON.stringify(merged) })
           .where(and(eq(messageSwipes.messageId, messageId), eq(messageSwipes.id, target.id)));
+        return true;
       });
+    },
+
+    /**
+     * Point every attachment that shows a gallery image at its regenerated replacement (#7767),
+     * on the message mirror and on whichever swipe rows hold it. Other attachment fields are
+     * kept. Returns whether anything changed.
+     */
+    async replaceGalleryImageAttachment(
+      messageId: string,
+      oldGalleryId: string,
+      patch: { url: string; prompt: string; galleryId: string },
+    ): Promise<boolean> {
+      const swap = (extra: unknown): string | null => {
+        const existing = parseExtraRecord(extra);
+        if (!Array.isArray(existing.attachments)) return null;
+        let changed = false;
+        const attachments = existing.attachments.map((attachment) => {
+          if (!attachment || typeof attachment !== "object") return attachment;
+          if ((attachment as Record<string, unknown>).galleryId !== oldGalleryId) return attachment;
+          changed = true;
+          return { ...attachment, ...patch };
+        });
+        return changed ? JSON.stringify({ ...existing, attachments }) : null;
+      };
+      // Queue first, then the transaction (LOCK ORDER above), so the message and its swipe
+      // rows change together. Only plain reads/writes run inside the transaction.
+      return withPatchQueue(messageExtraPatchQueues, messageId, () =>
+        db.transaction(async (tx) => {
+          const msg = (await tx.select().from(messages).where(eq(messages.id, messageId)))[0];
+          if (!msg) return false;
+          let changed = false;
+          const nextMessageExtra = swap(msg.extra);
+          if (nextMessageExtra) {
+            await tx.update(messages).set({ extra: nextMessageExtra }).where(eq(messages.id, messageId));
+            changed = true;
+          }
+          for (const swipe of await tx.select().from(messageSwipes).where(eq(messageSwipes.messageId, messageId))) {
+            const nextSwipeExtra = swap(swipe.extra);
+            if (!nextSwipeExtra) continue;
+            await tx
+              .update(messageSwipes)
+              .set({ extra: nextSwipeExtra })
+              .where(and(eq(messageSwipes.messageId, messageId), eq(messageSwipes.id, swipe.id)));
+            changed = true;
+          }
+          return changed;
+        }),
+      );
     },
 
     // ── Chat Connections ──

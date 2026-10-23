@@ -111,6 +111,7 @@ export function TrackerSectionList({
   // Fork: the board's thing pins the persona is holding, for the card's Holding list.
   const heldThingNames = useHeldThingNames(activeChatId);
   const autoGenerateCharacterAvatars = characterTrackerSettings.autoGenerateAvatars === true;
+  const canGeneratePortraits = !!characterTrackerSettings.imageConnectionId;
   const { featuredCharacterCards, removeFeaturedCharacterCard, toggleFeaturedCharacterCard } =
     useFeaturedCharacterCards({
       activeChatId,
@@ -150,6 +151,7 @@ export function TrackerSectionList({
     addPersonaStat,
     addQuest,
     avatarFileInputRef,
+    generateAvatar,
     handleAvatarFileInputChange,
     openAvatarUpload,
     removeCharacter,
@@ -302,6 +304,7 @@ export function TrackerSectionList({
               onRemoveCharacter={removeCharacter}
               onAddCharacter={addCharacter}
               onUploadAvatar={openAvatarUpload}
+              onGeneratePortrait={canGeneratePortraits ? generateAvatar : undefined}
               onToggleFeatured={toggleFeaturedCharacterCard}
               deleteMode={deleteMode}
               addMode={addMode}
