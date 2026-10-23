@@ -261,7 +261,7 @@ function ForkPhoneRinging({
     <div
       role="alertdialog"
       aria-label={localizeUi("ui.chat.forkphone.incoming")}
-      className="fork-ui fork-ring fixed inset-x-0 bottom-[calc(8.5rem+env(safe-area-inset-bottom))] z-[60] mx-auto flex w-[min(22rem,calc(100vw-2rem))] items-center gap-3 rounded-3xl border border-[var(--border)] bg-[var(--card)] p-2.5 text-foreground shadow-2xl"
+      className="fork-ui fork-ring fixed inset-x-0 bottom-[calc(8.5rem+var(--mari-safe-area-inset-bottom,env(safe-area-inset-bottom)))] z-[60] mx-auto flex w-[min(22rem,calc(100vw-2rem))] items-center gap-3 rounded-3xl border border-[var(--border)] bg-[var(--card)] p-2.5 text-foreground shadow-2xl"
     >
       <span className="fork-phone contents">
         <Avatar member={member ?? { id: call.from, name }} />
