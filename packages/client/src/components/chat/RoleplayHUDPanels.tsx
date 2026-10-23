@@ -2288,7 +2288,7 @@ function QuestCardEditable({
                   onClick={() => removeObjective(idx)}
                   title={localizeUi("ui.trackerPanel.questobjectiverow.removeObjective")}
                   aria-label={localizeUi("ui.trackerPanel.questobjectiverow.removeObjective")}
-                  className="text-[var(--muted-foreground)]/40 hover:text-[var(--marinara-app-accent-static)] transition-all shrink-0 [@media(pointer:fine)]:opacity-0 [@media(pointer:fine)]:group-hover/field:opacity-100 [@media(pointer:fine)]:group-focus-within/field:opacity-100"
+                  className="max-md:-m-1.5 max-md:p-1.5 text-[var(--muted-foreground)]/40 hover:text-[var(--marinara-app-accent-static)] transition-all shrink-0 [@media(pointer:fine)]:opacity-0 [@media(pointer:fine)]:group-hover/field:opacity-100 [@media(pointer:fine)]:group-focus-within/field:opacity-100"
                 >
                   <X size="0.4375rem" />
                 </button>
