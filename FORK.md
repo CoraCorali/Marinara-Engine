@@ -1161,6 +1161,10 @@ started from a screen recording of the relationship tracker.
 - **The fixer knows Undertow.** Every rewrite keeps HTML tags exactly, keeps second-person sensation
   lines in second person, adds no new body description, and names bodies in plain explicit words in
   a sex scene instead of trading one stand-in for another.
+- **Big regex packs import whole.** The import sends one request per script, and a 197-script pack
+  ran into the server's per-minute request limit partway ("Too many requests"), skipping the rest.
+  A rate-limited script now waits a few seconds and tries again (a note says it is waiting), so the
+  pack lands whole and in order. Both the preset and the character regex imports do this.
 
 ## Upstream files touched
 
@@ -1177,6 +1181,8 @@ Edits to upstream files are marked with a `Fork:` comment.
 | `packages/client/src/components/agents/AgentEditor.tsx`                                    | Offers the fork tracker result to custom agents                                                   |
 | `packages/server/src/services/agents/agent-executor.ts`                                    | Shows the tracker agent what the tracker holds                                                    |
 | `packages/client/src/lib/custom-agent-result-examples.ts`                                  | The JSON example for that result                                                                  |
+| `packages/client/src/components/panels/PresetsPanel.tsx`                                   | Regex import waits out the request limit                                                          |
+| `packages/client/src/components/characters/CharacterRegexSection.tsx`                      | Regex import waits out the request limit                                                          |
 | `packages/client/src/components/chat/CyoaChoices.tsx`                                      | Re-roll reruns the agent that made the choices                                                    |
 | `packages/client/src/components/chat/ChatInput.tsx`                                        | Spark button                                                                                      |
 | `packages/client/src/hooks/use-generate.ts`                                                | Choice results from any choice agent reach the choice bar                                         |
@@ -1217,7 +1223,7 @@ Edits to upstream files are marked with a `Fork:` comment.
 | `packages/client/src/components/chat/ChatRoleplaySurface.tsx`                              | Feeds the weather panel's picks to the weather                                                    |
 | `packages/server/src/routes/generate.routes.ts`                                            | Lifts a leaked Task plan into thinking; notices a reply cut short by thinking                     |
 | `packages/server/src/services/generation/empty-response-reason.ts`                         | Names a blocked reply as blocked                                                                  |
-| `packages/client/src/hooks/use-generate.ts`                                                | The cut-short warning; the phone agent after a reply                                               |
+| `packages/client/src/hooks/use-generate.ts`                                                | The cut-short warning; the phone agent after a reply                                              |
 | `packages/client/src/hooks/use-apply-regex.ts`                                             | Skips scripts that wait for a reply to finish                                                     |
 | `packages/client/src/components/chat/ChatMessage.tsx`                                      | Passes those scripts while a reply streams                                                        |
 | `packages/client/src/components/agents/RegexScriptEditor.tsx`                              | The wait-until-finished checkbox                                                                  |

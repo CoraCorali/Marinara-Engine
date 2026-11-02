@@ -5,6 +5,7 @@
 // Presets → Regexes list; they apply only when a chat's "Scoped Regex Scripts"
 // mode includes this character.
 // ──────────────────────────────────────────────
+import { retryWhenRateLimited } from "../../lib/fork/rate-limit-retry";
 import { useCallback, useMemo, useState, type ChangeEvent } from "react";
 import { toast } from "sonner";
 import { Download, Pencil, Plus, Regex, Trash2, Upload } from "lucide-react";
@@ -289,7 +290,11 @@ export function CharacterRegexSection({
           }
           try {
             // Force-scope every imported script to this character.
-            await importRegex.mutateAsync({ ...normalized, targetCharacterIds: [characterId] });
+            // Fork: wait out the server's request limit instead of skipping the rest of the pack.
+            await retryWhenRateLimited(
+              () => importRegex.mutateAsync({ ...normalized, targetCharacterIds: [characterId] }),
+              () => setImportWarning(localizeUi("ui.regex.importWaitingForServer")),
+            );
             imported++;
             if (!isPatternSafe(normalized.findRegex.replace(/\{\{[^}]*\}\}/g, "x"))) {
               warnings.push(

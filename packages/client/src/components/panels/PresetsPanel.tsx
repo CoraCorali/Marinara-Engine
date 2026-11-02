@@ -1,4 +1,5 @@
 import { useLibraryFolderDrag } from "../../hooks/use-library-folder-drag";
+import { retryWhenRateLimited } from "../../lib/fork/rate-limit-retry";
 import { useLibraryOrder } from "../../hooks/use-library-order";
 // ──────────────────────────────────────────────
 // Panel: Presets (overhauled — search, assign, edit, duplicate)
@@ -600,7 +601,11 @@ export function PresetsPanel() {
             continue;
           }
           try {
-            await importRegexScript.mutateAsync(normalized);
+            // Fork: wait out the server's request limit instead of skipping the rest of the pack.
+            await retryWhenRateLimited(
+              () => importRegexScript.mutateAsync(normalized),
+              () => setRegexImportWarning(localizeUi("ui.regex.importWaitingForServer")),
+            );
             imported++;
             if (!isPatternSafe(normalized.findRegex.replace(/\{\{[^}]*\}\}/g, "x"))) {
               warnings.push(
