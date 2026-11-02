@@ -199,11 +199,26 @@ assert.deepEqual(
   texts,
   [
     "Vee slid his cock out of her clutching heat with a wet sound.",
-    '"Keep that face in the pillow,"</span> Vee said, lining up with her entrance again.',
+    "Vee said, lining up with her entrance again.",
     "His breath hitched.",
     "His jaw tightened against her shoulder.",
   ],
-  "story sentences only: notes, ledger and tag attributes are never touched, and a span opening is not part of the passage",
+  "story sentences only: notes, ledger and tag attributes are never touched, and a passage stops at the nearest tag",
+);
+// Jules's leftover: narration glued to the end of a dialogue span. The passage is the narration
+// alone, so no tag is handed to the model and a rewrite can't be thrown out for moving one.
+const glued =
+  '<span style="color:#E09F3E">"It matter \'cause half yo ass out, Kyli,"</span> Vee said, his voice low and thick with that dry Atlanta drawl. <span style="color:#E09F3E">"You got on three inches of fabric."</span>';
+const gluedPassages = autoFixPassages(glued, ["voice low and"]);
+assert.deepEqual(
+  gluedPassages.map((passage) => glued.slice(passage.start, passage.end)),
+  ["Vee said, his voice low and thick with that dry Atlanta drawl."],
+);
+const inSpeech = autoFixPassages(glued, ["three inches"]);
+assert.equal(
+  glued.slice(inSpeech[0]!.start, inSpeech[0]!.end),
+  '"You got on three inches of fabric."',
+  "speech is fixed inside its span",
 );
 const twoInOne = autoFixPassages("He smirked, his breath hitched. Then nothing.", ["smirked", "breath hitched"]);
 assert.equal(twoInOne.length, 1, "two phrases in one sentence are one passage");

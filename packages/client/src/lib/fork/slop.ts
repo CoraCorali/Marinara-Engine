@@ -326,20 +326,29 @@ export const MAX_AUTO_FIX_PASSAGES = 8;
 
 /**
  * The sentences an automatic fix rewrites: each one holding a listed phrase in the story text,
- * merged where two phrases share a sentence, never reaching into a tag or a notes block. Sentence
- * edges are found with tags blanked out, so a dialogue colour span neither ends a sentence nor
- * starts the passage; a span opened or closed inside the sentence stays in it and must come back
- * untouched (see sameTags).
+ * merged where two phrases share a sentence, never reaching into a notes block. Sentence edges are
+ * found with tags blanked out, then cut back to the nearest tag either side, so no passage holds a
+ * tag at all (sameTags still refuses a rewrite that adds one).
  */
 export function autoFixPassages(
   content: string,
   phrases: readonly string[],
 ): Array<{ start: number; end: number; phrases: string[] }> {
   const story = storyOnly(content);
+  const tags = [...content.matchAll(HTML_TAG)].map((tag) => ({
+    start: tag.index ?? 0,
+    end: (tag.index ?? 0) + tag[0].length,
+  }));
   const passages: Array<{ start: number; end: number; phrases: string[] }> = [];
   for (const match of findSlopMatches(story, phrases)) {
-    const { start, end: sentenceEnd } = sentenceAround(story, match.start, match.end);
-    let end = sentenceEnd;
+    let { start, end } = sentenceAround(story, match.start, match.end);
+    // Stop at the nearest tag either side, so a passage never holds one: a narration line glued to
+    // the end of a dialogue span is fixed on its own, and the span is never handed to the model.
+    for (const tag of tags) {
+      if (tag.end <= match.start) start = Math.max(start, tag.end);
+      else if (tag.start >= match.end) end = Math.min(end, tag.start);
+    }
+    while (start < end && /\s/.test(story[start]!)) start += 1;
     while (end > start && /\s/.test(story[end - 1]!)) end -= 1;
     const last = passages[passages.length - 1];
     if (last && start <= last.end) {

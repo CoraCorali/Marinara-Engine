@@ -1149,10 +1149,14 @@ started from a screen recording of the relationship tracker.
   slop never sits in the history the model reads next turn. A toast says how many sentences were
   fixed and offers **Review**: a sheet with each change's before and after and the phrase that
   flagged it, where any one change can go back to the original (or forward again), or **Undo all**.
+  A sentence that was flagged but not fixed is listed under **Not fixed** with the reason and a
+  **Fix this part** button, and a fix that still holds a listed phrase says so; the toast says
+  "Fixed 1 of 2" when that happens.
   **Review the last automatic fix** in the Slop list opens it again after the toast is gone. Undertow's header, margin notes, ledger and author's note are never
-  touched, and neither are tag attributes; a rewrite that changes any HTML tag (a dialogue colour
-  span) is thrown away, and nothing is spliced into a reply that changed while the fix ran. At most
-  8 sentences a reply. A switch in the Slop list turns it off.
+  touched, and neither are tags: a passage stops at the nearest tag either side, so narration glued
+  to the end of a dialogue colour span is fixed on its own and the span is never handed over (a
+  rewrite that adds a tag is thrown away). Nothing is spliced into a reply that changed while the
+  fix ran. At most 8 sentences a reply. A switch in the Slop list turns it off.
 - **A model for fixes.** The Slop list has a **Model for fixes** picker: any chat connection, or the
   chat's own model (the default). Both the automatic pass and Fix this part use it, so a different
   model can clean up the one that writes the story.

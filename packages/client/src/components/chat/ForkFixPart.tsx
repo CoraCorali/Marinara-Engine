@@ -75,9 +75,11 @@ interface SlopMark {
 interface AutoFixReview {
   messageId: string;
   original: string;
-  swaps: Array<{ start: number; end: number; replacement: string; phrases: string[] }>;
+  swaps: Array<{ start: number; end: number; replacement: string; phrases: string[]; stillHas: string[] }>;
   /** Which fixes are in the reply right now. */
   kept: boolean[];
+  /** Sentences that were flagged but left as they were, and why. */
+  missed: Array<{ start: number; end: number; phrases: string[]; reason: "tag" | "noAnswer" }>;
 }
 
 const HIGHLIGHT_NAME = "fork-slop";
@@ -274,30 +276,47 @@ export function ForkFixPart({ chatId, messages, onEdit, busy }: Props) {
           connectionId: fixConnectionId,
           debugMode,
         });
-        const swaps = data.replacements
-          .filter(
-            (swap): swap is { start: number; end: number; replacement: string } =>
-              typeof swap.replacement === "string" &&
-              swap.replacement.trim().length > 0 &&
-              sameTags(original.slice(swap.start, swap.end), swap.replacement),
-          )
-          .map((swap) => ({
-            ...swap,
-            phrases: passages.find((passage) => passage.start === swap.start)?.phrases ?? [],
-          }));
+        const answers = new Map(data.replacements.map((swap) => [swap.start, swap.replacement]));
+        const swaps: AutoFixReview["swaps"] = [];
+        const missed: AutoFixReview["missed"] = [];
+        for (const passage of passages) {
+          const replacement = answers.get(passage.start);
+          const before = original.slice(passage.start, passage.end);
+          if (typeof replacement !== "string" || !replacement.trim()) {
+            missed.push({ ...passage, reason: "noAnswer" });
+          } else if (!sameTags(before, replacement)) {
+            missed.push({ ...passage, reason: "tag" });
+          } else {
+            const stillHas = findSlopMatches(replacement, phrases).map((match) => match.phrase);
+            swaps.push({ ...passage, replacement, stillHas });
+          }
+        }
         const now = replyById(reply.id);
-        if (swaps.length === 0 || !now || now.content !== original) {
+        if (!now || now.content !== original) {
           toast.dismiss(toastId);
           return;
         }
-        const fixed = replacePassages(original, swaps);
-        await onEdit(reply.id, fixed);
-        setReview({ messageId: reply.id, original, swaps, kept: swaps.map(() => true) });
-        toast.success(localizeUi("ui.chat.forkfix.autoFixed", { count: swaps.length }), {
-          id: toastId,
-          duration: 10_000,
-          action: { label: localizeUi("ui.chat.forkfix.review"), onClick: () => setReviewOpen(true) },
-        });
+        if (swaps.length > 0) await onEdit(reply.id, replacePassages(original, swaps));
+        setReview({ messageId: reply.id, original, swaps, kept: swaps.map(() => true), missed });
+        const reviewAction = { label: localizeUi("ui.chat.forkfix.review"), onClick: () => setReviewOpen(true) };
+        if (swaps.length === 0) {
+          toast.error(localizeUi("ui.chat.forkfix.autoFixNone", { count: missed.length }), {
+            id: toastId,
+            duration: 10_000,
+            action: reviewAction,
+          });
+        } else if (missed.length > 0 || swaps.some((swap) => swap.stillHas.length > 0)) {
+          toast.warning(
+            localizeUi("ui.chat.forkfix.autoFixedPartly", { fixed: swaps.length, total: passages.length }),
+            { id: toastId, duration: 10_000, action: reviewAction },
+          );
+        } else {
+          toast.success(localizeUi("ui.chat.forkfix.autoFixed", { count: swaps.length }), {
+            id: toastId,
+            duration: 10_000,
+            action: reviewAction,
+          });
+        }
       } catch (error) {
         toast.error(error instanceof Error ? error.message : localizeUi("ui.chat.forkfix.autoFixFailed"), {
           id: toastId,
@@ -748,6 +767,11 @@ export function ForkFixPart({ chatId, messages, onEdit, busy }: Props) {
                         {localizeUi("ui.chat.forkfix.reviewFlagged", { phrases: swap.phrases.join(", ") })}
                       </span>
                     )}
+                    {kept && swap.stillHas.length > 0 && (
+                      <span className="text-[0.6875rem] font-semibold text-[rgb(255,170,60)]">
+                        {localizeUi("ui.chat.forkfix.reviewStillHas", { phrases: swap.stillHas.join(", ") })}
+                      </span>
+                    )}
                     {[false, true].map((after) => (
                       <p
                         key={String(after)}
@@ -772,6 +796,42 @@ export function ForkFixPart({ chatId, messages, onEdit, busy }: Props) {
                     >
                       <RotateCcw size="0.75rem" />
                       {localizeUi(kept ? "ui.chat.forkfix.useOriginal" : "ui.chat.forkfix.useFix")}
+                    </button>
+                  </li>
+                );
+              })}
+              {review.missed.length > 0 && (
+                <li className="text-[0.75rem] font-bold uppercase tracking-wide text-[var(--muted-foreground)]">
+                  {localizeUi("ui.chat.forkfix.reviewNotFixed")}
+                </li>
+              )}
+              {review.missed.map((miss) => {
+                const passage = review.original.slice(miss.start, miss.end);
+                return (
+                  <li key={`missed-${miss.start}`} className="flex flex-col gap-1.5">
+                    <span className="text-[0.6875rem] font-semibold text-[var(--muted-foreground)]">
+                      {localizeUi("ui.chat.forkfix.reviewFlagged", { phrases: miss.phrases.join(", ") })}
+                      {" · "}
+                      {localizeUi(
+                        miss.reason === "tag"
+                          ? "ui.chat.forkfix.reviewReasonTag"
+                          : "ui.chat.forkfix.reviewReasonNoAnswer",
+                      )}
+                    </span>
+                    <p className="whitespace-pre-wrap rounded-2xl border border-[rgba(255,150,30,0.6)] bg-[rgba(255,160,40,0.1)] px-3.5 py-2.5 text-[0.8125rem] leading-relaxed text-foreground">
+                      {withoutTags(passage).trim()}
+                    </p>
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => {
+                        setReviewOpen(false);
+                        openFix(review.messageId, passage, null);
+                      }}
+                      className="flex min-h-9 items-center justify-center gap-2 self-start rounded-xl border-2 border-[var(--primary)] px-3 text-xs font-bold text-foreground disabled:opacity-50"
+                    >
+                      <WandSparkles size="0.75rem" />
+                      {localizeUi("ui.chat.forkfix.fixThisPart")}
                     </button>
                   </li>
                 );
