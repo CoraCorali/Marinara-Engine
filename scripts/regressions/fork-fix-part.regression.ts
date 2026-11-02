@@ -160,3 +160,105 @@ assert.deepEqual(findAvoidedPhrases("He lifted the weight of her cheek.", ["the 
 ]);
 assert.deepEqual(findAvoidedPhrases("Velvety skin.", ["velvet"]), [], "whole words only");
 assert.deepEqual(findAvoidedPhrases("She didn’t flinch", ["didn't flinch"]), ["didn't flinch"]);
+
+// ── The automatic pass ──
+const {
+  UNDERTOW_SLOP_PHRASES,
+  autoFixPassages,
+  mergePhrases,
+  replacePassages,
+  sameTags,
+  storyOnly,
+  MAX_AUTO_FIX_PASSAGES,
+} = await import("../../packages/client/src/lib/fork/slop.js");
+const { buildAutoFixMessages, readAutoFixReply, validAutoFixPassages } =
+  await import("../../packages/server/src/services/generation/fork-fix-part.js");
+
+// An Undertow reply: notes and ledger around the story, dialogue in colour spans.
+const undertow = [
+  '<margin_notes colors="CHERRY">\n· Vee: pulls out of her heat and flips her\n</margin_notes>',
+  "Vee slid his cock out of her clutching heat with a wet sound. The air hit your skin.",
+  '<span style="color:#6CA0DC">"Keep that face in the pillow,"</span> Vee said, lining up with her entrance again. He pushed in slow.',
+  "His breath hitched. His jaw tightened against her shoulder.",
+  '<story_ledger turn="16">\n## Bonds\n· Vee | Right now: heated, slick with her wet heat\n</story_ledger>',
+].join("\n\n");
+const phrasesForTest = [
+  "her heat",
+  "clutching heat",
+  "wet heat",
+  "her entrance",
+  "breath hitched",
+  "jaw tightened",
+  "color",
+];
+const passagesFound = autoFixPassages(undertow, phrasesForTest);
+const texts = passagesFound.map((passage) => undertow.slice(passage.start, passage.end));
+assert.deepEqual(
+  texts,
+  [
+    "Vee slid his cock out of her clutching heat with a wet sound.",
+    '"Keep that face in the pillow,"</span> Vee said, lining up with her entrance again.',
+    "His breath hitched.",
+    "His jaw tightened against her shoulder.",
+  ],
+  "story sentences only: notes, ledger and tag attributes are never touched, and a span opening is not part of the passage",
+);
+const twoInOne = autoFixPassages("He smirked, his breath hitched. Then nothing.", ["smirked", "breath hitched"]);
+assert.equal(twoInOne.length, 1, "two phrases in one sentence are one passage");
+assert.deepEqual(twoInOne[0]!.phrases, ["smirked", "breath hitched"]);
+assert.ok(!storyOnly(undertow).includes("margin_notes") && !storyOnly(undertow).includes("color:"));
+assert.equal(storyOnly(undertow).length, undertow.length, "blanking keeps every offset");
+assert.equal(autoFixPassages("Clean reply.", phrasesForTest).length, 0);
+const many = Array.from({ length: 12 }, (_, i) => `Line ${i} had her heat.`).join(" ");
+assert.equal(autoFixPassages(many, ["her heat"]).length, MAX_AUTO_FIX_PASSAGES, "one pass is capped");
+
+// A rewrite must keep its tags, in order.
+assert.ok(sameTags('"Hi,"</span> he said.', '"Hey,"</span> he said quietly.'));
+assert.ok(!sameTags('"Hi,"</span> he said.', '"Hey," he said.'), "a dropped closing tag is refused");
+assert.ok(!sameTags("plain", '<span style="color:red">plain</span>'), "an added tag is refused");
+assert.equal(
+  replacePassages("aa BB cc DD ee", [
+    { start: 3, end: 5, replacement: "bbbb" },
+    { start: 9, end: 11, replacement: "d" },
+  ]),
+  "aa bbbb cc d ee",
+  "several swaps land on the original offsets",
+);
+
+// The request marks and numbers each passage, and leaves the notes and ledger out.
+const asked = passagesFound.map((passage) => ({ start: passage.start, end: passage.end, phrases: passage.phrases }));
+assert.ok(validAutoFixPassages(undertow, asked));
+assert.ok(!validAutoFixPassages(undertow, [asked[1]!, asked[0]!]), "out of order is refused");
+assert.ok(!validAutoFixPassages(undertow, []), "nothing to fix is refused");
+const [autoSystem, autoUser] = buildAutoFixMessages({
+  reply: undertow,
+  passages: asked,
+  avoid: phrasesForTest,
+  writerName: "Kyli",
+});
+assert.ok(autoUser!.content.includes("⟦1:Vee slid his cock out of her clutching heat with a wet sound.⟧"));
+assert.ok(autoUser!.content.includes("⟦3:His breath hitched.⟧"));
+assert.ok(autoUser!.content.includes('4: "jaw tightened"'), "each passage names its phrases");
+assert.ok(!autoUser!.content.includes("margin_notes") && !autoUser!.content.includes("story_ledger"));
+assert.ok(autoSystem!.content.includes("HTML tag") && autoSystem!.content.includes("plain explicit words"));
+assert.ok(autoSystem!.content.includes("Never write dialogue, thoughts or actions for Kyli"));
+const originalsForRead = asked.map((passage) => undertow.slice(passage.start, passage.end));
+assert.deepEqual(
+  readAutoFixReply(
+    '<fix n="3">He sucked air through his teeth, mouth against her shoulder.</fix>\n<fix n="1">Vee slid his cock out of her pussy with a wet sound.</fix>\n<fix n="2">⟦broken⟧</fix>',
+    originalsForRead,
+  ),
+  [
+    "Vee slid his cock out of her pussy with a wet sound.",
+    null,
+    "He sucked air through his teeth, mouth against her shoulder.",
+    null,
+  ],
+  "answers are read by number; a missing or marker-bearing one keeps the original",
+);
+
+// The master list joins a saved list once, keeping the writer's own phrases first.
+assert.deepEqual(mergePhrases(["mine", "Her Heat"], ["her heat", "spine"]), ["mine", "Her Heat", "spine"]);
+assert.ok(UNDERTOW_SLOP_PHRASES.includes("clutching heat") && UNDERTOW_SLOP_PHRASES.includes("unhurried"));
+assert.ok(DEFAULT_SLOP_PHRASES.includes("clutching heat"), "a fresh install starts with the master list");
+console.log("fork fix part, automatic pass: ok");

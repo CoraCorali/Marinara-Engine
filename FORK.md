@@ -1142,6 +1142,26 @@ started from a screen recording of the relationship tracker.
   other, wrong beliefs included, and every secret in "Open threads" says who knows it, who only
   suspects it, and who believes something else.
 
+### Slop fixed automatically, one master list (2026-11-02)
+
+- **Automatic fixing.** When a reply finishes, every sentence in its story that holds a phrase from
+  the Slop list is rewritten in one call, then spliced in through the normal message edit, so the
+  slop never sits in the history the model reads next turn. A toast says how many sentences were
+  fixed and offers **Undo**. Undertow's header, margin notes, ledger and author's note are never
+  touched, and neither are tag attributes; a rewrite that changes any HTML tag (a dialogue colour
+  span) is thrown away, and nothing is spliced into a reply that changed while the fix ran. At most
+  8 sentences a reply. A switch in the Slop list turns it off.
+- **A model for fixes.** The Slop list has a **Model for fixes** picker: any chat connection, or the
+  chat's own model (the default). Both the automatic pass and Fix this part use it, so a different
+  model can clean up the one that writes the story.
+- **One master list.** Undertow's word list moved out of the preset into the starter list (breath and
+  body, voice and texture, scents, engineer words, stock lines, and Gemini's sex-scene stand-ins like
+  "her heat," "snug walls," "her entrance"). A saved list gets the new phrases once, added after your
+  own. The preset now only warns off the sentence shapes a phrase list can't catch.
+- **The fixer knows Undertow.** Every rewrite keeps HTML tags exactly, keeps second-person sensation
+  lines in second person, adds no new body description, and names bodies in plain explicit words in
+  a sex scene instead of trading one stand-in for another.
+
 ## Upstream files touched
 
 Fork-only code lives in `packages/client/src/lib/fork/`, `Fork*` components, `packages/shared/src/features/fork-bond-shapes.ts`, `packages/server/src/services/import/fork/`

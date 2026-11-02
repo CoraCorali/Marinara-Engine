@@ -13,7 +13,18 @@ import { Modal } from "../ui/Modal";
 import { cn } from "../../lib/utils";
 import { useUIStore } from "../../stores/ui.store";
 import { useForkSlopStore } from "../../stores/fork-slop.store";
-import { findSlopMatches, locatePassage, passageOccurrence, replacePassage, sentenceAround } from "../../lib/fork/slop";
+import {
+  autoFixPassages,
+  findSlopMatches,
+  locatePassage,
+  passageOccurrence,
+  replacePassage,
+  replacePassages,
+  sameTags,
+  sentenceAround,
+} from "../../lib/fork/slop";
+import { isChatProvider } from "@marinara-engine/shared";
+import { useConnections } from "../../hooks/use-connections";
 import { isSingleWordSelection } from "../../lib/fork/sentence-range";
 import { useBackDismiss } from "../../hooks/use-back-dismiss";
 import { FORK_SWITCH_CLASS } from "../../lib/fork/switch";
@@ -151,6 +162,8 @@ export function ForkFixPart({ chatId, messages, onEdit, busy }: Props) {
   const phrases = useForkSlopStore((s) => s.phrases);
   const listOpen = useForkSlopStore((s) => s.listOpen);
   const setListOpen = useForkSlopStore((s) => s.setListOpen);
+  const autoFix = useForkSlopStore((s) => s.autoFix);
+  const fixConnectionId = useForkSlopStore((s) => s.fixConnectionId);
   const [picked, setPicked] = useState<Picked | null>(null);
   const [target, setTarget] = useState<FixTarget | null>(null);
   const [instruction, setInstruction] = useState("");
@@ -187,6 +200,101 @@ export function ForkFixPart({ chatId, messages, onEdit, busy }: Props) {
     },
     [localizeUi, replyById],
   );
+
+  // ── The automatic pass: when a reply finishes, the sentences holding listed phrases are fixed ──
+  // One call rewrites them all; the reply is spliced through the normal message edit, and a toast
+  // offers Undo. A rewrite that changed a tag is dropped, and nothing is spliced into a reply that
+  // changed while the fix ran. Each finished reply (id and text) is checked once.
+  const wasBusyRef = useRef(busy);
+  const autoCheckedRef = useRef(new Set<string>());
+  // The latest settings, read when the pass runs: a re-render must not cancel a pass under way.
+  const autoRef = useRef({ autoFix, phrases, fixConnectionId, chatId, debugMode, onEdit, localizeUi });
+  autoRef.current = { autoFix, phrases, fixConnectionId, chatId, debugMode, onEdit, localizeUi };
+  useEffect(() => {
+    const finished = wasBusyRef.current && !busy;
+    wasBusyRef.current = busy;
+    const { autoFix, phrases, fixConnectionId, chatId, debugMode, onEdit, localizeUi } = autoRef.current;
+    if (!finished || !autoFix || phrases.length === 0) return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    // The saved reply reaches the message list a moment after streaming stops, so wait until the
+    // newest reply has its real id and has held still for one check.
+    let lastSeen = "";
+    let checks = 0;
+    const settled = () => {
+      const list = messagesRef.current ?? [];
+      const newest = list[list.length - 1];
+      if (!newest || newest.role === "user" || newest.id.startsWith("__")) return null;
+      const seen = `${newest.id}:${newest.content}`;
+      const still = seen === lastSeen;
+      lastSeen = seen;
+      return still ? newest : null;
+    };
+    const run = async () => {
+      if (cancelled) return;
+      const reply = settled();
+      if (!reply) {
+        checks += 1;
+        if (checks < 12) timer = setTimeout(() => void run(), 700);
+        return;
+      }
+      const key = `${reply.id}:${reply.content.length}:${reply.content.slice(-40)}`;
+      if (autoCheckedRef.current.has(key)) return;
+      autoCheckedRef.current.add(key);
+      const original = reply.content;
+      const passages = autoFixPassages(original, phrases);
+      if (passages.length === 0) return;
+      const count = passages.reduce((sum, passage) => sum + passage.phrases.length, 0);
+      const toastId = toast.loading(localizeUi("ui.chat.forkfix.autoFixing", { count }));
+      try {
+        const data = await api.post<{
+          replacements: Array<{ start: number; end: number; replacement: string | null }>;
+        }>("/fork-fix/auto", {
+          chatId,
+          messageId: reply.id,
+          passages: passages.map((passage) => ({
+            ...passage,
+            expected: original.slice(passage.start, passage.end),
+          })),
+          avoid: phrases,
+          connectionId: fixConnectionId,
+          debugMode,
+        });
+        const swaps = data.replacements.filter(
+          (swap): swap is { start: number; end: number; replacement: string } =>
+            typeof swap.replacement === "string" &&
+            swap.replacement.trim().length > 0 &&
+            sameTags(original.slice(swap.start, swap.end), swap.replacement),
+        );
+        const now = replyById(reply.id);
+        if (swaps.length === 0 || !now || now.content !== original) {
+          toast.dismiss(toastId);
+          return;
+        }
+        const fixed = replacePassages(original, swaps);
+        await onEdit(reply.id, fixed);
+        toast.success(localizeUi("ui.chat.forkfix.autoFixed", { count: swaps.length }), {
+          id: toastId,
+          action: {
+            label: localizeUi("ui.chat.forkfix.undo"),
+            onClick: () => {
+              // Only undo onto the fixed reply; anything written since stays.
+              if (replyById(reply.id)?.content === fixed) void onEdit(reply.id, original);
+            },
+          },
+        });
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : localizeUi("ui.chat.forkfix.autoFixFailed"), {
+          id: toastId,
+        });
+      }
+    };
+    timer = setTimeout(() => void run(), 700);
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [busy, replyById]);
 
   // ── Picking a passage: a selection inside one reply shows the button ──
   useEffect(() => {
@@ -371,6 +479,7 @@ export function ForkFixPart({ chatId, messages, onEdit, busy }: Props) {
         expected: target.original,
         instruction,
         avoid: phrases,
+        connectionId: fixConnectionId,
         debugMode,
       });
       setReplacement(data.replacement);
@@ -597,6 +706,14 @@ function SlopListEditor({ latestReply }: { latestReply: string }) {
   const phrases = useForkSlopStore((s) => s.phrases);
   const setPhrases = useForkSlopStore((s) => s.setPhrases);
   const resetPhrases = useForkSlopStore((s) => s.resetPhrases);
+  const autoFix = useForkSlopStore((s) => s.autoFix);
+  const setAutoFix = useForkSlopStore((s) => s.setAutoFix);
+  const fixConnectionId = useForkSlopStore((s) => s.fixConnectionId);
+  const setFixConnectionId = useForkSlopStore((s) => s.setFixConnectionId);
+  const { data: connectionRows } = useConnections();
+  const connections = (
+    (connectionRows as Array<{ id: string; name?: string; model?: string; provider?: string }> | undefined) ?? []
+  ).filter((connection) => isChatProvider(connection.provider));
   const [adding, setAdding] = useState("");
 
   const matches = latestReply ? findSlopMatches(latestReply, phrases) : [];
@@ -646,6 +763,36 @@ function SlopListEditor({ latestReply }: { latestReply: string }) {
           onChange={(event) => setHighlight(event.target.checked)}
           className={FORK_SWITCH_CLASS}
         />
+      </label>
+      <label className="flex min-h-9 items-center justify-between gap-3 rounded-xl bg-[var(--secondary)] px-3 text-[0.8125rem] font-semibold text-foreground">
+        {localizeUi("ui.chat.forkfix.autoFixSwitch")}
+        <input
+          type="checkbox"
+          role="switch"
+          checked={autoFix}
+          onChange={(event) => setAutoFix(event.target.checked)}
+          className={FORK_SWITCH_CLASS}
+        />
+      </label>
+      <label className="flex flex-col gap-1 rounded-xl bg-[var(--secondary)] px-3 py-2 text-[0.8125rem] font-semibold text-foreground">
+        {localizeUi("ui.chat.forkfix.fixModel")}
+        <select
+          value={fixConnectionId && connections.some((c) => c.id === fixConnectionId) ? fixConnectionId : ""}
+          onChange={(event) => setFixConnectionId(event.target.value || null)}
+          className="min-h-9 w-full rounded-lg bg-[var(--background)] px-2 text-[0.8125rem] font-normal text-foreground outline-none"
+        >
+          <option value="">{localizeUi("ui.chat.forkfix.fixModelSameAsChat")}</option>
+          {connections.map((connection) => (
+            <option key={connection.id} value={connection.id}>
+              {connection.model
+                ? localizeUi("ui.chat.forkfix.fixModelOption", {
+                    name: connection.name ?? connection.id,
+                    model: connection.model,
+                  })
+                : (connection.name ?? connection.id)}
+            </option>
+          ))}
+        </select>
       </label>
       <label className="flex min-h-9 items-center justify-between gap-3 rounded-xl bg-[var(--secondary)] px-3 text-[0.8125rem] font-semibold text-foreground">
         {localizeUi("ui.chat.forkfix.showAddToLorebook")}

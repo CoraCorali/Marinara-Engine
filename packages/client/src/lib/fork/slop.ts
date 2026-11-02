@@ -1,6 +1,110 @@
 // Fork feature: the slop highlighter and Fix this part (see FORK.md).
 
 /**
+ * Undertow's word list, moved here from the preset's Hard Lines so there is one master list: the
+ * preset keeps only the sentence shapes a phrase list cannot catch. Spelled in the forms models
+ * actually write ("breath hitched" as well as "breath hitching"), since matching is literal.
+ * Added to a saved list once (see the store's migrate), never replacing what the writer kept.
+ */
+export const UNDERTOW_SLOP_PHRASES: readonly string[] = [
+  // breath and body
+  "breath hitched",
+  "breath hitching",
+  "breath hitches",
+  "breath caught",
+  "breath catching",
+  "caught in her throat",
+  "caught in his throat",
+  "spine",
+  "pupils blown",
+  "jaw working",
+  "jaw worked",
+  "jaw tightened",
+  "nails biting",
+  "white knuckles",
+  "white-knuckled",
+  "mouth opening and closing",
+  // voice and texture
+  "husky",
+  "throaty",
+  "guttural",
+  "velvet",
+  "velvety",
+  "slick",
+  "calloused",
+  "musk",
+  "breast",
+  "breasts",
+  "deep curve",
+  // hard edges
+  "predatory",
+  "fresh meat",
+  "vise",
+  "like a vice",
+  "furnace",
+  "unadulterated",
+  // scents
+  "sandalwood",
+  "cedar",
+  "petrichor",
+  "jasmine",
+  // engineer words
+  "load-bearing",
+  "structural integrity",
+  "structural failure",
+  "architectural",
+  "geometry",
+  "file it away",
+  "filed it away",
+  "unhurried",
+  "calculating",
+  "arithmetic",
+  "processed the words",
+  // stock beats
+  "after a beat",
+  "a beat later",
+  "the words sank in",
+  "something shifts",
+  "rippled through",
+  "ripples through",
+  "the air is thick",
+  "a stone dropped into",
+  "a key turning in a lock",
+  // stock lines
+  "really sees me",
+  "without its usual bite",
+  "something older",
+  "it wasn't a question",
+  "like a physical blow",
+  "the only solid thing",
+  "through her lashes",
+  // stock endings
+  "tasting the word",
+  "tasted the word",
+  "and waited",
+  // in sex: Gemini's stand-ins for bodies, and stock lines
+  "her heat",
+  "wet heat",
+  "snug heat",
+  "tight heat",
+  "clutching heat",
+  "her walls",
+  "inner walls",
+  "snug walls",
+  "fluttering walls",
+  "her entrance",
+  "his length",
+  "her core",
+  "her channel",
+  "sensitive bud",
+  "soft give",
+  "milking",
+  "milked",
+  "milkish",
+  "ruin me for anyone",
+];
+
+/**
  * A starting list of the phrases models reach for again and again. It is only a starting point:
  * the writer edits it, and the edited list is what gets highlighted and what a rewrite is told to
  * avoid.
@@ -52,6 +156,7 @@ export const DEFAULT_SLOP_PHRASES: readonly string[] = [
   "despite himself",
   "in the grand scheme",
   "a beat passes",
+  ...UNDERTOW_SLOP_PHRASES,
 ];
 
 export interface TextMatch {
@@ -199,4 +304,78 @@ export function sentenceAround(text: string, start: number, end: number): { star
 /** The reply with one passage swapped out. */
 export function replacePassage(stored: string, start: number, end: number, replacement: string): string {
   return `${stored.slice(0, start)}${replacement}${stored.slice(end)}`;
+}
+
+/**
+ * Blocks a reply carries that are not the story: Undertow's header, notes and ledger, an author's
+ * note, and thinking. Slop in them is never fixed automatically: the notes and ledger are trimmed
+ * from older replies anyway, and a rewrite there could break the regex pack that draws them.
+ */
+const NOT_STORY_BLOCK =
+  /<(scene_header|margin_notes|story_ledger|authors_note|author_note|thought|think|thinking)\b[^>]{0,2000}>[\s\S]*?<\/\1>/gi;
+const HTML_TAG = /<\/?[A-Za-z][^<>]{0,2000}>/g;
+
+/** The reply with everything that is not story text blanked to spaces, so offsets still line up. */
+export function storyOnly(content: string): string {
+  const blank = (match: string) => match.replace(/[^\n]/g, " ");
+  return content.replace(NOT_STORY_BLOCK, blank).replace(HTML_TAG, blank);
+}
+
+/** Most sentences one automatic pass rewrites; a reply with more is mostly fine as it is. */
+export const MAX_AUTO_FIX_PASSAGES = 8;
+
+/**
+ * The sentences an automatic fix rewrites: each one holding a listed phrase in the story text,
+ * merged where two phrases share a sentence, never reaching into a tag or a notes block. Sentence
+ * edges are found with tags blanked out, so a dialogue colour span neither ends a sentence nor
+ * starts the passage; a span opened or closed inside the sentence stays in it and must come back
+ * untouched (see sameTags).
+ */
+export function autoFixPassages(
+  content: string,
+  phrases: readonly string[],
+): Array<{ start: number; end: number; phrases: string[] }> {
+  const story = storyOnly(content);
+  const passages: Array<{ start: number; end: number; phrases: string[] }> = [];
+  for (const match of findSlopMatches(story, phrases)) {
+    const { start, end: sentenceEnd } = sentenceAround(story, match.start, match.end);
+    let end = sentenceEnd;
+    while (end > start && /\s/.test(story[end - 1]!)) end -= 1;
+    const last = passages[passages.length - 1];
+    if (last && start <= last.end) {
+      last.end = Math.max(last.end, end);
+      last.phrases.push(match.phrase);
+      continue;
+    }
+    passages.push({ start, end, phrases: [match.phrase] });
+  }
+  return passages.slice(0, MAX_AUTO_FIX_PASSAGES);
+}
+
+/** The HTML tags in a stretch of text, in order. A rewrite that changes them is not used. */
+export function tagsIn(text: string): string[] {
+  return text.match(HTML_TAG) ?? [];
+}
+
+export function sameTags(original: string, rewrite: string): boolean {
+  const before = tagsIn(original);
+  const after = tagsIn(rewrite);
+  return before.length === after.length && before.every((tag, index) => tag === after[index]);
+}
+
+/** The reply with several passages swapped out at once, last first so the offsets hold. */
+export function replacePassages(
+  stored: string,
+  swaps: ReadonlyArray<{ start: number; end: number; replacement: string }>,
+): string {
+  return [...swaps]
+    .sort((left, right) => right.start - left.start)
+    .reduce((text, swap) => replacePassage(text, swap.start, swap.end, swap.replacement), stored);
+}
+
+/** The saved list with new phrases added at the end, skipping any it already has. */
+export function mergePhrases(saved: readonly string[], added: readonly string[]): string[] {
+  const key = (phrase: string) => phrase.trim().replace(/’/g, "'").toLocaleLowerCase();
+  const have = new Set(saved.map(key));
+  return [...saved, ...added.filter((phrase) => !have.has(key(phrase)))];
 }

@@ -8,7 +8,7 @@ export const FIX_PART_CLOSE = "⟧";
 const MAX_REPLY_CHARS = 16000;
 const MAX_TURN_CHARS = 2000;
 const MAX_INSTRUCTION_CHARS = 600;
-const MAX_AVOID_PHRASES = 80;
+const MAX_AVOID_PHRASES = 200;
 
 export const DEFAULT_FIX_INSTRUCTION =
   "Make it fresher and less clichéd. Keep what happens and what is said; change how it is written.";
@@ -65,6 +65,34 @@ function replyWindow(marked: string, start: number): string {
   return `${from > 0 ? "…" : ""}${marked.slice(from, to)}${to < marked.length ? "…" : ""}`;
 }
 
+/**
+ * How every rewrite is written, by hand or automatic. The Undertow lines (tags, second-person
+ * sensation lines, explicit words, no new body description) keep a fix from breaking what the
+ * preset and the regex pack rely on, or swapping one stand-in for another.
+ */
+function lineEditorRules(writer: string, avoid: readonly string[]): string[] {
+  return [
+    "- It must read seamlessly with the text right before and after it: the same point of view, tense, voice and names, and the same formatting: asterisks, quotation marks, and every HTML tag (such as a <span style=...> around a character's speech) kept exactly as written, in the same place around the same words.",
+    '- A sentence written in second person ("The sheet was cold under your knees.") stays in second person; everything else keeps the person it was in.',
+    "- Keep what is there. Every action, object, body detail and line of dialogue in the passage stays in the rewrite unless the writer asks to cut it. You change how it is written, not what is in it. Add no new description of anyone's body.",
+    "- Keep it about the same length unless the writer asks otherwise.",
+    "- Write it the way a sharp, unsentimental novelist would film it: concrete, physical, specific. Name the exact thing in everyday words (shoulder, thigh, sink) instead of a vague or grand one.",
+    '- In a sex scene, name bodies in plain explicit words (cock, pussy, clit, ass, tits, cum). Heat and wetness are things a body feels, never a name for one: no "her heat," "walls," "entrance," "core," "length," "bud" or "slick" standing in for a body part or for wetness, and no clinical terms.',
+    "- Fold features into motion instead of listing them, and vary sentence length. Do not stack three parallel adjectives or clauses; keep the strongest one or two.",
+    "- Swap a stock verb or image for a plain specific one. Do not reach for dramatic words like loomed, hefted, smirked or predatory, and add no new metaphor unless the original had one.",
+    '- Say what a thing is, never what it isn\'t: no "not X, but Y" shapes. No "really", "truly" or "genuinely" for emphasis.',
+    "- Characters keep their own voices and edges: a cold one stays cold, a crude one stays crude, a smooth one stays smooth, and nobody turns nicer or more agreeable than the original had them. Dialogue keeps the speaker's own words, slang and grammar.",
+    "- Use plain, specific words, and commas or periods where an em dash might go.",
+    `- Never write dialogue, thoughts or actions for ${writer} unless the original passage already did.`,
+    ...(avoid.length > 0
+      ? [
+          "- Hard rule: the rewrite must not contain any of these phrases from the writer's slop list, or close variants of them. If the original used one, replace it with different, plain wording:",
+          ...avoid.map((phrase) => `  - ${phrase}`),
+        ]
+      : []),
+  ];
+}
+
 /** The two messages sent to the model: the editing rules, and the reply with the passage marked. */
 export function buildFixPartMessages(request: FixPartRequest): Array<{ role: "system" | "user"; content: string }> {
   const { reply, start, end } = request;
@@ -79,22 +107,7 @@ export function buildFixPartMessages(request: FixPartRequest): Array<{ role: "sy
     `You are a line editor for a roleplay story. The writer marked one passage of a reply with ${FIX_PART_OPEN} and ${FIX_PART_CLOSE}. Rewrite only that passage.`,
     "",
     "- Everything outside the markers stays exactly as it is. Your text replaces only what is between them.",
-    "- It must read seamlessly with the text right before and after it: the same point of view, tense, voice and names, and the same formatting conventions, such as asterisks for actions and quotation marks for speech.",
-    "- Keep what is there. Every action, object, body detail and line of dialogue in the passage stays in the rewrite unless the writer asks to cut it. You change how it is written, not what is in it.",
-    "- Keep it about the same length unless the writer asks otherwise.",
-    "- Write it the way a sharp, unsentimental novelist would film it: concrete, physical, specific. Name the exact thing in everyday words (shoulder, thigh, sink) instead of a vague or grand one.",
-    "- Fold features into motion instead of listing them, and vary sentence length. Do not stack three parallel adjectives or clauses; keep the strongest one or two.",
-    "- Swap a stock verb or image for a plain specific one. Do not reach for dramatic words like loomed, hefted, smirked or predatory, and add no new metaphor unless the original had one.",
-    '- Say what a thing is, never what it isn\'t: no "not X, but Y" shapes. No "really", "truly" or "genuinely" for emphasis.',
-    "- Characters keep their own voices and edges: a cold one stays cold, a smooth one stays smooth, and nobody turns nicer or more agreeable than the original had them.",
-    "- Use plain, specific words, and commas or periods where an em dash might go.",
-    `- Never write dialogue, thoughts or actions for ${writer} unless the original passage already did.`,
-    ...(avoid.length > 0
-      ? [
-          "- Hard rule: the rewrite must not contain any of these phrases from the writer's slop list, or close variants of them. If the original used one, replace it with different, plain wording:",
-          ...avoid.map((phrase) => `  - ${phrase}`),
-        ]
-      : []),
+    ...lineEditorRules(writer, avoid),
     "",
     "Return only the replacement passage: no markers, no quotation marks around it, no notes and no explanation.",
   ].join("\n");
@@ -115,6 +128,108 @@ export function buildFixPartMessages(request: FixPartRequest): Array<{ role: "sy
     { role: "system", content: system },
     { role: "user", content: user },
   ];
+}
+
+export interface AutoFixPassage {
+  start: number;
+  end: number;
+  /** The listed phrases found in it, so the model knows what to change. */
+  phrases: readonly string[];
+}
+
+export interface AutoFixRequest extends Omit<FixPartRequest, "start" | "end" | "instruction"> {
+  passages: readonly AutoFixPassage[];
+}
+
+/** Passages that are in the reply, in order, with no two overlapping. */
+export function validAutoFixPassages(reply: string, passages: readonly AutoFixPassage[]): boolean {
+  if (passages.length === 0) return false;
+  let lastEnd = 0;
+  for (const passage of passages) {
+    if (!isValidFixRange(reply, passage.start, passage.end) || passage.start < lastEnd) return false;
+    lastEnd = passage.end;
+  }
+  return true;
+}
+
+/** Undertow's header, notes and ledger: never marked, and only noise around the story for a line editor. */
+const NOT_STORY_BLOCK =
+  /<(scene_header|margin_notes|story_ledger|authors_note|author_note|thought|think|thinking)\b[^>]{0,2000}>[\s\S]*?<\/\1>\s*/gi;
+
+/** The marked reply as the editor reads it: the story alone, cut down around the first mark if long. */
+function storyContext(marked: string): string {
+  const story = marked.replace(NOT_STORY_BLOCK, "").trim();
+  if (story.length <= MAX_REPLY_CHARS) return story;
+  const from = Math.max(0, Math.min(story.indexOf(FIX_PART_OPEN) - 2000, story.length - MAX_REPLY_CHARS));
+  return `${from > 0 ? "…" : ""}${story.slice(from, from + MAX_REPLY_CHARS)}${from + MAX_REPLY_CHARS < story.length ? "…" : ""}`;
+}
+
+/**
+ * The automatic pass: every sentence holding a listed phrase is marked and numbered in one copy of
+ * the reply, so one call fixes them all with the whole reply around them. Each comes back in its
+ * own numbered <fix> tag; anything missing or broken is simply left as it was (see readAutoFixReply).
+ */
+export function buildAutoFixMessages(request: AutoFixRequest): Array<{ role: "system" | "user"; content: string }> {
+  const { reply, passages } = request;
+  let marked = "";
+  let at = 0;
+  passages.forEach((passage, index) => {
+    const n = index + 1;
+    marked += `${reply.slice(at, passage.start)}${FIX_PART_OPEN}${n}:${reply.slice(passage.start, passage.end)}${FIX_PART_CLOSE}`;
+    at = passage.end;
+  });
+  marked += reply.slice(at);
+  const avoid = (request.avoid ?? [])
+    .map((phrase) => phrase.trim())
+    .filter(Boolean)
+    .slice(0, MAX_AVOID_PHRASES);
+  const writer = request.writerName?.trim() || "the writer's character";
+
+  const system = [
+    `You are a line editor for a roleplay story. Some sentences of a reply are marked like ${FIX_PART_OPEN}1:sentence${FIX_PART_CLOSE}, each numbered, because they use stock phrases from the writer's slop list. Rewrite only the marked sentences so the stock phrases are gone.`,
+    "",
+    "- Everything outside the markers stays exactly as it is. Change as little as it takes: swap the stock phrase for plain, specific words that fit this moment and keep the rest of the sentence.",
+    ...lineEditorRules(writer, avoid),
+    "",
+    'Return one <fix n="number">rewritten sentence</fix> for each marked sentence, in order, and nothing else: no markers, no notes and no explanation.',
+  ].join("\n");
+
+  const previousTurn = (request.previousTurn ?? "").trim().slice(-MAX_TURN_CHARS);
+  const cards = (request.characters ?? []).map((card) => card.trim()).filter(Boolean);
+  const list = passages.map(
+    (passage, index) => `${index + 1}: ${passage.phrases.map((phrase) => `"${phrase}"`).join(", ")}`,
+  );
+  const user = [
+    ...(cards.length > 0 ? [`<characters>\n${cards.join("\n\n")}\n</characters>`, ""] : []),
+    ...(previousTurn ? [`<the_turn_it_answered>\n${previousTurn}\n</the_turn_it_answered>`, ""] : []),
+    `<reply>\n${storyContext(marked)}\n</reply>`,
+    "",
+    "The stock phrases in each marked sentence:",
+    ...list,
+  ].join("\n");
+
+  return [
+    { role: "system", content: system },
+    { role: "user", content: user },
+  ];
+}
+
+/**
+ * The rewritten sentences by number, cleaned the way a single fix is. A missing, empty or marker-
+ * bearing answer becomes null, which keeps that sentence as it was.
+ */
+export function readAutoFixReply(raw: string, originals: readonly string[]): Array<string | null> {
+  const found = new Map<number, string>();
+  for (const match of (raw ?? "").matchAll(/<fix\s+n\s*=\s*["']?(\d+)["']?\s*>([\s\S]*?)<\/fix>/gi)) {
+    const n = Number(match[1]);
+    if (!found.has(n)) found.set(n, match[2] ?? "");
+  }
+  return originals.map((original, index) => {
+    const text = found.get(index + 1);
+    if (text === undefined || text.includes(FIX_PART_OPEN) || text.includes(FIX_PART_CLOSE)) return null;
+    const cleaned = readFixPartReply(text, original);
+    return cleaned.trim() ? cleaned : null;
+  });
 }
 
 /**
