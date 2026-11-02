@@ -169,6 +169,8 @@ const {
   replacePassages,
   sameTags,
   storyOnly,
+  applyKeptFixes,
+  withoutTags,
   MAX_AUTO_FIX_PASSAGES,
 } = await import("../../packages/client/src/lib/fork/slop.js");
 const { buildAutoFixMessages, readAutoFixReply, validAutoFixPassages } =
@@ -261,4 +263,17 @@ assert.deepEqual(
 assert.deepEqual(mergePhrases(["mine", "Her Heat"], ["her heat", "spine"]), ["mine", "Her Heat", "spine"]);
 assert.ok(UNDERTOW_SLOP_PHRASES.includes("clutching heat") && UNDERTOW_SLOP_PHRASES.includes("unhurried"));
 assert.ok(DEFAULT_SLOP_PHRASES.includes("clutching heat"), "a fresh install starts with the master list");
+// The review turns single fixes on and off against the original reply.
+const reviewOriginal = "One slick line. Two plain. Three her heat line.";
+const reviewSwaps = [
+  { start: 0, end: 15, replacement: "One wet line." },
+  { start: 27, end: 48, replacement: "Three pussy line." },
+];
+assert.equal(applyKeptFixes(reviewOriginal, reviewSwaps, [true, true]), "One wet line. Two plain. Three pussy line.");
+assert.equal(
+  applyKeptFixes(reviewOriginal, reviewSwaps, [false, true]),
+  "One slick line. Two plain. Three pussy line.",
+);
+assert.equal(applyKeptFixes(reviewOriginal, reviewSwaps, [false, false]), reviewOriginal, "undo all is the original");
+assert.equal(withoutTags('"Hi,"</span> he said.'), '"Hi," he said.', "the review shows text, not tags");
 console.log("fork fix part, automatic pass: ok");

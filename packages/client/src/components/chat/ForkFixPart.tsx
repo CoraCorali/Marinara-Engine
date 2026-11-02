@@ -19,9 +19,11 @@ import {
   locatePassage,
   passageOccurrence,
   replacePassage,
+  applyKeptFixes,
   replacePassages,
   sameTags,
   sentenceAround,
+  withoutTags,
 } from "../../lib/fork/slop";
 import { isChatProvider } from "@marinara-engine/shared";
 import { useConnections } from "../../hooks/use-connections";
@@ -67,6 +69,15 @@ interface SlopMark {
   text: string;
   start: number;
   end: number;
+}
+
+/** The last automatic fix, kept so it can be looked over and each change undone on its own. */
+interface AutoFixReview {
+  messageId: string;
+  original: string;
+  swaps: Array<{ start: number; end: number; replacement: string; phrases: string[] }>;
+  /** Which fixes are in the reply right now. */
+  kept: boolean[];
 }
 
 const HIGHLIGHT_NAME = "fork-slop";
@@ -203,8 +214,11 @@ export function ForkFixPart({ chatId, messages, onEdit, busy }: Props) {
 
   // ── The automatic pass: when a reply finishes, the sentences holding listed phrases are fixed ──
   // One call rewrites them all; the reply is spliced through the normal message edit, and a toast
-  // offers Undo. A rewrite that changed a tag is dropped, and nothing is spliced into a reply that
+  // offers a review of every change (before and after, each one undoable). A rewrite that changed a tag is dropped, and nothing is spliced into a reply that
   // changed while the fix ran. Each finished reply (id and text) is checked once.
+  const [review, setReview] = useState<AutoFixReview | null>(null);
+  const [reviewOpen, setReviewOpen] = useState(false);
+  const [reviewSaving, setReviewSaving] = useState(false);
   const wasBusyRef = useRef(busy);
   const autoCheckedRef = useRef(new Set<string>());
   // The latest settings, read when the pass runs: a re-render must not cancel a pass under way.
@@ -260,12 +274,17 @@ export function ForkFixPart({ chatId, messages, onEdit, busy }: Props) {
           connectionId: fixConnectionId,
           debugMode,
         });
-        const swaps = data.replacements.filter(
-          (swap): swap is { start: number; end: number; replacement: string } =>
-            typeof swap.replacement === "string" &&
-            swap.replacement.trim().length > 0 &&
-            sameTags(original.slice(swap.start, swap.end), swap.replacement),
-        );
+        const swaps = data.replacements
+          .filter(
+            (swap): swap is { start: number; end: number; replacement: string } =>
+              typeof swap.replacement === "string" &&
+              swap.replacement.trim().length > 0 &&
+              sameTags(original.slice(swap.start, swap.end), swap.replacement),
+          )
+          .map((swap) => ({
+            ...swap,
+            phrases: passages.find((passage) => passage.start === swap.start)?.phrases ?? [],
+          }));
         const now = replyById(reply.id);
         if (swaps.length === 0 || !now || now.content !== original) {
           toast.dismiss(toastId);
@@ -273,15 +292,11 @@ export function ForkFixPart({ chatId, messages, onEdit, busy }: Props) {
         }
         const fixed = replacePassages(original, swaps);
         await onEdit(reply.id, fixed);
+        setReview({ messageId: reply.id, original, swaps, kept: swaps.map(() => true) });
         toast.success(localizeUi("ui.chat.forkfix.autoFixed", { count: swaps.length }), {
           id: toastId,
-          action: {
-            label: localizeUi("ui.chat.forkfix.undo"),
-            onClick: () => {
-              // Only undo onto the fixed reply; anything written since stays.
-              if (replyById(reply.id)?.content === fixed) void onEdit(reply.id, original);
-            },
-          },
+          duration: 10_000,
+          action: { label: localizeUi("ui.chat.forkfix.review"), onClick: () => setReviewOpen(true) },
         });
       } catch (error) {
         toast.error(error instanceof Error ? error.message : localizeUi("ui.chat.forkfix.autoFixFailed"), {
@@ -295,6 +310,26 @@ export function ForkFixPart({ chatId, messages, onEdit, busy }: Props) {
       if (timer) clearTimeout(timer);
     };
   }, [busy, replyById]);
+
+  // A review change is only made onto the reply as the review last left it; anything written since stays.
+  const applyReview = async (kept: boolean[]) => {
+    if (!review || reviewSaving) return;
+    const current = replyById(review.messageId)?.content;
+    if (current !== applyKeptFixes(review.original, review.swaps, review.kept)) {
+      toast.error(localizeUi("ui.chat.forkfix.replyChanged"));
+      return;
+    }
+    setReviewSaving(true);
+    try {
+      await onEdit(review.messageId, applyKeptFixes(review.original, review.swaps, kept));
+      setReview({ ...review, kept });
+    } catch {
+      toast.error(localizeUi("ui.chat.forkfix.couldNotSave"));
+    } finally {
+      setReviewSaving(false);
+    }
+  };
+  useBackDismiss(reviewOpen, () => setReviewOpen(false));
 
   // ── Picking a passage: a selection inside one reply shows the button ──
   useEffect(() => {
@@ -678,6 +713,92 @@ export function ForkFixPart({ chatId, messages, onEdit, busy }: Props) {
           document.body,
         )}
 
+      {review &&
+        reviewOpen &&
+        createPortal(
+          <section
+            role="dialog"
+            aria-modal="false"
+            aria-label={localizeUi("ui.chat.forkfix.reviewTitle")}
+            style={{ background: "linear-gradient(var(--card), var(--card)), var(--background)" }}
+            className="fork-ui fixed inset-x-0 bottom-0 z-[9990] mx-auto flex max-h-[70vh] w-full max-w-2xl flex-col rounded-t-3xl border border-b-0 border-[color-mix(in_srgb,var(--primary)_40%,var(--border))] shadow-[0_-12px_40px_rgba(0,0,0,0.45)]"
+          >
+            <div aria-hidden="true" className="mx-auto mt-2 h-1.5 w-10 shrink-0 rounded-full bg-foreground/20" />
+            <div className="flex shrink-0 items-center gap-2 px-4 pb-1 pt-2">
+              <WandSparkles size="1rem" className="text-[var(--primary)]" />
+              <h2 className="flex-1 text-[0.8125rem] font-bold text-foreground">
+                {localizeUi("ui.chat.forkfix.reviewTitle")}
+              </h2>
+              <button
+                type="button"
+                onClick={() => setReviewOpen(false)}
+                aria-label={localizeUi("ui.chat.forkfix.close")}
+                className="flex h-9 w-9 items-center justify-center rounded-full text-[var(--muted-foreground)] hover:bg-foreground/10"
+              >
+                <X size="1rem" />
+              </button>
+            </div>
+            <ol className="flex min-h-0 flex-col gap-4 overflow-y-auto px-4 pb-3">
+              {review.swaps.map((swap, index) => {
+                const kept = review.kept[index] ?? false;
+                return (
+                  <li key={swap.start} className="flex flex-col gap-1.5">
+                    {swap.phrases.length > 0 && (
+                      <span className="text-[0.6875rem] font-semibold text-[var(--muted-foreground)]">
+                        {localizeUi("ui.chat.forkfix.reviewFlagged", { phrases: swap.phrases.join(", ") })}
+                      </span>
+                    )}
+                    {[false, true].map((after) => (
+                      <p
+                        key={String(after)}
+                        className={cn(
+                          "whitespace-pre-wrap rounded-2xl px-3.5 py-2.5 text-[0.8125rem] leading-relaxed",
+                          after === kept
+                            ? "border-2 border-[var(--primary)] bg-[color-mix(in_srgb,var(--primary)_10%,transparent)] text-foreground"
+                            : "border border-[var(--border)] bg-[var(--secondary)]/60 text-foreground/60",
+                        )}
+                      >
+                        <span className="mb-0.5 block text-[0.6875rem] font-bold uppercase tracking-wide text-[var(--muted-foreground)]">
+                          {localizeUi(after ? "ui.chat.forkfix.after" : "ui.chat.forkfix.before")}
+                        </span>
+                        {withoutTags(after ? swap.replacement : review.original.slice(swap.start, swap.end)).trim()}
+                      </p>
+                    ))}
+                    <button
+                      type="button"
+                      disabled={reviewSaving || busy}
+                      onClick={() => void applyReview(review.kept.map((value, i) => (i === index ? !value : value)))}
+                      className="flex min-h-9 items-center justify-center gap-2 self-start rounded-xl border-2 border-[var(--border)] px-3 text-xs font-bold text-foreground disabled:opacity-50"
+                    >
+                      <RotateCcw size="0.75rem" />
+                      {localizeUi(kept ? "ui.chat.forkfix.useOriginal" : "ui.chat.forkfix.useFix")}
+                    </button>
+                  </li>
+                );
+              })}
+            </ol>
+            <div className="flex shrink-0 gap-2 px-4 pb-[max(1rem,var(--mari-safe-area-inset-bottom,env(safe-area-inset-bottom)))]">
+              <button
+                type="button"
+                disabled={reviewSaving || busy || review.kept.every((value) => !value)}
+                onClick={() => void applyReview(review.kept.map(() => false))}
+                className="flex min-h-12 items-center justify-center gap-2 rounded-2xl border-2 border-[var(--border)] px-4 text-[0.8125rem] font-bold text-foreground disabled:opacity-50"
+              >
+                {reviewSaving ? <Loader2 size="0.875rem" className="animate-spin" /> : <RotateCcw size="0.875rem" />}
+                {localizeUi("ui.chat.forkfix.undoAll")}
+              </button>
+              <button
+                type="button"
+                onClick={() => setReviewOpen(false)}
+                className="flex min-h-12 flex-1 items-center justify-center rounded-2xl bg-[var(--primary)] text-[0.8125rem] font-bold text-[var(--primary-foreground)]"
+              >
+                {localizeUi("ui.chat.forkfix.done")}
+              </button>
+            </div>
+          </section>,
+          document.body,
+        )}
+
       <Modal
         open={listOpen}
         onClose={() => setListOpen(false)}
@@ -687,6 +808,14 @@ export function ForkFixPart({ chatId, messages, onEdit, busy }: Props) {
       >
         <SlopListEditor
           latestReply={[...(messages ?? [])].reverse().find((message) => message.role !== "user")?.content ?? ""}
+          onReview={
+            review
+              ? () => {
+                  setListOpen(false);
+                  setReviewOpen(true);
+                }
+              : undefined
+          }
         />
       </Modal>
     </>
@@ -697,7 +826,7 @@ export function ForkFixPart({ chatId, messages, onEdit, busy }: Props) {
  * The phrase list as chips you can remove, an add box, the two switches, and how much of the
  * newest reply is on the list, so the list can be tuned against what the model is actually writing.
  */
-function SlopListEditor({ latestReply }: { latestReply: string }) {
+function SlopListEditor({ latestReply, onReview }: { latestReply: string; onReview?: () => void }) {
   const { t: localizeUi } = useUiTranslation();
   const highlight = useForkSlopStore((s) => s.highlight);
   const lorebookButton = useForkSlopStore((s) => s.lorebookButton);
@@ -764,6 +893,16 @@ function SlopListEditor({ latestReply }: { latestReply: string }) {
           className={FORK_SWITCH_CLASS}
         />
       </label>
+      {onReview && (
+        <button
+          type="button"
+          onClick={onReview}
+          className="flex min-h-9 items-center justify-center gap-2 rounded-xl border-2 border-[var(--primary)] text-[0.8125rem] font-semibold text-foreground"
+        >
+          <WandSparkles size="0.875rem" />
+          {localizeUi("ui.chat.forkfix.reviewLast")}
+        </button>
+      )}
       <label className="flex min-h-9 items-center justify-between gap-3 rounded-xl bg-[var(--secondary)] px-3 text-[0.8125rem] font-semibold text-foreground">
         {localizeUi("ui.chat.forkfix.autoFixSwitch")}
         <input

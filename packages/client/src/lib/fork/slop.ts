@@ -379,3 +379,20 @@ export function mergePhrases(saved: readonly string[], added: readonly string[])
   const have = new Set(saved.map(key));
   return [...saved, ...added.filter((phrase) => !have.has(key(phrase)))];
 }
+
+/** A passage's text without its tags, for showing a before and after to the writer. */
+export function withoutTags(text: string): string {
+  return text.replace(HTML_TAG, "");
+}
+
+/** The reply with only the kept fixes applied: how a review turns single fixes on and off. */
+export function applyKeptFixes(
+  original: string,
+  swaps: ReadonlyArray<{ start: number; end: number; replacement: string }>,
+  kept: readonly boolean[],
+): string {
+  return replacePassages(
+    original,
+    swaps.filter((_, index) => kept[index]),
+  );
+}
