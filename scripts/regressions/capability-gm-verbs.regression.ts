@@ -834,13 +834,16 @@ assert.deepEqual(
 // write path, the same as updateChatMetadata beside it, so it introduces no Engine key.
 // The other half of the boundary — a read off a parameter inside a helper — has no count
 // to pin, which is why sub-source 7 exists rather than a seventh sweep. The docs state both limits.
-// Fork: 20, not 21. The retry-agents route's map sync used to write the whole metadata object it
-// had read before the agents ran (`updateMetadata(chatId, chatMeta)`, an opaque variable payload);
-// it now patches only gameMap, gameMaps and activeGameMapId, all under the reserved `game` /
-// `active` namespaces, so one opaque call is gone and nothing new is written.
+// The Video Run Interval claim (agent-cadence.ts claimAutomaticVideoRun) adds one audited updater write: it
+// checks the interval inside the serialized metadata write and commits only lastAutomaticVideoMessageId, under
+// the already reserved `last` namespace (staging's own count was 22 before it).
+// Fork: one fewer than upstream. The retry-agents route's map sync used to write the whole metadata object it
+// had read before the agents ran (`updateMetadata(chatId, chatMeta)`, an opaque variable payload); it now patches
+// only gameMap, gameMaps and activeGameMapId, all under the reserved `game` / `active` namespaces, so one opaque
+// call is gone and nothing new is written.
 assert.equal(
   unreadableWriteCalls,
-  22,
+  23,
   `chat-metadata writes this sweep cannot read statically changed: expected 22, found ${unreadableWriteCalls}. ` +
     "This count is a boundary marker, not a budget, so do not simply edit the number to match. Read the " +
     "call this added by hand — the sites are listed below — and decide what it writes: if it commits a key " +

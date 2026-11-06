@@ -4,8 +4,9 @@ import type { DB } from "../../db/connection.js";
 import { createLLMProvider } from "../llm/provider-registry.js";
 import { resolveBaseUrl } from "./connection-base-url.js";
 import { createConnectionsStorage } from "../storage/connections.storage.js";
+import { applyChatModelOverride, readChatModelOverride } from "./connection-resolution.js";
 
-type ChatLike = { connectionId?: string | null };
+type ChatLike = { connectionId?: string | null; metadata?: unknown };
 
 export type ForkChatProvider =
   { ok: true; provider: ReturnType<typeof createLLMProvider>; model: string } | { ok: false; error: string };
@@ -23,8 +24,10 @@ export async function resolveForkChatProvider(
     (await connections.getDefault())?.id ||
     "";
   if (!connectionId) return { ok: false, error: "No API connection configured for this chat" };
-  const conn = await connections.getWithKey(connectionId);
-  if (!conn) return { ok: false, error: "API connection not found" };
+  const storedConn = await connections.getWithKey(connectionId);
+  if (!storedConn) return { ok: false, error: "API connection not found" };
+  // The model picked for this chat, when it is this chat's own connection, as generation does.
+  const conn = applyChatModelOverride(storedConn, readChatModelOverride(chat));
   const baseUrl = resolveBaseUrl(conn);
   if (!baseUrl) return { ok: false, error: "No base URL configured for this connection" };
   const provider = createLLMProvider(

@@ -487,6 +487,29 @@ assert.equal((await store.listMomentsForChat(CHAT)).length, 2, "the source keeps
 await store.removeChat(CHAT);
 assert.equal((await store.listMomentsForChat(CHAT)).length, 0, "deleting a chat clears its moments");
 
+// ── Deleting a whole chat group (every branch) clears each branch's relationships too ──
+const { createChatsStorage } = await import("../../packages/server/src/services/storage/chats.storage.js");
+const chatsStore = createChatsStorage(db);
+const trunk = await chatsStore.create({
+  name: "Trunk",
+  mode: "roleplay",
+  characterIds: [],
+  groupId: "group-x",
+} as never);
+const branch = await chatsStore.create({
+  name: "Branch",
+  mode: "roleplay",
+  characterIds: [],
+  groupId: "group-x",
+} as never);
+assert.ok(trunk && branch, "the test chats exist");
+await store.create({ chatId: trunk!.id, characterId: "char-a", kind: "friend" });
+await store.create({ chatId: branch!.id, characterId: "char-a", kind: "love" });
+await chatsStore.removeGroup("group-x");
+assert.equal((await store.listForChat(trunk!.id)).length, 0, "the trunk's bonds go with it");
+assert.equal((await store.listForChat(branch!.id)).length, 0, "and the branch's");
+assert.equal((await store.listForChat("chat-2")).length, 1, "other chats are still untouched");
+
 await closeDB();
 rmSync(dir, { recursive: true, force: true });
 console.log("fork bonds: ok");

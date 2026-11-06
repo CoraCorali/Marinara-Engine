@@ -35,6 +35,7 @@ import { useCommitSpatialOwnerTurn } from "../../hooks/use-spatial-context";
 import { useApplyRegex } from "../../hooks/use-apply-regex";
 import { useInstalledCapabilityPackages } from "../../hooks/use-capability-packages";
 import { useCreateMessage, useDeleteMessage, useUpdateMessageExtra, chatKeys } from "../../hooks/use-chats";
+import { isConnectionFlagTrue } from "../../lib/connection-filters";
 import { useConnections } from "../../hooks/use-connections";
 import { characterKeys, ensureCharacterAndPersonaLists } from "../../hooks/use-characters";
 import {
@@ -208,6 +209,8 @@ interface ChatInputProps {
   ) => void | Promise<void>;
   onPeekPrompt?: () => void;
   onIllustrate?: (prompt?: string, messageRange?: [string, string]) => void | Promise<void>;
+  onHtml?: (prompt?: string) => void | Promise<void>;
+  onRoleplayVideo?: (description?: string) => void | Promise<void>;
   combatAgentEnabled?: boolean;
   onStartEncounter?: () => void;
   /** Fork: opens the Director's chair. */
@@ -225,6 +228,8 @@ export const ChatInput = memo(function ChatInput({
   onExpressionChange,
   onPeekPrompt,
   onIllustrate,
+  onHtml,
+  onRoleplayVideo,
   combatAgentEnabled,
   onStartEncounter,
   onOpenForkDirector,
@@ -300,6 +305,7 @@ export const ChatInput = memo(function ChatInput({
   const activeChat = useChatStore((s) => s.activeChat);
   const { data: contextConnections = [] } = useConnections();
   const sidecarMaxContext = useSidecarStore((state) => state.config.contextSize);
+  const sidecarUseAsMainDefault = useSidecarStore((state) => state.config.useAsMainDefault && state.modelDownloaded);
   const showContextUsage = useUIStore((s) => s.showContextUsage);
   const chatMetadata = useMemo(() => parseChatMetadata(activeChat?.metadata), [activeChat?.metadata]);
   const { data: installedCapabilities = [] } = useInstalledCapabilityPackages();
@@ -877,6 +883,8 @@ export const ChatInput = memo(function ChatInput({
         ? (characterId, expression) => onExpressionChange(characterId, expression, { immediate: true })
         : undefined,
       illustrate: onIllustrate,
+      html: onHtml,
+      roleplayVideo: onRoleplayVideo,
       availableCapabilityIds,
     };
   }, [
@@ -895,6 +903,8 @@ export const ChatInput = memo(function ChatInput({
     lastMessageRole,
     onExpressionChange,
     onIllustrate,
+    onHtml,
+    onRoleplayVideo,
     availableCapabilityIds,
     pendingSpatialTransition,
     qc,
@@ -1066,9 +1076,16 @@ export const ChatInput = memo(function ChatInput({
       return;
     }
 
-    // Check if the chat has a connection configured
+    // A chat without its own connection follows Main; only block when there is no Main either.
     const chat = useChatStore.getState().activeChat;
-    if (chat && !chat.connectionId) {
+    if (
+      chat &&
+      !chat.connectionId &&
+      !sidecarUseAsMainDefault &&
+      !(contextConnections as Array<{ isDefault?: unknown }>).some((connection) =>
+        isConnectionFlagTrue(connection.isDefault),
+      )
+    ) {
       toast.error(localizeUi("ui.chat.chatinput.itLooksLikeYouHavenTConnectedAnyModel"));
       return;
     }
@@ -1175,6 +1192,8 @@ export const ChatInput = memo(function ChatInput({
       console.error("Send failed:", error);
     }
   }, [
+    contextConnections,
+    sidecarUseAsMainDefault,
     activeChatId,
     mode,
     isInputBusy,

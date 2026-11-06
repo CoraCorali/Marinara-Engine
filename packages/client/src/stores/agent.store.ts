@@ -16,6 +16,7 @@ import type {
   CharacterCardFieldUpdate,
   MariGuidedPlanStep,
   MariSuggestionChip,
+  MariTodoItem,
 } from "@marinara-engine/shared";
 import type { AgentFailure } from "../lib/agent-failures";
 
@@ -158,6 +159,9 @@ interface AgentState {
   cyoaChoicesAgentType: string | null;
   mariChips: MariSuggestionChip[];
   mariChipsChatId: string | null;
+  /** Her to-do list while a run is going; null when no run has sent one, [] when she cleared it. */
+  mariTodos: MariTodoItem[] | null;
+  mariTodosChatId: string | null;
   /**
    * A guided-creation plan Mari returned in one call: an ordered list of question+chip
    * steps. The client walks these locally (see recordMariPlanAnswer) with zero further
@@ -203,6 +207,7 @@ interface AgentState {
   clearCyoaChoices: () => void;
   setMariChips: (chatId: string | null, chips: MariSuggestionChip[]) => void;
   clearMariChips: () => void;
+  setMariTodos: (chatId: string | null, todos: MariTodoItem[] | null) => void;
   setMariPlan: (chatId: string | null, steps: MariGuidedPlanStep[]) => void;
   /** Records the answer for the current step and advances the cursor. Returns "complete" once past the last step. */
   recordMariPlanAnswer: (fieldKey: string, value: string) => "advanced" | "complete";
@@ -248,6 +253,8 @@ type AgentDataState = Pick<
   | "cyoaChoicesAgentType"
   | "mariChips"
   | "mariChipsChatId"
+  | "mariTodos"
+  | "mariTodosChatId"
   | "mariPlan"
   | "mariPlanChatId"
   | "mariPlanCursor"
@@ -284,6 +291,8 @@ function createInitialAgentDataState(): AgentDataState {
     cyoaChoicesAgentType: null,
     mariChips: [],
     mariChipsChatId: null,
+    mariTodos: null,
+    mariTodosChatId: null,
     mariPlan: null,
     mariPlanChatId: null,
     mariPlanCursor: 0,
@@ -511,6 +520,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   clearCyoaChoices: () => set({ cyoaChoices: [], cyoaChoicesChatId: null, cyoaChoicesAgentType: null }),
   setMariChips: (chatId, chips) => set({ mariChips: chips, mariChipsChatId: chatId }),
   clearMariChips: () => set({ mariChips: [], mariChipsChatId: null }),
+  setMariTodos: (chatId, todos) => set({ mariTodos: todos, mariTodosChatId: chatId }),
   setMariPlan: (chatId, steps) =>
     set({ mariPlan: steps, mariPlanChatId: chatId, mariPlanCursor: 0, mariPlanAnswers: {} }),
   recordMariPlanAnswer: (fieldKey, value) => {

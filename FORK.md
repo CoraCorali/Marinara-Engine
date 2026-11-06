@@ -1172,6 +1172,25 @@ started from a screen recording of the relationship tracker.
   A rate-limited script now waits a few seconds and tries again (a note says it is waiting), so the
   pack lands whole and in order. Both the preset and the character regex imports do this.
 
+### Synced with Marinara 2.5.2 (2026-11-05)
+
+Merged upstream v2.5.2 (through the fork's `main`, which took it first) into this branch, which already had
+2.5.1. Where `main` and this branch had each fixed the same thing, this branch's version was kept: tables
+registered when storage opens, Re-roll on Spark's unsaved choices, the bonds note staying ahead of a prefill
+and Gemini's rewrite instruction, and Edit & resend clearing the "Failed · Retry" line.
+
+- **The fork's side calls use this chat's model.** When a chat has its own model picked (new in 2.5), the
+  Director, Fix this part and the board's helpers use that model instead of the connection's default one
+  (`resolveForkChatProvider`).
+- **Save for next works for every Director note.** `/guided` reads a direction starting with "As", "For" or
+  "From" as "respond as a character" and only shows its help, so a note like "As the storm hits…" never
+  reached the story. Such notes now go in as `/guided Next: …`.
+- **Spark's choices get the same quote cleanup** the official choices agent's get.
+- **Every way a chat is deleted clears its fork data**, including the empty setup and DM chats upstream
+  removes on its own.
+- **SillyTavern lorebook settings under `extensions`**: 2.5.2 reads these itself now, so the fork's own
+  version of that fix is gone and the importer is stock again.
+
 ## Upstream files touched
 
 Fork-only code lives in `packages/client/src/lib/fork/`, `Fork*` components, `packages/shared/src/features/fork-bond-shapes.ts`, `packages/server/src/services/import/fork/`
@@ -1185,7 +1204,7 @@ Edits to upstream files are marked with a `Fork:` comment.
 | `packages/client/src/components/chat/ChatMessage.tsx`                                      | Resend button in the message editor                                                               |
 | `packages/client/src/localization/locales/en.json`                                         | Two strings for the resend button                                                                 |
 | `packages/client/src/components/agents/AgentEditor.tsx`                                    | Offers the fork tracker result to custom agents                                                   |
-| `packages/server/src/services/agents/agent-executor.ts`                                    | Shows the tracker agent what the tracker holds                                                    |
+| `packages/server/src/services/agents/agent-executor.ts`                                    | Shows the tracker agent what the tracker holds; quote cleanup for every choice agent              |
 | `packages/client/src/lib/custom-agent-result-examples.ts`                                  | The JSON example for that result                                                                  |
 | `packages/client/src/components/panels/PresetsPanel.tsx`                                   | Regex import waits out the request limit                                                          |
 | `packages/client/src/components/characters/CharacterRegexSection.tsx`                      | Regex import waits out the request limit                                                          |
