@@ -38,3 +38,19 @@ function stripMarker(label: string, marker: string): string {
       .trim() || label
   );
 }
+
+/**
+ * Which agent made the choices on screen, per chat, while they live only in the client. Choices
+ * saved on a message carry their agent with them; Spark's opening scenes on a chat with no
+ * messages have nowhere to save it, so Re-roll looks here to rerun the right agent.
+ */
+const liveChoiceAgentByChat = new Map<string, string>();
+
+export function rememberLiveChoiceAgent(chatId: string | null | undefined, agentType: string | undefined): void {
+  if (!chatId || !agentType) return;
+  liveChoiceAgentByChat.set(chatId, agentType);
+}
+
+export function liveChoiceAgent(chatId: string | null | undefined): string | undefined {
+  return chatId ? liveChoiceAgentByChat.get(chatId) : undefined;
+}

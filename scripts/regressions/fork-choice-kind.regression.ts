@@ -4,7 +4,9 @@
  */
 import assert from "node:assert/strict";
 
-const { parseChoiceLabel } = await import("../../packages/client/src/lib/fork/choice-kind.js");
+const { parseChoiceLabel, rememberLiveChoiceAgent, liveChoiceAgent } =
+  await import("../../packages/client/src/lib/fork/choice-kind.js");
+const { guidedCommandForNote } = await import("../../packages/client/src/lib/fork/director-note.js");
 
 // ── The two kinds Scene Spark produces ──
 const steer = parseChoiceLabel("🎬 Gia calling, he stares");
@@ -33,5 +35,26 @@ assert.equal(parseChoiceLabel("🔥 Burn it down").label, "🔥 Burn it down");
 assert.equal(parseChoiceLabel("  spaced out  ").label, "spaced out");
 assert.equal(parseChoiceLabel("🎬").label, "🎬", "a marker with no words keeps something to show");
 assert.equal(parseChoiceLabel("").label, "");
+
+// ── Re-roll knows which agent made unsaved choices ──
+assert.equal(liveChoiceAgent("chat-a"), undefined);
+rememberLiveChoiceAgent("chat-a", "scene-spark");
+rememberLiveChoiceAgent("chat-b", "cyoa");
+assert.equal(liveChoiceAgent("chat-a"), "scene-spark");
+assert.equal(liveChoiceAgent("chat-b"), "cyoa", "each chat keeps its own");
+rememberLiveChoiceAgent("chat-a", undefined);
+assert.equal(liveChoiceAgent("chat-a"), "scene-spark", "a result with no agent does not forget the last one");
+assert.equal(liveChoiceAgent(null), undefined);
+
+// ── Director notes reach the story through /guided ──
+assert.equal(guidedCommandForNote("  She finally says it.  "), "/guided She finally says it.");
+// Openers /guided would read as "respond as <character>" get a lead word first.
+assert.equal(guidedCommandForNote("As the storm hits, she runs"), "/guided Next: As the storm hits, she runs");
+assert.equal(guidedCommandForNote("for once he listens"), "/guided Next: for once he listens");
+assert.equal(guidedCommandForNote("From the porch, he watches"), "/guided Next: From the porch, he watches");
+assert.equal(guidedCommandForNote("Reply as a stranger would"), "/guided Next: Reply as a stranger would");
+// A word that only starts with those letters is fine as it is.
+assert.equal(guidedCommandForNote("Ashamed, he looks away"), "/guided Ashamed, he looks away");
+assert.equal(guidedCommandForNote("Fortune turns"), "/guided Fortune turns");
 
 console.log("fork choice kind: ok");

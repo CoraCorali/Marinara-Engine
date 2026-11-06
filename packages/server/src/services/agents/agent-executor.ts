@@ -3853,7 +3853,9 @@ function parseAgentResponse(
           }
         }
       }
-      let data = config.type === "cyoa" ? normalizeCyoaChoiceOutput(parsedData) : parsedData;
+      // Fork: every choice agent (like Scene Spark), not only the official one, gets its quotes fixed.
+      let data =
+        config.type === "cyoa" || resultType === "cyoa_choices" ? normalizeCyoaChoiceOutput(parsedData) : parsedData;
       // Custom Tracker and Character Tracker each have one row group; tolerate
       // the incremental envelope at the root as well as under its key, then use
       // the usual merge/lock path (#7208).

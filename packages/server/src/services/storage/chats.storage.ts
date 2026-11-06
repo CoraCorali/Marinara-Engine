@@ -839,6 +839,14 @@ export function agentLoreCascadeChange(entry: AgentLoreProvenance, deletedIds: R
 }
 
 export function createChatsStorage(db: DB) {
+  // Fork: the board and the relationships are registered storage, so no delete cascade reaches
+  // them. Every way a chat goes clears them; losing either must not block the delete.
+  const removeForkChatState = async (chatId: string) => {
+    await removeForkBoardScope(db, "chat", chatId);
+    await createBondsStorage(db)
+      .removeChat(chatId)
+      .catch((error) => logger.warn(error, "[fork-bonds] Could not clear the relationships for chat %s", chatId));
+  };
   let chatLastMessageAtBackfilled = false;
   let chatLastMessageAtBackfillPromise: Promise<void> | null = null;
 
@@ -2151,12 +2159,7 @@ export function createChatsStorage(db: DB) {
     async remove(id: string) {
       const galleryFilePaths = await db.transaction((tx) => removeChatDatabaseRecords(tx, id));
       await cleanupDeletedChatFiles(id, galleryFilePaths);
-      // Fork: the board and the relationships are registered storage, so neither is part of the
-      // cascade above. Losing either must not block the delete.
-      await removeForkBoardScope(db, "chat", id);
-      await createBondsStorage(db)
-        .removeChat(id)
-        .catch((error) => logger.warn(error, "[fork-bonds] Could not clear the relationships for chat %s", id));
+      await removeForkChatState(id);
     },
 
     /** Compare and remove inside one transaction so messages/settings cannot race cancellation. */
@@ -2206,6 +2209,7 @@ export function createChatsStorage(db: DB) {
       });
       if (!galleryFilePaths) return false;
       await cleanupDeletedChatFiles(id, galleryFilePaths);
+      await removeForkChatState(id);
       return true;
     },
 
@@ -2227,6 +2231,7 @@ export function createChatsStorage(db: DB) {
       });
       if (!galleryFilePaths) return false;
       await cleanupDeletedChatFiles(id, galleryFilePaths);
+      await removeForkChatState(id);
       return true;
     },
 
@@ -2259,6 +2264,7 @@ export function createChatsStorage(db: DB) {
         await cleanupChatGallery(chat.id);
         const videoDir = join(GAME_SCENE_VIDEOS_DIR, chat.id);
         if (existsSync(videoDir)) rmSync(videoDir, { recursive: true, force: true });
+        await removeForkChatState(chat.id);
       }
 
       await db.delete(chats).where(eq(chats.groupId, groupId));

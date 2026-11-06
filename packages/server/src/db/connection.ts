@@ -18,6 +18,15 @@ let fileStore: FileNativeStoreController | null = null;
 async function createStorage(): Promise<DB> {
   const db = await createFileNativeDB();
   fileStore = db._fileStore;
+  // Fork: the board, closet and relationship tables exist wherever storage is opened, not only
+  // when the app starts it (tests, tools and anything else that calls getDB). Loaded lazily, since
+  // those modules import this one for its types.
+  const [{ boardPins }, { closetItems }, { bonds }] = await Promise.all([
+    import("../services/board/fork-board-pins.js"),
+    import("../services/closet/fork-closet-items.js"),
+    import("../services/bonds/fork-bonds.js"),
+  ]);
+  fileStore.registerTables([boardPins, closetItems, bonds]);
   dbCleanup = async () => {
     await fileStore?.close();
     fileStore = null;

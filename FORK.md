@@ -202,6 +202,26 @@ while choices go to the message box), `prompts.routes.ts` (imports), and `genera
 the bonds and outfit note now goes just before a user-message rewrite instruction instead of after it, since
 upstream expects that instruction to stay last.
 
+### Sweep after the 2.5.2 sync
+
+- **Closet drawing uses your image connection's settings.** New pieces are drawn at the connection's own
+  size, steps and quality, and fall back to the backup image connection when the main one fails, like every
+  other picture Marinara draws.
+- **The Director talks to this chat's model.** When a chat has its own model picked (new in 2.5), the
+  Director's chair uses that model instead of the connection's default one.
+- **Save for next works for every note.** `/guided` reads a direction starting with "As", "For" or "From" as
+  "respond as a character" and only shows its help, so a note like "As the storm hits…" never reached the
+  story. Such notes now go in as `/guided Next: …`.
+- **Edit & resend clears the "Failed · Retry" line**, the same as a plain save does.
+- **Re-roll on Spark's opening scenes reruns Spark.** On a chat with no messages the choices have nowhere to
+  save their agent, so Re-roll used to rerun the official choices agent instead.
+- **Spark's choices get the same quote cleanup** the official choices agent's get.
+- **The board, closet and relationship tables exist wherever storage opens**, not only when the app starts.
+  Anything else that opened storage (upstream's own test suite, for one) failed every roleplay reply with
+  "Unsupported table: fork_board_pins". `app.ts` is back to stock as a result.
+- **Every way a chat is deleted clears its board and relationships**, including deleting a chat with all its
+  branches, which used to leave them behind.
+
 ## Upstream files touched
 
 Fork-only code lives in `packages/client/src/lib/fork/`, `packages/server/src/services/import/fork/`
@@ -222,15 +242,16 @@ Edits to upstream files are marked with a `Fork:` comment.
 | `packages/client/src/components/modals/ImportPresetModal.tsx` | Update-or-copy prompt on preset import |
 | `packages/server/src/services/import/marinara.importer.ts` | Preset update in place, regex pack install |
 | `packages/server/src/routes/prompts.routes.ts` | Preset export carries its regex pack |
-| `packages/server/src/app.ts` | Registers the board and closet tables at startup |
-| `packages/server/src/db/connection.ts` | `registerForkTables` helper |
+| `packages/server/src/db/connection.ts` | Registers the board, closet and bond tables when storage opens |
 | `packages/server/src/routes/index.ts` | Registers the board and Director routes |
 | `packages/server/src/routes/generate.routes.ts` | Sends in-scene pins and the worn outfit with the reply |
 | `packages/client/src/components/chat/ChatArea.tsx` | Closet modal and its opener |
 | `packages/client/src/components/chat/ForkBoardStrip.tsx` | Closet button beside Board |
 | `packages/client/src/components/chat/ForkBoardStrip.tsx` | Bonds button too |
 | `packages/client/src/components/chat/CyoaChoices.tsx` | Readable controls and choices |
-| `packages/server/src/services/storage/chats.storage.ts` | Clears a chat's bonds when it goes |
+| `packages/server/src/services/storage/chats.storage.ts` | Clears a chat's board and bonds on every delete path |
+| `packages/server/src/services/agents/agent-executor.ts` | Quote cleanup for every choice agent |
+| `scripts/regressions/agent-runtime.regression.ts` | Expects the fork's tracker result type |
 | `packages/server/src/services/storage/characters.storage.ts` | Clears the closet when a persona goes |
 | `packages/client/src/lib/weather-renderer.ts` | Batched rain drawing |
 | `packages/client/src/workers/weather-effects.worker.ts` | Draws the field in one pass, no per-particle allocation |

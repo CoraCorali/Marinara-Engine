@@ -10,6 +10,7 @@ import { resolveBaseUrl } from "../services/generation/connection-base-url.js";
 import { createChatsStorage } from "../services/storage/chats.storage.js";
 import { createCharactersStorage } from "../services/storage/characters.storage.js";
 import { createConnectionsStorage } from "../services/storage/connections.storage.js";
+import { applyChatModelOverride, readChatModelOverride } from "../services/generation/connection-resolution.js";
 import { createLorebooksStorage } from "../services/storage/lorebooks.storage.js";
 import { resolveChatUserIdentity } from "../services/chat-user-identity.js";
 import { scanForActivatedEntries } from "../services/lorebook/keyword-scanner.js";
@@ -111,8 +112,10 @@ export async function forkDirectorRoutes(app: FastifyInstance) {
       (await connections.getDefault())?.id ||
       "";
     if (!connectionId) return reply.status(400).send({ error: "No API connection configured for this chat" });
-    const conn = await connections.getWithKey(connectionId);
-    if (!conn) return reply.status(400).send({ error: "API connection not found" });
+    const storedConn = await connections.getWithKey(connectionId);
+    if (!storedConn) return reply.status(400).send({ error: "API connection not found" });
+    // The model picked for this chat, when it is this chat's own connection, as generation does.
+    const conn = applyChatModelOverride(storedConn, readChatModelOverride(chat));
 
     const baseUrl = resolveBaseUrl(conn);
     if (!baseUrl) return reply.status(400).send({ error: "No base URL configured for this connection" });

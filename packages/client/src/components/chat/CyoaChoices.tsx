@@ -12,7 +12,7 @@ import { cn } from "../../lib/utils";
 import type { Message } from "@marinara-engine/shared";
 import { useTranslation as useUiTranslation } from "react-i18next";
 // Fork: Scene Spark marks which kind of choice each one is.
-import { parseChoiceLabel } from "../../lib/fork/choice-kind";
+import { liveChoiceAgent, parseChoiceLabel } from "../../lib/fork/choice-kind";
 import {
   appendCyoaChoiceToDraft,
   buildCyoaChoiceSubmissionPayload,
@@ -248,7 +248,8 @@ export function CyoaChoices({ messages }: Props) {
       // Re-runs ONLY the CYOA agent with fresh context (latest messages + last
       // assistant's extras). The retry route persists the new choices to the
       // message's extra and the SSE handler swaps them into the store.
-      await retryAgents(activeChatId, [persistedChoiceState?.agentType ?? "cyoa"]);
+      // Fork: saved choices name their agent; unsaved ones (Spark on an empty chat) are looked up.
+      await retryAgents(activeChatId, [persistedChoiceState?.agentType ?? liveChoiceAgent(activeChatId) ?? "cyoa"]);
     } finally {
       setIsRerolling(false);
     }

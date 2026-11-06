@@ -38,6 +38,7 @@ import {
 import { getCurrentInputSnapshot, useChatStore } from "../../stores/chat.store";
 import { hasActiveTextSelection } from "../../lib/text-selection";
 import { getResendableUserMessageId } from "../../lib/fork/edit-and-resend";
+import { guidedCommandForNote } from "../../lib/fork/director-note";
 import { ForkReferenceBoard } from "./ForkReferenceBoard";
 import { ForkClosetPanel } from "./ForkClosetPanel";
 import { ForkBondsPanel } from "./ForkBondsPanel";
@@ -2976,6 +2977,8 @@ const LocalChatArea = memo(function LocalChatArea({
       const index = messages?.findIndex((message) => message.id === messageId) ?? -1;
       const reply = messages?.[index + 1];
       await updateMessageAsync({ messageId, content });
+      // An edited message drops its "Failed · Retry" line, the same as a plain save.
+      if (messageId === failedReplyMessageId) setDismissedFailedReplyId(messageId);
       // Manual group order: an empty Send never auto-replies either, so pick the speaker as usual.
       const manualGroupOrder =
         chatCharIds.length > 1 && groupChatMode === "individual" && chatMeta.groupResponseOrder === "manual";
@@ -2993,6 +2996,7 @@ const LocalChatArea = memo(function LocalChatArea({
       activeChatId,
       chatCharIds.length,
       chatMeta.groupResponseOrder,
+      failedReplyMessageId,
       generate,
       groupChatMode,
       isStreaming,
@@ -3239,7 +3243,7 @@ const LocalChatArea = memo(function LocalChatArea({
         toast.error(localizeUi("ui.chat.forkdirector.clearYourMessageBoxFirst"));
         return;
       }
-      composer.value = `/guided ${note.trim()}`;
+      composer.value = guidedCommandForNote(note);
       composer.dispatchEvent(new Event("input", { bubbles: true }));
       setDirectorOpen(false);
       toast.success(localizeUi("ui.chat.forkdirector.savedForNext"));

@@ -9,6 +9,11 @@ import {
 import { readLorebookImageDataUrl } from "../services/lorebook/lorebook-images.js";
 import { createConnectionsStorage } from "../services/storage/connections.storage.js";
 import { generateImage } from "../services/image/image-generation.js";
+import {
+  resolveConnectionImageDefaults,
+  resolveConnectionImageQuality,
+} from "../services/image/image-generation-defaults.js";
+import { resolveImageConnectionFallback } from "../services/generation/media-connection-fallback.js";
 import { buildGarmentPrompt } from "../services/generation/fork-closet-prompt.js";
 import { normalizeSlot } from "../services/closet/fork-closet-items.js";
 import { logger } from "../lib/logger.js";
@@ -160,6 +165,11 @@ export async function forkClosetRoutes(app: FastifyInstance) {
           referenceImage,
           imageEndpointId: conn.imageEndpointId || undefined,
           comfyWorkflow: conn.comfyuiWorkflow || undefined,
+          // The connection's own size, steps and quality, and its backup connection, the same as
+          // every other picture Marinara draws.
+          imageDefaults: resolveConnectionImageDefaults(conn),
+          quality: resolveConnectionImageQuality(conn),
+          fallback: await resolveImageConnectionFallback(connections, conn.id),
         },
       );
     } catch (error) {
