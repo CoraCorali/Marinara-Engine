@@ -837,10 +837,6 @@ assert.deepEqual(
 // The Video Run Interval claim (agent-cadence.ts claimAutomaticVideoRun) adds one audited updater write: it
 // checks the interval inside the serialized metadata write and commits only lastAutomaticVideoMessageId, under
 // the already reserved `last` namespace (staging's own count was 22 before it).
-// Fork: one fewer than upstream. The retry-agents route's map sync used to write the whole metadata object it
-// had read before the agents ran (`updateMetadata(chatId, chatMeta)`, an opaque variable payload); it now patches
-// only gameMap, gameMaps and activeGameMapId, all under the reserved `game` / `active` namespaces, so one opaque
-// call is gone and nothing new is written.
 assert.equal(
   unreadableWriteCalls,
   23,

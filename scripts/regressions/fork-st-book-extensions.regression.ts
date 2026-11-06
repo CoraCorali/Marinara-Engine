@@ -1,6 +1,7 @@
 /**
  * Fork: a SillyTavern V2 character_book keeps its entry settings under `extensions`; importing it
  * keeps them instead of falling back to defaults (before_char, depth 4, 100%, no recursion).
+ * Marinara 2.5.2 does this itself now; the test stays to keep it that way.
  */
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -27,7 +28,8 @@ const result = (await importSTLorebook(
         content: "Vee keeps the bakery keys.",
         comment: "Vee",
         enabled: true,
-        position: "before_char",
+        // SillyTavern writes every non-"before" slot as "after_char"; the real slot is in extensions.
+        position: "after_char",
         extensions: {
           position: 4,
           depth: 2,

@@ -505,10 +505,11 @@ const branch = await chatsStore.create({
 assert.ok(trunk && branch, "the test chats exist");
 await store.create({ chatId: trunk!.id, characterId: "char-a", kind: "friend" });
 await store.create({ chatId: branch!.id, characterId: "char-a", kind: "love" });
+await store.create({ chatId: "chat-elsewhere", characterId: "char-a", kind: "friend" });
 await chatsStore.removeGroup("group-x");
 assert.equal((await store.listForChat(trunk!.id)).length, 0, "the trunk's bonds go with it");
 assert.equal((await store.listForChat(branch!.id)).length, 0, "and the branch's");
-assert.equal((await store.listForChat("chat-2")).length, 1, "other chats are still untouched");
+assert.equal((await store.listForChat("chat-elsewhere")).length, 1, "other chats are still untouched");
 
 await closeDB();
 rmSync(dir, { recursive: true, force: true });
