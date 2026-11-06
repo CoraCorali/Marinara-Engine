@@ -6,7 +6,7 @@ import {
 } from "@marinara-engine/shared";
 import { isProviderLocalUrlsEnabled } from "../../config/runtime-config.js";
 import { logRateLimited } from "../../lib/log-rate-limit.js";
-import { logDebugOverride } from "../../lib/logger.js";
+import { debugJson, logDebugOverride } from "../../lib/logger.js";
 import { safeFetch } from "../../utils/security.js";
 import type { DecisionConnection } from "./decision-connection.js";
 
@@ -18,12 +18,14 @@ export interface NoulQuestion {
    * System One `choice` question, answered in `choices` rather than `answers`.
    */
   options?: string[];
+  /** For a Choice question: each option's criteria, by the same index ("" for none). */
+  criteria?: string[];
 }
 
 /** The option a Choice question adds so a turn that fits none of the others can say so. */
 export const DECISION_CHOICE_NONE = "none of these";
 export type DecisionRequestError =
-  "timeout" | "cancelled" | "network" | "invalid_response" | "partial_response" | `http_${number}`;
+  "timeout" | "cancelled" | "network" | "invalid_response" | "partial_response" | `http_${number}` | "private_address";
 
 export interface DecisionRequest {
   connection: DecisionConnection;
@@ -46,6 +48,10 @@ export interface DecisionRequest {
  * DNS validation precedes the fetch and cannot itself be aborted, so the whole
  * operation is raced against `signal`.
  */
+/** The private-host guard's refusal gets its own code; its full text (it names the flag) goes to the log. */
+export const isRefusedFetch = (err: unknown): err is Error =>
+  err instanceof Error && err.message.startsWith("Refused to fetch");
+
 export async function postDecisionRequest(
   endpoint: string,
   apiKey: string,
@@ -101,6 +107,7 @@ export async function askNoulQuestions(req: DecisionRequest): Promise<{
   const timeout = AbortSignal.timeout(req.timeoutMs ?? 1500);
   const signal = req.signal ? AbortSignal.any([req.signal, timeout]) : timeout;
   let error: DecisionRequestError | undefined;
+  let guardText: string | undefined;
   let trace: DecisionDebugRequest | undefined;
   try {
     signal.throwIfAborted();
@@ -111,11 +118,13 @@ export async function askNoulQuestions(req: DecisionRequest): Promise<{
         req.questions.map((q) => {
           const instructions = buildDecisionInstructions(q.instructions, req.questionShape ?? "text");
           if (!q.options) return [q.id, { type: "noul", instructions }];
-          // The option name says it all, so only the added "none" option is described.
-          // The others get an empty description, not null: System One allows null, but
-          // some servers (Strands decider) accept only strings, and an empty string left
-          // every Open-Jev answer unchanged in testing (#6981).
-          const criteria: Record<string, string> = Object.fromEntries(q.options.map((option) => [option, ""]));
+          // An option is described only by the criteria its author wrote (#7791), plus the
+          // added "none" option. The others get an empty description, not null: System One
+          // allows null, but some servers (Strands decider) accept only strings, and an
+          // empty string left every Open-Jev answer unchanged in testing (#6981).
+          const criteria: Record<string, string> = Object.fromEntries(
+            q.options.map((option, index) => [option, q.criteria?.[index] ?? ""]),
+          );
           criteria[DECISION_CHOICE_NONE] = "None of the other options apply.";
           return [q.id, { type: "choice", instructions, criteria }];
         }),
@@ -128,8 +137,8 @@ export async function askNoulQuestions(req: DecisionRequest): Promise<{
     }
     logDebugOverride(
       req.debugMode === true || process.env.DEBUG_AGENTS === "true",
-      "[decision] System One request: %s",
-      JSON.stringify(body),
+      "[decision] System One request:\n%s",
+      debugJson(body),
     );
     const response = await postDecisionRequest(req.connection.endpoint, req.connection.apiKey, body, signal);
     if (!response.ok) {
@@ -173,7 +182,10 @@ export async function askNoulQuestions(req: DecisionRequest): Promise<{
         ? "timeout"
         : caught instanceof SyntaxError
           ? "invalid_response"
-          : "network";
+          : isRefusedFetch(caught)
+            ? "private_address"
+            : "network";
+    guardText = isRefusedFetch(caught) ? caught.message : undefined;
   }
   const results = req.questions.map((question) => ({
     id: question.id,
@@ -195,7 +207,7 @@ export async function askNoulQuestions(req: DecisionRequest): Promise<{
       `decision.system-one:${error}`,
       undefined,
       "[decision] Activation request failed: %s",
-      error,
+      guardText ?? error,
     );
   return { answers, choices, ...(error ? { error } : {}), latencyMs: Date.now() - start };
 }

@@ -2,7 +2,7 @@
 // #5743 compact mobile bookmarks, #5752 New-chat discoverability, #5753 chips
 // slot hygiene, #5754 same-frame verification without the apology round).
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -45,9 +45,17 @@ assert.equal(
 );
 
 // ── #5754 prompt + coaching: same-frame read taught, apology banned ─────────
-const workspaceAgent = readSource("packages/server/src/services/professor-mari/workspace-agent.service.ts");
+const workspaceAgent =
+  readSource("packages/server/src/services/professor-mari/workspace-agent.service.ts") +
+  readSource("packages/server/src/services/professor-mari/workspace-round-review.ts");
 assert.match(workspaceAgent, /include the confirmatory read in the SAME response whenever you can/u);
 assert.match(workspaceAgent, /never present it with an apology \("Oops", "my bad"\)/u);
+const seasonalFlavors = readSource("packages/server/src/services/professor-mari/workspace-agent.service.ts");
+assert.match(seasonalFlavors, /new Map<string, string>\(\[/u, "dated pack flavors use a Map");
+assert.match(seasonalFlavors, /MARI_SEASON_FLAVORS\.get\(seasonalPackId \?\? ""\)/u);
+assert.match(seasonalFlavors, /\["raccoon", MARI_RACCOON_SEASON_FLAVOR\]/u, "raccoon flavor text remains registered");
+assert.match(seasonalFlavors, /\[\s*"party",\s*`Seasonal flavor:/u);
+assert.match(seasonalFlavors, /\[\s*"hungover",\s*`Seasonal flavor:/u);
 // app_data writes verify themselves via the store read-back (see the
 // mari-write-readback lane); the same-frame read guidance remains for the
 // write/edit/copy/move/bash mutations that have no read-back.
@@ -78,6 +86,10 @@ assert.ok(
 // held-proposal Accept chip the delivery path deliberately exempts.
 for (const file of [
   "packages/client/src/components/chat/HomeProfessorMariChat.tsx",
+  // Slice 82: and every part of her chat.
+  ...readdirSync(join(repositoryRoot, "packages/client/src/components/chat/mari")).map(
+    (name) => `packages/client/src/components/chat/mari/${name}`,
+  ),
   "packages/client/src/components/chat/ChatInput.tsx",
   "packages/client/src/components/chat/ConversationInput.tsx",
 ]) {
@@ -88,7 +100,16 @@ for (const file of [
 }
 const mariChat = readSource("packages/client/src/components/chat/HomeProfessorMariChat.tsx");
 const mariChatFlat = flatten(mariChat);
-assert.doesNotMatch(mariChat, /clearSuggestions/u, "the dead loadMessages option stays deleted");
+// Slice 82: the chat's parts live in components/chat/mari/; "nowhere" checks read all of them.
+const mariChatDir = "packages/client/src/components/chat/mari";
+const mariChatAll = [
+  mariChat,
+  ...readdirSync(join(repositoryRoot, mariChatDir)).map((name) => readSource(`${mariChatDir}/${name}`)),
+].join("\n");
+const mariChatsPanelFlat = flatten(readSource(`${mariChatDir}/MariChatsPanel.tsx`));
+const mariHeaderChrome = readSource(`${mariChatDir}/MariOmnibarHeaderChrome.tsx`);
+const mariHeaderChromeFlat = flatten(mariHeaderChrome);
+assert.doesNotMatch(mariChatAll, /clearSuggestions/u, "the dead loadMessages option stays deleted");
 
 // ── #5752: New chat is discoverable ─────────────────────────────────────────
 const enJson = JSON.parse(readSource("packages/client/src/localization/locales/en.json")) as Record<string, string>;
@@ -98,17 +119,38 @@ assert.ok("home.professorMari.newChat" in enJson);
 assert.ok(!("ui.chat.homeprofessormarichat.restart" in enJson), "the misleading Restart label is gone");
 assert.ok(!("ui.chat.homeprofessormarichat.restartSavesTheCurrentChatHere" in enJson));
 assert.ok(!("home.professorMari.restart" in enJson));
-// The Chats popover carries its own New chat button.
-assert.ok(mariChatFlat.includes("setChatHistoryOpen(false); void runRestart();"));
+// The Chats pane carries its own New chat button.
+assert.ok(mariChatsPanelFlat.includes('setWorkspaceDestination("chat"); void runRestart();'));
 
-// ── #5741: Skills and Memories share one header button ──────────────────────
-assert.ok("ui.chat.homeprofessormarichat.skillsAndMemories" in enJson);
-assert.ok("ui.chat.homeprofessormarichat.openSkillsAndMemories" in enJson);
-assert.match(mariChat, /activeSkillCount \+ activeMemoryCount/u, "the combined button sums both badges");
-assert.match(mariChat, /libraryMenuOpen/u);
-// The menu rows still open the original panes with their own badges.
-assert.ok(mariChatFlat.includes("setLibraryMenuOpen(false); toggleSkillsMenu();"));
-assert.ok(mariChatFlat.includes("setLibraryMenuOpen(false); toggleMemoriesMenu();"));
+// ── #5741: Skills and Memories never crowd the header ───────────────────────
+// The omnibar workspace routes them through header destinations, each with its own badge.
+assert.ok(
+  mariHeaderChromeFlat.includes(
+    'id: "skills", Icon: Brain, label: localizeUi("ui.chat.homeprofessormarichat.skills"), shortLabel: undefined, count: activeSkillCount,',
+  ),
+);
+assert.ok(
+  mariHeaderChromeFlat.includes(
+    'id: "memories", Icon: BookOpen, label: localizeUi("ui.chat.homeprofessormarichat.memories"), shortLabel: undefined, count: activeMemoryCount,',
+  ),
+);
+// Q1 (slice 56): every destination fits the bar at every width, so the header has no ⋮ menu that would
+// only repeat them, and New chat sits right after Chats as one group.
+assert.doesNotMatch(mariChatAll, /mari-omnibar-header-menu__destinations|moreMariActions/u);
+// Slice 83: the tabs are a tablist, so New chat follows it as its own button rather than inside the tab map.
+const headerNewChat = mariHeaderChromeFlat.indexOf(
+  '<button type="button" onClick={() => void runRestart()} disabled={isBusy} className="mari-omnibar-header-new-chat"',
+);
+assert.ok(
+  headerNewChat > mariHeaderChromeFlat.indexOf("{headerDestinations.map("),
+  "New chat closes the row after Chats",
+);
+// Q5 (slice 57b): the "Chats · +" group closes the row, at the right under settings and Close, so Chats is
+// the last destination (DOM order is the tab order).
+const headerDestinationIds = [
+  ...(mariHeaderChrome.match(/const headerDestinations = \[[\s\S]*?\] as const/u)?.[0] ?? "").matchAll(/id: "(\w+)"/gu),
+].map((match) => match[1]);
+assert.deepEqual(headerDestinationIds, ["skills", "memories", "context", "chats"]);
 
 // ── #5742: the chip row is reachable by mouse and shows its overflow ────────
 const chipsComponent = readSource("packages/client/src/components/chat/MariSuggestionChips.tsx");
@@ -140,36 +182,53 @@ assert.ok(
   browserHubFlat.includes('aria-label={t("home.browser.bookmarksCompact")}'),
   "the compact trigger is labeled for assistive tech",
 );
-// Desktop never shows the compact button; mobile never renders the full bar.
-assert.match(browserHub, /focus-visible:ring-\[var\(--marinara-app-accent-solid\)\] sm:hidden/u);
+// The phone shell decides, not the `sm` width: a landscape phone is wider than `sm` and still gets the
+// compact button, never the fake URL bar or the full bookmarks bar.
+assert.match(browserHub, /const mobileShell = useMatchMedia\(MOBILE_SHELL_MEDIA_QUERY\);/u);
 assert.ok(
-  browserHubFlat.includes(
-    'className="hidden min-h-8 items-center border-t border-[var(--border)]/45 px-2 sm:flex sm:min-h-9 sm:px-3"',
-  ),
-  "the full bookmarks bar is desktop-only - no empty row remains at phone widths",
+  browserHubFlat.includes("{showHomeBrowserAddressBar && !mobileShell ? ("),
+  "the fake URL bar is desktop-only",
 );
-// The per-surface visibility settings still gate both surfaces - no new toggle.
-assert.ok(browserHubFlat.includes('activeTab !== "home" && !showHomeBrowserMobileBookmarksOnOtherTabs && "hidden"'));
+// Bookmarks belong to Home alone, on desktop and in the phone shell; no setting brings them to package tabs.
 assert.ok(
-  browserHubFlat.includes('mobileBookmarksOpen && (activeTab === "home" || showHomeBrowserMobileBookmarksOnOtherTabs)'),
+  browserHubFlat.includes('{mobileShell && activeTab === "home" ? ('),
+  "compact trigger: phone shell, Home only",
 );
+assert.ok(browserHubFlat.includes('{activeTab === "home" && !mobileShell ? ( <nav'), "full bar: desktop, Home only");
+assert.ok(browserHubFlat.includes('{mobileShell && mobileBookmarksOpen && activeTab === "home" ? ('));
+assert.doesNotMatch(browserHub, /BookmarksOnOtherTabs/u);
 assert.ok("home.browser.bookmarksCompact" in enJson);
+
+// Tabs that overflow fold into a three-dots menu instead of scrolling. Home is never folded, the open tab stays
+// in the row, and the trigger is a sibling of the tablist (which may only contain tabs).
+const tabListStart = browserHubFlat.indexOf('data-component="HomeBrowserHub.TabList"');
+const tabMenuTrigger = browserHubFlat.indexOf('data-component="HomeBrowserHub.TabMenuTrigger"');
+assert.ok(tabListStart > 0 && tabMenuTrigger > tabListStart, "the folded-tab trigger follows the tablist");
+assert.ok(browserHubFlat.includes("if (tabsCollapsed && !tabActive) return null;"), "the open package tab stays");
+assert.ok(browserHubFlat.includes('{!tabsCollapsed || activeTab === "professor" ? ('), "Professor folds unless open");
+assert.ok(browserHubFlat.includes("{tabsCollapsed && tabMenuOpen ? ("), "the menu only exists while folded");
+assert.match(globalsCss, /\[data-component="HomeBrowserHub\.TabMenuTrigger"\]/u, "short landscape sizes the trigger");
+assert.ok("home.browser.tabMenu" in enJson);
 
 // #5820: the Accept action for held edits must never be captioned as a mere
 // suggestion. Users read "Suggestions only. Pick one, or type your own." and
 // concluded Mari had silently done nothing, so the safety mechanism's only
 // visible surface read as a failure of it.
+// Slice 71: the held change is now a "Needs you" card (no chip row, no caption) whose words say
+// plainly that nothing is applied yet, and whose buttons send the same Accept / decline replies.
 assert.ok(
-  mariChatFlat.includes(
-    '? localizeUi("ui.chat.homeprofessormarichat.awaitingApprovalHint") : chipRowChips.length > 0 ? "Suggestions only. Pick one, or type your own."',
-  ),
-  "an awaiting-approval row gets its own caption, ahead of the suggestions wording",
+  mariChatFlat.includes("const heldChangeCard = chipRowAwaitsApproval;"),
+  "a held change renders as its card, not as a suggestions row",
 );
-assert.ok("ui.chat.homeprofessormarichat.awaitingApprovalHint" in enJson);
+assert.ok(
+  mariChatFlat.includes("onAccept={() => handleSuggestionSelect(MARI_AUTHORIZATION_ACCEPT_CHIP)}") &&
+    mariChatFlat.includes("onDecline={() => handleSuggestionSelect(MARI_AUTHORIZATION_DECLINE_CHIP)}"),
+  "the card's buttons are the Accept and decline replies",
+);
 assert.match(
-  String(enJson["ui.chat.homeprofessormarichat.awaitingApprovalHint"]),
-  /nothing has been changed yet/iu,
-  "the caption states plainly that nothing is applied yet",
+  String(enJson["mari.needsYou.then.held"]),
+  /nothing has changed yet/iu,
+  "the card states plainly that nothing is applied yet",
 );
 // Declining is a click, not a composed sentence (the reporter asked for
 // "apply or revert" and only apply existed). Both the reload-derived path and

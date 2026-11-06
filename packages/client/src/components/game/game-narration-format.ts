@@ -1,8 +1,19 @@
 import DOMPurify from "dompurify";
-import { stripSheetCommandTags } from "@marinara-engine/shared";
+import {
+  DICE_NOTATION_PATTERN,
+  stripGameRewardPromptLine,
+  stripSheetCommandTags,
+  stripClockCommandTags,
+} from "@marinara-engine/shared";
 import { escapeStandaloneGameNarrationAngleLines } from "../../lib/game-tag-parser";
 import { HTML_SAFE_DIALOGUE_QUOTE_PATTERN_SOURCE } from "../../lib/dialogue-quotes";
 import { translate } from "../../localization/i18n";
+
+/** A `[dice: 2d6+3 = 11]` record, its notation read with the shared dice grammar. */
+const DICE_RECORD_PATTERN = new RegExp(
+  String.raw`\[dice:\s*(${DICE_NOTATION_PATTERN})\s*=\s*(-?\d+)(?:\s*\([^)\]]*\))?((?:\s+\w+="[^"\]]*")*)\s*\]`,
+  "gi",
+);
 
 function commandBadge(className: string, label: string, detail?: string): string {
   return `<span class="inline-flex max-w-full flex-wrap items-center gap-1 rounded px-1.5 py-0.5 text-xs ${className}">${label}${
@@ -31,9 +42,10 @@ export function formatNarration(content: string, boldDialogue = true): string {
   // result, so leaving them in would narrate the bookkeeping twice. Stripped here as well as in
   // the tag parser because this formatter is also handed content that never passed through it
   // (a translated turn, a storyboard line).
-  let html = escapeStandaloneGameNarrationAngleLines(stripSheetCommandTags(content))
+  let html = escapeStandaloneGameNarrationAngleLines(stripClockCommandTags(stripSheetCommandTags(content)))
     .replace(/\[combat_result]\s*([\s\S]*?)\s*\[\/combat_result]/gi, (_match, recap: string) => {
-      const cleaned = recap.trim();
+      // What the recap asks of the Game Master is not the player's to read.
+      const cleaned = stripGameRewardPromptLine(recap).trim();
       return `${commandBadge("bg-red-500/15 text-red-200 ring-1 ring-red-400/20", "⚔ Combat Result")}${
         cleaned ? `\n${cleaned}` : ""
       }`;
@@ -45,11 +57,15 @@ export function formatNarration(content: string, boldDialogue = true): string {
         cleaned ? `\n${cleaned}` : ""
       }`;
     })
-    .replace(
-      /\[dice:\s*((?:\d+)?d\d+(?:[+-]\d+)?)\s*=\s*(-?\d+)(?:\s*\([^\]]+\))?\]/gi,
-      (_match, notation: string, total: string) =>
-        commandBadge("bg-white/10 text-white/60 font-mono", "🎲", `${notation} → ${total}`),
-    )
+    .replace(DICE_RECORD_PATTERN, (_match, notation: string, total: string, rawAttrs: string) => {
+      // Who rolled, when the record names them.
+      const who = parseCommandAttributes(rawAttrs ?? "").who;
+      return commandBadge(
+        "bg-white/10 text-white/60 font-mono",
+        "🎲",
+        `${who ? `${who}: ` : ""}${notation} → ${total}`,
+      );
+    })
     .replace(/\[qte_bonus:\s*(-?\d+)\]/gi, (_match, bonus: string) =>
       commandBadge("bg-amber-500/15 text-amber-200 ring-1 ring-amber-400/20", "⏱ QTE Bonus", formatSignedNumber(bonus)),
     )
@@ -61,7 +77,7 @@ export function formatNarration(content: string, boldDialogue = true): string {
     })
     .replace(/\[skill_check:\s*([^\]]+)\]/gi, (_match, rawAttrs: string) => {
       const attrs = parseCommandAttributes(rawAttrs);
-      const skill = attrs.skill || "Skill";
+      const skill = attrs.who ? `${attrs.who}: ${attrs.skill || "Skill"}` : attrs.skill || "Skill";
       // A check that names its ladder step instead of a number shows the step's own name.
       const dc = attrs.dc ? `DC ${attrs.dc}` : attrs.difficulty || "";
       const total = attrs.total ? `total ${attrs.total}` : "";
@@ -120,6 +136,16 @@ export function formatNarration(content: string, boldDialogue = true): string {
         "bg-lime-500/15 text-lime-200 ring-1 ring-lime-400/20",
         translate("game.narration.loot"),
         attrs.table || rawAttrs.trim(),
+      );
+    })
+    .replace(/\[map:\s*([^\]]*)\]/gi, (_match, rawAttrs: string) => {
+      const attrs = parseCommandAttributes(rawAttrs);
+      // A reveal opens a closed place to the party, not a map.
+      const reveal = /^\s*reveal\b/iu.test(rawAttrs) || attrs.action === "reveal";
+      return commandBadge(
+        "bg-[var(--marinara-chat-chrome-highlight-bg)] text-[var(--marinara-chat-chrome-panel-text)] ring-1 ring-[var(--marinara-chat-chrome-button-border)]",
+        reveal ? translate("game.narration.siteOpened") : `▦ ${translate("game.narration.placeMap")}`,
+        attrs.name || rawAttrs.trim(),
       );
     })
     .replace(/\[map_update:\s*([^\]]+)\]/gi, (_match, rawAttrs: string) => {

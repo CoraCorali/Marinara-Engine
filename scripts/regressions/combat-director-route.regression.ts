@@ -150,6 +150,24 @@ try {
   assert.equal((await app.inject({ url: "/combat/state" })).statusCode, 400);
   const bad = await post("/combat/start", { ...input, party: [unit("__proto__", "player")] });
   assert.equal(bad.statusCode, 400);
+  // A mechanic no interval drives may say 0, and a status may have run down to 0 turns: neither
+  // refuses the fight (a Treant's hp_threshold "Blighted Sap" with `interval: 0` did). A value that
+  // is refused is named where it is.
+  const sap = {
+    name: "Blighted Sap",
+    description: "Sap that corrodes.",
+    trigger: "hp_threshold",
+    interval: 0,
+    hpThreshold: 75,
+    effectType: "damage_all",
+    power: 0.8,
+    status: { name: "Corroded", emoji: "", duration: 0, modifier: -2 },
+  };
+  const elsewhere = { ...input, chatId: "no-such-chat", mechanics: [sap] };
+  assert.equal((await post("/combat/start", elsewhere)).json().error, "Chat not found.");
+  const named = await post("/combat/start", { ...elsewhere, mechanics: [{ ...sap, interval: -1 }] });
+  assert.equal(named.statusCode, 400);
+  assert.match(named.json().error, /^mechanics\.0\.interval: /);
   const start = await post("/combat/start", input);
   assert.equal(start.statusCode, 200, start.body);
   s = start.json().session;
@@ -387,6 +405,52 @@ try {
     assert.equal(response.statusCode, 400);
     assert.equal(response.json().error, "Unsupported combat save.");
     assert.equal((await post("/combat/start", input)).json().error, "Unsupported combat save.");
+  }
+  // A potion that lasts an hour (600 rounds) carried in from the story lasts the rest of the fight,
+  // and never refuses the fight (laptop 2026-10-25: a Potion of Climbing in a bag kept a party out of
+  // every tactical fight). So does a status or a cooldown left long.
+  {
+    const longChat = await chats.create({ name: "Director long effect proof", mode: "game", characterIds: [] });
+    const longAnchor = await chats.createMessage({
+      chatId: longChat.id,
+      role: "assistant",
+      content: "[state: combat]",
+    });
+    await chats.patchMetadata(longChat.id, {
+      gameSetupConfig: { combatDirector: true },
+      gameInventory: [{ id: "st-climb", name: "Potion of Climbing", quantity: 1 }],
+    });
+    const started = await post("/combat/start", {
+      ...input,
+      chatId: longChat.id,
+      anchor: longAnchor.id,
+      enemies: [unit("rat", "enemy")],
+      party: [
+        {
+          ...unit("hero", "player"),
+          statusEffects: [{ name: "Blessed", modifier: 1, stat: "attack", turnsLeft: 600 }],
+          skillCooldowns: { slam: 250 },
+        },
+      ],
+      mechanics: [{ ...sap, trigger: "round_interval", interval: 250, status: { ...sap.status, duration: 600 } }],
+      itemEffects: [
+        {
+          name: "Potion of Climbing",
+          target: "self",
+          type: "status",
+          description: "Climb as fast as you walk for 1 hour",
+          power: 400,
+          status: { name: "Climbing", emoji: "🧗", duration: 600 },
+        },
+      ],
+    });
+    assert.equal(started.statusCode, 200, started.body);
+    // Each is the rest of the fight: the fight's most, never more.
+    const hero = (started.json().session as DirectedCombatView).party.find((one) => one.id === "hero")!;
+    assert.deepEqual(
+      hero.statusEffects?.map((one) => [one.name, one.turnsLeft]),
+      [["Blessed", 100]],
+    );
   }
   // A line shown by a nickname is spent as the item it is, even when the nickname is another item's
   // own name: a cord the player calls "Potion" is the cord, and the real potion stays.
@@ -673,8 +737,31 @@ try {
     assert.equal(refusedPotion.statusCode, 400, refusedPotion.body);
     assert.deepEqual(JSON.parse((await chats.getById(noItemsChat.id))!.metadata).gameInventory, potions);
   }
+  // A game set to take turns by initiative (combat C6c) starts its tactical fight with an order; a per-chat
+  // choice outweighs the setup's, and a game that says nothing starts by side.
+  for (const [setupOrder, chatOrder, expected] of [
+    ["initiative", undefined, true],
+    ["initiative", "side", false],
+    [undefined, "initiative", true],
+    [undefined, undefined, false],
+  ] as const) {
+    const orderChat = await chats.create({ name: "Turn order proof", mode: "game", characterIds: [] });
+    const anchor = await chats.createMessage({ chatId: orderChat.id, role: "assistant", content: "[state: combat]" });
+    await chats.patchMetadata(orderChat.id, {
+      gameSetupConfig: {
+        combatDirector: true,
+        tacticalBattlefield: { seed: 9, size: "small" },
+        ...(setupOrder ? { tacticalTurnOrder: setupOrder } : {}),
+      },
+      ...(chatOrder ? { gameTacticalTurnOrder: chatOrder } : {}),
+    });
+    const started = await post("/combat/start", { ...input, chatId: orderChat.id, anchor: anchor.id });
+    assert.equal(started.statusCode, 200, started.body);
+    const view = started.json().session as DirectedCombatView;
+    assert.equal(!!view.tactical?.initiative, expected, `${setupOrder} / ${chatOrder}`);
+  }
   console.log(
-    "Combat director route: authority, idempotency, terrain, atomic item costs, late GM output, restore identity and branch isolation passed.",
+    "Combat director route: authority, idempotency, terrain, atomic item costs, late GM output, restore identity, branch isolation and turn order passed.",
   );
 } finally {
   await app.close();

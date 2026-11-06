@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useState } from "react";
 import {
   AlertTriangle,
   Activity,
@@ -25,7 +25,9 @@ import { toast } from "sonner";
 import {
   PERSONAL_EXTENSION_CAPABILITIES,
   PERSONAL_EXTENSION_FULL_PAGE_CAPABILITY,
-  type PersonalExtension,
+  PERSONAL_EXTENSION_DEFAULT_REVISIONS,
+  PERSONAL_EXTENSION_MAX_REVISIONS,
+  type PersonalExtensionListItem,
 } from "@marinara-engine/shared";
 import { ApiError, getPrivilegedActionErrorMessage } from "../../../lib/api-client";
 import { showConfirmDialog } from "../../../lib/app-dialogs";
@@ -35,6 +37,8 @@ import {
   useCreatePersonalExtension,
   useDeletePersonalExtension,
   usePersonalExtensions,
+  usePersonalExtensionRevisionRetention,
+  useSetPersonalExtensionRevisionRetention,
   useRollbackPersonalExtension,
   useUpdatePersonalExtension,
 } from "../../../hooks/use-personal-extensions";
@@ -62,7 +66,14 @@ import {
   createPersonalExtensionPackageFilename,
   createPersonalExtensionPackageFiles,
 } from "../../../lib/personal-extension-transfer";
-import { SettingsIntro, SettingsSection } from "./SettingControls";
+import {
+  SETTINGS_BUTTON_CLASS,
+  SETTINGS_COMPACT_PRIMARY_BUTTON_CLASS,
+  SETTINGS_ICON_BUTTON_CLASS,
+  SETTINGS_PRIMARY_FULL_BUTTON_CLASS,
+  SettingsIntro,
+  SettingsSection,
+} from "./SettingControls";
 
 type EditorDraft = PersonalExtensionImportDraft;
 
@@ -81,14 +92,14 @@ function shortHash(hash: string) {
   return hash.replace(/^sha256:/, "").slice(0, 12);
 }
 
-function sourceLabel(source: PersonalExtension["source"], t: TFunction) {
+function sourceLabel(source: PersonalExtensionListItem["source"], t: TFunction) {
   if (source === "professor_mari") return "Professor Mari";
   if (source === "profile_import") return "Profile import";
   if (source === "legacy") return "Recovered legacy";
   return t("settings.externalExtensions.source");
 }
 
-function extensionDraft(extension: PersonalExtension): EditorDraft {
+function extensionDraft(extension: PersonalExtensionListItem): EditorDraft {
   return {
     name: extension.name,
     version: extension.version,
@@ -140,7 +151,7 @@ function validateDraft(draft: EditorDraft) {
   return null;
 }
 
-function riskMessage(extension: PersonalExtension, t: TFunction) {
+function riskMessage(extension: PersonalExtensionListItem, t: TFunction) {
   const fingerprint = extension.contentHash;
   if (extension.runtime === "server") {
     return t("settings.personalExtensions.approval.server", { name: extension.name, hash: fingerprint });
@@ -175,6 +186,71 @@ function normalizeImportedName(fileName: string) {
 }
 
 type ExtensionSettingsMode = "personal" | "external";
+
+export function ExtensionRevisionHistorySettings() {
+  const { t } = useTranslation();
+  const limitId = useId();
+  const { data, error, refetch } = usePersonalExtensionRevisionRetention();
+  const update = useSetPersonalExtensionRevisionRetention();
+  const changeLimit = async (limit: number) => {
+    const reducing = data !== undefined && limit < data.limit;
+    const confirmRemoval = () =>
+      showConfirmDialog({
+        title: t("settings.extensions.revisionHistory.confirmTitle"),
+        message: t("settings.extensions.revisionHistory.confirmMessage", { limit }),
+        confirmLabel: t("settings.extensions.revisionHistory.confirmLabel"),
+      });
+    if (reducing && !(await confirmRemoval())) return;
+    try {
+      try {
+        await update.mutateAsync({ limit, ...(reducing ? { confirmPrune: true } : {}) });
+      } catch (saveError) {
+        const confirmationRequired =
+          saveError instanceof ApiError &&
+          saveError.status === 409 &&
+          typeof saveError.payload === "object" &&
+          saveError.payload !== null &&
+          "code" in saveError.payload &&
+          saveError.payload.code === "confirmation_required";
+        if (reducing || !confirmationRequired) throw saveError;
+        if (!(await confirmRemoval())) return;
+        await update.mutateAsync({ limit, confirmPrune: true });
+      }
+      toast.success(t("settings.extensions.revisionHistory.saved"));
+    } catch (saveError) {
+      toast.error(getPrivilegedActionErrorMessage(saveError, t("settings.extensions.revisionHistory.saveFailed")));
+    }
+  };
+  return (
+    <SettingsSection title={t("settings.extensions.revisionHistory.title")} icon={<History size="0.875rem" />}>
+      <p className="text-xs text-[var(--muted-foreground)]">{t("settings.extensions.revisionHistory.description")}</p>
+      <div className="flex items-center justify-between gap-3 text-xs">
+        <label htmlFor={limitId}>{t("settings.extensions.revisionHistory.limit")}</label>
+        <select
+          id={limitId}
+          value={data?.limit ?? PERSONAL_EXTENSION_DEFAULT_REVISIONS}
+          disabled={!data || update.isPending}
+          onChange={(event) => void changeLimit(Number(event.target.value))}
+          className="rounded-lg bg-[var(--secondary)] px-3 py-2 ring-1 ring-[var(--border)] disabled:opacity-50"
+        >
+          {Array.from({ length: PERSONAL_EXTENSION_MAX_REVISIONS + 1 }, (_, limit) => (
+            <option key={limit} value={limit}>
+              {limit}
+            </option>
+          ))}
+        </select>
+      </div>
+      {error && (
+        <p role="alert" className="text-xs text-[var(--destructive)]">
+          {t("settings.extensions.revisionHistory.loadFailed")}{" "}
+          <button type="button" className="underline" onClick={() => void refetch()}>
+            {t("settings.extensions.revisionHistory.retry")}
+          </button>
+        </p>
+      )}
+    </SettingsSection>
+  );
+}
 
 export function PersonalExtensionsSettings({ showIntro = true }: { showIntro?: boolean }) {
   return <ExtensionSettings showIntro={showIntro} mode="personal" />;
@@ -228,7 +304,7 @@ function ExtensionSettings({ showIntro, mode }: { showIntro: boolean; mode: Exte
     deleteExtension.isPending ||
     importing;
 
-  const openExisting = useCallback((extension: PersonalExtension) => {
+  const openExisting = useCallback((extension: PersonalExtensionListItem) => {
     setDraft(extensionDraft(extension));
     setEditorId(extension.id);
   }, []);
@@ -277,7 +353,7 @@ function ExtensionSettings({ showIntro, mode }: { showIntro: boolean; mode: Exte
   }, [draft, editingExtension, updateExtension, localizeUi]);
 
   const runExtension = useCallback(
-    async (extension: PersonalExtension) => {
+    async (extension: PersonalExtensionListItem) => {
       const fullPageAccess = extension.capabilities.includes(PERSONAL_EXTENSION_FULL_PAGE_CAPABILITY);
       const confirmed = await showConfirmDialog({
         title: t(
@@ -317,7 +393,7 @@ function ExtensionSettings({ showIntro, mode }: { showIntro: boolean; mode: Exte
   );
 
   const disableExtension = useCallback(
-    async (extension: PersonalExtension) => {
+    async (extension: PersonalExtensionListItem) => {
       try {
         await updateExtension.mutateAsync({ id: extension.id, enabled: false });
         toast.success(localizeUi("ui.panels.extensionsettings.value1Disabled", { value1: extension.name }));
@@ -334,7 +410,7 @@ function ExtensionSettings({ showIntro, mode }: { showIntro: boolean; mode: Exte
   );
 
   const removeExtension = useCallback(
-    async (extension: PersonalExtension) => {
+    async (extension: PersonalExtensionListItem) => {
       const confirmed = await showConfirmDialog({
         title: localizeUi("ui.panels.extensionsettings.deletePersonalExtension"),
         message: localizeUi("ui.panels.extensionsettings.deleteValue1AndItsPrivateExtensionStorageThisCannot", {
@@ -360,7 +436,7 @@ function ExtensionSettings({ showIntro, mode }: { showIntro: boolean; mode: Exte
   );
 
   const restoreRevision = useCallback(
-    async (extension: PersonalExtension, contentHash: string) => {
+    async (extension: PersonalExtensionListItem, contentHash: string) => {
       const confirmed = await showConfirmDialog({
         title: localizeUi("ui.panels.extensionsettings.restoreThisRevision"),
         message: localizeUi("ui.panels.extensionsettings.restoreHashValue1AsADisabledDraftYouWill", {
@@ -388,7 +464,7 @@ function ExtensionSettings({ showIntro, mode }: { showIntro: boolean; mode: Exte
   );
 
   const installDraft = useCallback(
-    async (imported: PersonalExtensionImportDraft, candidates: PersonalExtension[]) => {
+    async (imported: PersonalExtensionImportDraft, candidates: PersonalExtensionListItem[]) => {
       const existing = candidates.find(
         (extension) => extension.name.trim().toLowerCase() === imported.name.trim().toLowerCase(),
       );
@@ -528,12 +604,8 @@ function ExtensionSettings({ showIntro, mode }: { showIntro: boolean; mode: Exte
     return (
       <div className="flex flex-col gap-3">
         <div className="flex flex-col gap-2">
-          <button
-            type="button"
-            onClick={closeEditor}
-            className="flex min-h-9 self-start items-center gap-1.5 rounded-md px-2 text-xs text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)]"
-          >
-            <ChevronLeft size="0.875rem" />
+          <button type="button" onClick={closeEditor} className={cn(SETTINGS_BUTTON_CLASS, "self-start")}>
+            <ChevronLeft size="0.75rem" />
             {isExternal
               ? t("settings.externalExtensions.title")
               : localizeUi("settings.sections.personalExtensions.title")}
@@ -560,12 +632,7 @@ function ExtensionSettings({ showIntro, mode }: { showIntro: boolean; mode: Exte
                       ? localizeUi("ui.panels.extensionsettings.disable")
                       : localizeUi("ui.panels.extensionsettings.enableAction")
                   }
-                  className={cn(
-                    "flex min-h-9 min-w-0 items-center justify-center gap-1.5 rounded-md px-2 text-xs font-semibold leading-none transition-colors disabled:cursor-not-allowed disabled:opacity-50",
-                    current.enabled
-                      ? "bg-[var(--secondary)] text-[var(--foreground)] hover:bg-[var(--accent)]"
-                      : "bg-[var(--primary)] text-[var(--primary-foreground)] hover:opacity-90",
-                  )}
+                  className={current.enabled ? SETTINGS_BUTTON_CLASS : SETTINGS_COMPACT_PRIMARY_BUTTON_CLASS}
                 >
                   {current.enabled ? (
                     <Power size="0.75rem" className="shrink-0" />
@@ -588,7 +655,7 @@ function ExtensionSettings({ showIntro, mode }: { showIntro: boolean; mode: Exte
                   }
                   aria-label={localizeUi("ui.panels.extensionsettings.exportLocalPackage")}
                   title={localizeUi("ui.panels.extensionsettings.exportLocalPackage")}
-                  className="flex min-h-9 min-w-0 items-center justify-center gap-1.5 rounded-md bg-[var(--secondary)] px-2 text-xs font-semibold leading-none text-[var(--foreground)] transition-colors hover:bg-[var(--accent)]"
+                  className={SETTINGS_BUTTON_CLASS}
                 >
                   <Upload size="0.75rem" className="shrink-0" />
                   <span className="truncate">{localizeUi("ui.panels.extensionsettings.exportAction")}</span>
@@ -602,7 +669,7 @@ function ExtensionSettings({ showIntro, mode }: { showIntro: boolean; mode: Exte
                 disabled={busy}
                 aria-label={localizeUi("ui.panels.extensionsettings.saveDraft")}
                 title={localizeUi("ui.panels.extensionsettings.saveDraft")}
-                className="flex min-h-9 min-w-0 items-center justify-center gap-1.5 rounded-md bg-[var(--primary)] px-2 text-xs font-semibold text-[var(--primary-foreground)] transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                className={SETTINGS_COMPACT_PRIMARY_BUTTON_CLASS}
               >
                 {busy ? <Loader2 size="0.75rem" className="animate-spin" /> : <Save size="0.75rem" />}
                 <span className="truncate">{localizeUi("ui.panels.extensionsettings.saveAction")}</span>
@@ -858,9 +925,9 @@ function ExtensionSettings({ showIntro, mode }: { showIntro: boolean; mode: Exte
                     type="button"
                     onClick={() => void restoreRevision(current, revision.contentHash)}
                     disabled={busy}
-                    className="ml-auto flex min-h-8 items-center gap-1 rounded-md px-2 text-[var(--primary)] transition-colors hover:bg-[var(--primary)]/10 disabled:opacity-50"
+                    className={cn(SETTINGS_BUTTON_CLASS, "ml-auto")}
                   >
-                    <RotateCcw size="0.6875rem" />
+                    <RotateCcw size="0.75rem" />
                     {localizeUi("ui.panels.extensionsettings.restoreDraft")}
                   </button>
                 </div>
@@ -905,9 +972,9 @@ function ExtensionSettings({ showIntro, mode }: { showIntro: boolean; mode: Exte
                   })
                 }
                 disabled={busy}
-                className="flex min-h-11 items-center justify-center gap-1.5 rounded-lg border border-[var(--border)] bg-[var(--secondary)]/55 px-3 text-xs text-[var(--foreground)] transition-colors hover:bg-[var(--accent)] disabled:opacity-50"
+                className={SETTINGS_PRIMARY_FULL_BUTTON_CLASS}
               >
-                {importing ? <Loader2 size="0.875rem" className="animate-spin" /> : <FileArchive size="0.875rem" />}
+                {importing ? <Loader2 size="0.8125rem" className="animate-spin" /> : <FileArchive size="0.8125rem" />}
                 {t("settings.externalExtensions.import.file")}
               </button>
               <button
@@ -920,9 +987,9 @@ function ExtensionSettings({ showIntro, mode }: { showIntro: boolean; mode: Exte
                   })
                 }
                 disabled={busy}
-                className="flex min-h-11 items-center justify-center gap-1.5 rounded-lg border border-[var(--border)] bg-[var(--secondary)]/55 px-3 text-xs text-[var(--foreground)] transition-colors hover:bg-[var(--accent)] disabled:opacity-50"
+                className={SETTINGS_PRIMARY_FULL_BUTTON_CLASS}
               >
-                <FolderOpen size="0.875rem" />
+                <FolderOpen size="0.8125rem" />
                 {t("settings.externalExtensions.import.folder")}
               </button>
             </div>
@@ -1011,24 +1078,24 @@ function ExtensionSettings({ showIntro, mode }: { showIntro: boolean; mode: Exte
                             ? localizeUi("ui.panels.extensionsettings.disable")
                             : localizeUi("ui.panels.extensionsettings.reviewAndRun_c0b4a0e")
                         }
-                        className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--primary)] transition-colors hover:bg-[var(--primary)]/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] active:scale-90 disabled:cursor-not-allowed disabled:opacity-50"
+                        className={SETTINGS_ICON_BUTTON_CLASS}
                         title={
                           extension.enabled
                             ? localizeUi("ui.panels.extensionsettings.disable")
                             : localizeUi("ui.panels.extensionsettings.reviewAndRun_c0b4a0e")
                         }
                       >
-                        {extension.enabled ? <Power size="0.6875rem" /> : <PowerOff size="0.6875rem" />}
+                        {extension.enabled ? <Power size="0.75rem" /> : <PowerOff size="0.75rem" />}
                       </button>
                       <button
                         type="button"
                         onClick={() => void removeExtension(extension)}
                         disabled={busy}
                         aria-label={localizeUi("lorebook.editor.batch.delete")}
-                        className="flex h-8 w-8 items-center justify-center rounded-md text-[var(--destructive)] transition-colors hover:bg-[var(--destructive)]/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] active:scale-90 disabled:cursor-not-allowed disabled:opacity-50"
+                        className={cn(SETTINGS_ICON_BUTTON_CLASS, "mari-chrome-control--danger")}
                         title={localizeUi("lorebook.editor.batch.delete")}
                       >
-                        <Trash2 size="0.6875rem" />
+                        <Trash2 size="0.75rem" />
                       </button>
                     </div>
                     <button

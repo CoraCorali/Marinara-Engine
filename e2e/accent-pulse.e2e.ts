@@ -35,6 +35,9 @@ test.describe("Marinara accent defaults", () => {
 
   for (const theme of ["dark", "light"] as const) {
     test(`default gradient, editable device Pulse, reload and reset (${theme})`, async ({ page }, testInfo) => {
+      // A load, a reload, a screenshot and a dozen clicks: each click waits 2-4 s for a stable frame on CI
+      // WebKit, so the steps alone took 50-66 s there (runs 42053259370, 42060999461, 42073643163; 13-15 s on a Mac).
+      test.setTimeout(120_000);
       const desktop = testInfo.project.name.includes("desktop");
       await seedUIState(
         page,
@@ -144,6 +147,44 @@ test.describe("Marinara accent defaults", () => {
         rgb: false,
         ready: true,
       });
+  });
+
+  test("a custom theme supplies the steady accent without Pulse and yields to an explicit picker choice", async ({
+    page,
+  }) => {
+    await page.route("**/api/themes", (route) =>
+      route.fulfill({
+        json: [{ id: "steady-accent", name: "Steady accent", css: ":root { --primary: #14b8a6; }", isActive: true }],
+      }),
+    );
+    await seedUIState(page, {
+      hasCompletedOnboarding: true,
+      sidebarOpen: false,
+      rightPanelOpen: false,
+      appAccentColor: "",
+      appAccentPulseMode: false,
+      appAccentRgbMode: false,
+    });
+    await page.goto("/");
+    await expect.poll(async () => (await readAccentPreferences(page)).ready).toBe(true);
+    const root = page.locator("html");
+    await expect(page.locator("#marinara-custom-theme")).toHaveCount(1);
+    for (const [picker, expected] of [
+      ["", "#14b8a6"],
+      ["#6366f1", "#6366f1"],
+      ["", "#14b8a6"],
+    ]) {
+      await page.evaluate(async (color) => {
+        const { useUIStore } = await import("/src/stores/ui.store.ts" as string);
+        useUIStore.getState().setAppAccentColor(color);
+      }, picker);
+      await expect
+        .poll(() =>
+          root.evaluate((element) => getComputedStyle(element).getPropertyValue("--marinara-app-accent-static").trim()),
+        )
+        .toBe(expected);
+      await expect(root).not.toHaveAttribute("data-marinara-accent-animation");
+    }
   });
 
   for (const legacyColor of ["", "linear-gradient(90deg, #1e90ff, #22a6b3)"]) {

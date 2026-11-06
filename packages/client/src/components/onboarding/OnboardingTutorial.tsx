@@ -1,9 +1,10 @@
 // ──────────────────────────────────────────────
 // Onboarding Tutorial — first-time guided tour
 // ──────────────────────────────────────────────
-import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { useUIStore, type ChatModeShortcut } from "../../stores/ui.store";
+import { APP_VERSION } from "@marinara-engine/shared";
+import { MOBILE_SHELL_MEDIA_QUERY, useUIStore, type ChatModeShortcut } from "../../stores/ui.store";
 import { useChatStore } from "../../stores/chat.store";
 import { useTrackAchievement } from "../../hooks/use-achievements";
 import { docsLanguageKeys, useDocsLanguage, type DocsLanguageStatus } from "../../hooks/use-docs-language";
@@ -13,6 +14,13 @@ import { BookOpen, ChevronRight } from "lucide-react";
 import { toast } from "sonner";
 import { useLocalizedUiText } from "../../localization/use-localized-ui-text";
 import { useTranslation as useUiTranslation } from "react-i18next";
+import { useDialogFocusScope } from "../../hooks/use-dialog-focus-scope";
+import { useMatchMedia } from "../../hooks/use-match-media";
+import { useMariAppearancePack } from "../../hooks/use-mari-appearance-pack";
+import { MARI_ASSET_TIER, mariImgLoading, type MariPose } from "../../lib/mari-work-animations";
+import { formatShortcutKey } from "../../lib/keyboard-shortcuts";
+import { WHATS_NEW_SEEN_VERSION_KEY } from "../modals/WhatsNewModal";
+import { LanguagePicker } from "../ui/LanguagePicker";
 
 // ─── Step definitions ─────────────────────────
 
@@ -45,7 +53,13 @@ interface TourStep {
   /** Render the documentation-language picker inside this step's card */
   docsLanguagePicker?: boolean;
   /** Professor Mari sprite to display */
-  sprite?: { src: string; flip?: boolean };
+  sprite?: { pose: MariPose; flip?: boolean };
+  /** Body used instead of bodyKey on a phone-width screen, where this step's control is not on screen */
+  phoneBodyKey?: string;
+}
+
+function resolveTourStepTitle(step: TourStep, localizeUi: (key: string) => string, localize: (text: string) => string) {
+  return step.titleKey ? localizeUi(step.titleKey) : localize(step.title ?? "");
 }
 
 const STEPS: TourStep[] = [
@@ -53,7 +67,7 @@ const STEPS: TourStep[] = [
     target: null,
     title: "Welcome to Marinara Engine!",
     body: "Hi! I'm Professor Mari, your assistant and guide! First time around? Allow me to show you around. This is a quick orientation tour, so you can skip it if you already know your way around, but skipping will make me sad a little.",
-    sprite: { src: "/sprites/mari/Mari_wave.png" },
+    sprite: { pose: "wave" },
   },
   {
     target: "panel-characters",
@@ -61,7 +75,7 @@ const STEPS: TourStep[] = [
     body: "Characters are who your AI is going to play or speak as. Create them, edit their descriptions, dialogue examples, organize them into folders, or make them pretty (I can also create those for you).",
     side: "bottom",
     openPanel: "characters",
-    sprite: { src: "/sprites/mari/Mari_point_up_left.png", flip: true },
+    sprite: { pose: "point-up", flip: true },
   },
   {
     target: "panel-personas",
@@ -69,7 +83,7 @@ const STEPS: TourStep[] = [
     body: "Personas define who you are in a chat. Give yourself a name, avatar, description, scenario details, and pretty colors, so characters know who they are speaking to.",
     side: "bottom",
     openPanel: "personas",
-    sprite: { src: "/sprites/mari/Mari_point_up_left.png", flip: true },
+    sprite: { pose: "point-up", flip: true },
   },
   {
     target: "panel-lorebooks",
@@ -77,7 +91,7 @@ const STEPS: TourStep[] = [
     body: "Lorebooks hold compendiums about worlds, memories, rules, locations, and extra character details. Entries trigger when their keys appear, giving the model extra context only when it matters (and saving your wallet from sending 200k tokens each turn).",
     side: "bottom",
     openPanel: "lorebooks",
-    sprite: { src: "/sprites/mari/Mari_point_up_left.png", flip: true },
+    sprite: { pose: "point-up", flip: true },
   },
   {
     target: "panel-presets",
@@ -85,7 +99,7 @@ const STEPS: TourStep[] = [
     body: "Presets control prompt structure. They're templates that build what the model receives and in what order. If you're new to prompt engineering, you can leave this alone for now and use the default preset (or download one from the community).",
     side: "bottom",
     openPanel: "presets",
-    sprite: { src: "/sprites/mari/Mari_point_up_left.png", flip: true },
+    sprite: { pose: "point-up", flip: true },
   },
   {
     target: "panel-connections",
@@ -93,15 +107,15 @@ const STEPS: TourStep[] = [
     body: "Connections are the first thing to set up before chatting. Add your provider, model, endpoint, and API key here, so you can chat with your AI.",
     side: "bottom",
     openPanel: "connections",
-    sprite: { src: "/sprites/mari/Mari_point_up_left.png", flip: true },
+    sprite: { pose: "point-up", flip: true },
   },
   {
     target: "panel-agents",
     title: "Agents",
-    body: "Agents add optional features without making the base app heavy. Open Download Agents here to browse and install image and video generation, trackers, writers, maps, audio and video calls, and various chat games, then enable the ones you want for each chat. You can update or uninstall them from the same catalog.",
+    body: "Agents add optional features without making the base app heavy. Open the Agent Organizer here to browse and install image and video generation, trackers, writers, maps, audio and video calls, and various chat games, then enable the ones you want for each chat. You can update or uninstall them from the same catalog.",
     side: "bottom",
     openPanel: "agents",
-    sprite: { src: "/sprites/mari/Mari_point_up_left.png", flip: true },
+    sprite: { pose: "point-up", flip: true },
   },
   {
     target: "panel-settings",
@@ -110,7 +124,7 @@ const STEPS: TourStep[] = [
     side: "bottom",
     openPanel: "settings",
     settingsTab: "general",
-    sprite: { src: "/sprites/mari/Mari_point_up_left.png", flip: true },
+    sprite: { pose: "point-up", flip: true },
   },
   {
     target: "sidebar-toggle",
@@ -118,7 +132,7 @@ const STEPS: TourStep[] = [
     body: "Now let's open the Chats tab. This is where your Conversations, Roleplays, and Games live. You can create new chats, switch between them, and manage them here.",
     side: "right",
     openSidebar: true,
-    sprite: { src: "/sprites/mari/Mari_point_middle_left.png" },
+    sprite: { pose: "point-middle" },
   },
   {
     target: "chat-mode-conversation",
@@ -126,7 +140,7 @@ const STEPS: TourStep[] = [
     body: "Conversation mode is like chatting via DMs or groups on Discord. Use it for general texting with your characters. Mind that they have their lives, can trade selfies with you and even message you on their own!",
     side: "right",
     chatMode: "conversation",
-    sprite: { src: "/sprites/mari/Mari_point_middle_left.png" },
+    sprite: { pose: "point-middle" },
   },
   {
     target: "chat-mode-roleplay",
@@ -134,7 +148,7 @@ const STEPS: TourStep[] = [
     body: "Roleplay mode is for roleplaying scenes and immersive stories. It supports richer narration, lorebooks, agents, long-time memory systems, author's notes, trackers, and co-writing controls.",
     side: "right",
     chatMode: "roleplay",
-    sprite: { src: "/sprites/mari/Mari_point_middle_left.png" },
+    sprite: { pose: "point-middle" },
   },
   {
     target: "chat-mode-game",
@@ -142,7 +156,7 @@ const STEPS: TourStep[] = [
     body: "Game mode turns the chat into a cinematic RPG-style adventure with an AI Game Master. Sit back and enjoy the game, having party members, goals, maps, dice rolls, session history, journals, combat, and custom HUD widgets.",
     side: "right",
     chatMode: "game",
-    sprite: { src: "/sprites/mari/Mari_point_middle_left.png" },
+    sprite: { pose: "point-middle" },
   },
   {
     target: "home-hub",
@@ -150,15 +164,16 @@ const STEPS: TourStep[] = [
     bodyKey: "onboarding.homeHub.body",
     side: "bottom",
     openHome: true,
-    sprite: { src: "/sprites/mari/Mari_explaining.png" },
+    sprite: { pose: "explaining" },
   },
   {
-    target: "home-navigation",
+    target: "home-address",
     titleKey: "onboarding.homeNavigation.title",
     bodyKey: "onboarding.homeNavigation.body",
+    phoneBodyKey: "onboarding.homeNavigation.phoneBody",
+    side: "bottom",
     openHome: true,
-    centerCard: true,
-    sprite: { src: "/sprites/mari/Mari_point_middle_left.png" },
+    sprite: { pose: "point-up" },
   },
   {
     target: "home-documentation",
@@ -167,7 +182,7 @@ const STEPS: TourStep[] = [
     bodyKey: "onboarding.homeTools.body",
     side: "bottom",
     openHome: true,
-    sprite: { src: "/sprites/mari/Mari_point_up_left.png", flip: true },
+    sprite: { pose: "point-up", flip: true },
   },
   {
     target: "panel-settings",
@@ -176,15 +191,15 @@ const STEPS: TourStep[] = [
     side: "bottom",
     openPanel: "settings",
     settingsTab: "import",
-    sprite: { src: "/sprites/mari/Mari_thinking.png" },
+    sprite: { pose: "thinking" },
   },
   {
     target: "panel-connections",
-    title: "You're All Set!",
-    body: "I'm available from the Home page whenever you need help, and my starter chips can guide you through common first steps without making you type everything. For your first real step, set up a Connection. After that, try creating a new chat. Don't worry, I will be there to guide you. Thank you for trying Marinara Engine. Have fun, and please report bugs or rough edges through our Discord or GitHub so we can keep improving it.",
+    titleKey: "onboarding.finish.title",
+    bodyKey: "onboarding.finish.body",
     side: "bottom",
     openPanel: "connections",
-    sprite: { src: "/sprites/mari/Mari_greet.png" },
+    sprite: { pose: "greet" },
   },
   {
     target: "home-documentation",
@@ -193,7 +208,7 @@ const STEPS: TourStep[] = [
     side: "top",
     openHome: true,
     docsLanguagePicker: true,
-    sprite: { src: "/sprites/mari/Mari_explaining.png" },
+    sprite: { pose: "explaining" },
   },
 ];
 
@@ -385,8 +400,8 @@ function computeTooltipStyle(rect: Rect, step: TourStep): React.CSSProperties {
 
   let maxHeight: number;
 
-  let top = 0;
-  let left = 0;
+  let top: number;
+  let left: number;
 
   if (placement === "right") {
     maxHeight = Math.min(Math.max(minScrollableHeight, availableViewportHeight), availableViewportHeight);
@@ -448,17 +463,24 @@ function TourCardContent({
 }) {
   const { t: localizeUi } = useUiTranslation();
   const localize = useLocalizedUiText();
-  const localizedBody = currentStep.bodyKey ? localizeUi(currentStep.bodyKey) : localize(currentStep.body ?? "");
-  const localizedTitle = currentStep.titleKey ? localizeUi(currentStep.titleKey) : localize(currentStep.title ?? "");
+  const { poses } = useMariAppearancePack();
+  // UX-06: the phone shell (landscape too) has no search field to point at; the same step tells the user about the pull-down.
+  const mobileShell = useMatchMedia(MOBILE_SHELL_MEDIA_QUERY);
+  const bodyKey = currentStep.phoneBodyKey && mobileShell ? currentStep.phoneBodyKey : currentStep.bodyKey;
+  const localizedBody = bodyKey
+    ? localizeUi(bodyKey, { mod: formatShortcutKey("Mod") })
+    : localize(currentStep.body ?? "");
+  const localizedTitle = resolveTourStepTitle(currentStep, localizeUi, localize);
   return (
     <>
       {/* Professor Mari sprite */}
       {currentStep.sprite && (
         <div className="mb-2 flex justify-center">
           <img
-            src={currentStep.sprite.src}
+            src={poses[currentStep.sprite.pose]}
+            {...mariImgLoading(MARI_ASSET_TIER.poses[currentStep.sprite.pose])}
             alt={localizeUi("ui.onboarding.tourcardcontent.professorMari")}
-            className="h-32 max-h-[15vh] w-auto object-contain drop-shadow-lg"
+            className="h-32 max-h-[15vh] w-auto object-contain drop-shadow-lg [image-rendering:pixelated]"
             style={currentStep.sprite.flip ? { transform: "scaleX(-1)" } : undefined}
             draggable={false}
           />
@@ -540,11 +562,14 @@ function OnboardingTutorialInner() {
   const uiLanguage = useUIStore((s) => s.language);
   const trackAchievement = useTrackAchievement();
   const { t: localizeUi } = useUiTranslation();
+  const localize = useLocalizedUiText();
+  const modal = useUIStore((s) => s.modal);
 
   const [step, setStep] = useState(0);
   const [spotlightRects, setSpotlightRects] = useState<SpotlightRect[]>([]);
   const [isMobileViewport, setIsMobileViewport] = useState(() => getViewportWidth() < MOBILE_BREAKPOINT);
   const rafRef = useRef<number>(0);
+  const cardRef = useRef<HTMLDivElement>(null);
 
   const currentStep = STEPS[step];
   const isLast = step === STEPS.length - 1;
@@ -569,6 +594,8 @@ function OnboardingTutorialInner() {
   const suggestedDocsLanguage =
     docsLanguageStatus?.configured || !uiMatchedDocsLanguage ? activeDocsLanguage : uiMatchedDocsLanguage;
   const effectiveDocsLanguagePick = docsLanguagePick ?? suggestedDocsLanguage;
+
+  useDialogFocusScope(!modal, cardRef, undefined, undefined, "[data-language-picker-portal]");
 
   /**
    * Commit the picked docs language when the tour completes via "Get Started".
@@ -677,9 +704,23 @@ function OnboardingTutorialInner() {
   }, [updateRect]);
 
   const finish = useCallback(() => {
+    // A new user has just met this release in the tour, so What's New must not open right after it.
+    try {
+      window.localStorage.setItem(WHATS_NEW_SEEN_VERSION_KEY, APP_VERSION);
+    } catch {
+      // Storage may be unavailable in private or restricted browser contexts.
+    }
     setCompleted(true);
     trackAchievement.mutate("tutorial_completed");
   }, [setCompleted, trackAchievement]);
+
+  const handleTutorialKeyDown = useCallback(
+    (event: ReactKeyboardEvent<HTMLElement>) => {
+      if (event.key !== "Escape" || event.defaultPrevented || useUIStore.getState().modal) return;
+      finish();
+    },
+    [finish],
+  );
 
   // "Get Started" on the final step commits the docs-language pick; Skip never does.
   const next = useCallback(() => {
@@ -694,6 +735,7 @@ function OnboardingTutorialInner() {
   const isCentered = isMobileViewport || currentStep.centerCard || !currentStep.target || !targetRect;
   const centeredTopOffset = getTutorialTopOffset();
   const centeredCardMaxHeight = Math.max(0, getViewportHeight() - centeredTopOffset - 16);
+  const dialogLabel = resolveTourStepTitle(currentStep, localizeUi, localize);
 
   const pickerSlot = currentStep.docsLanguagePicker ? (
     <div className="mb-4 flex flex-col gap-3 text-left">
@@ -712,18 +754,13 @@ function OnboardingTutorialInner() {
       >
         {localizeUi("settings.application.docsLanguage.label")}
       </label>
-      <select
+      <LanguagePicker
         id="onboarding-docs-language"
+        label={localizeUi("settings.application.docsLanguage.label")}
         value={effectiveDocsLanguagePick}
-        onChange={(event) => setDocsLanguagePick(event.target.value)}
-        className="w-full rounded-lg border border-[var(--marinara-chat-chrome-panel-border)] bg-[var(--marinara-chat-chrome-highlight-bg)] px-3 py-2 text-xs text-[var(--marinara-chat-chrome-panel-text)] outline-none focus:ring-1 focus:ring-[var(--marinara-chat-chrome-focus-ring)]"
-      >
-        {(docsLanguageOptions.length > 0 ? docsLanguageOptions : [{ code: "en", label: "English" }]).map((option) => (
-          <option key={option.code} value={option.code}>
-            {option.label}
-          </option>
-        ))}
-      </select>
+        onChange={setDocsLanguagePick}
+        options={docsLanguageOptions.length > 0 ? docsLanguageOptions : [{ code: "en", label: "English" }]}
+      />
     </div>
   ) : undefined;
 
@@ -762,6 +799,10 @@ function OnboardingTutorialInner() {
               exit={{ opacity: 0, y: -8, scale: 0.96 }}
               transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
               className={TUTORIAL_CARD_CLASS}
+              ref={cardRef}
+              role="dialog"
+              onKeyDown={handleTutorialKeyDown}
+              aria-label={dialogLabel}
               data-component="OnboardingTutorial.Card"
               style={{ width: Math.min(380, getViewportWidth() - 32), maxHeight: centeredCardMaxHeight }}
             >
@@ -785,6 +826,10 @@ function OnboardingTutorialInner() {
             exit={{ opacity: 0, y: -8, scale: 0.96 }}
             transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
             className={TUTORIAL_CARD_CLASS}
+            ref={cardRef}
+            role="dialog"
+            onKeyDown={handleTutorialKeyDown}
+            aria-label={dialogLabel}
             data-component="OnboardingTutorial.Card"
             style={computeTooltipStyle(targetRect!, currentStep)}
           >

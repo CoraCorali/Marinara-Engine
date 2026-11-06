@@ -239,7 +239,7 @@ function firstOf<T extends RulesetCombatEvent["type"]>(events: RulesetCombatEven
   );
   assert.match(
     refusal(withCombat((combat) => (combat.conditions[0].effects = ["hard-to-see"]))),
-    /Invalid enum value/,
+    /Invalid option: expected one of/,
     "the effects are a closed list the kind implements",
   );
   assert.match(
@@ -292,7 +292,7 @@ function firstOf<T extends RulesetCombatEvent["type"]>(events: RulesetCombatEven
     /Duplicate damage type "Fire"/,
   );
   assert.match(refusal(withCombat((combat) => (combat.standard = ["dodge", "dodge"]))), /Duplicate standard action/);
-  assert.match(refusal(withCombat((combat) => (combat.kind = "grid-tactics"))), /Invalid enum value/);
+  assert.match(refusal(withCombat((combat) => (combat.kind = "grid-tactics"))), /Invalid option: expected one of/);
   assert.match(refusal(withCombat((combat) => (combat.reach = 5))), /Unrecognized key/);
 
   // A pool that counts up cannot be what a fight takes away.
@@ -922,6 +922,113 @@ const labels = (definition: RulesetDefinition, state: RulesetEncounterState, id:
   assert.equal(eventsOf(flub.events, "damage").length, 0);
 }
 
+// ── A critical range off the sheet (Capability API 1.81) ──
+{
+  // A Champion's sheet says 19: a natural 19 is a critical, with the critical's damage; without the
+  // range it is a plain hit. A sheet reading past the die's top face is held to it.
+  const champion = (from: unknown) =>
+    parsedOrThrow(
+      variant(fiveEText, (doc) => {
+        doc.combat.attackRoll.criticalFrom = from;
+      }),
+      "5e with a critical range",
+    );
+  const swing = (definition: RulesetDefinition, natural: number) => {
+    const state = fight(definition, [fighter(), mote()], 20, 1);
+    const sword = rulesetCombatOptions(definition, state, "brenna").find((option) => option.label === "Longsword")!;
+    return firstOf(
+      act(definition, state, { actorId: "brenna", optionId: sword.id, targetIds: ["mote"] }, natural, 5, 6, 5, 6)
+        .events,
+      "attack",
+    ).outcome;
+  };
+  assert.equal(swing(champion({ const: 19 }), 19), "critical");
+  assert.equal(swing(champion({ const: 19 }), 18), "hit");
+  assert.equal(swing(fiveE, 19), "hit", "without a range a 19 is a plain hit");
+  assert.equal(swing(champion({ const: 25 }), 19), "hit", "held to the die's top face");
+  assert.equal(swing(champion({ const: 25 }), 20), "critical");
+  assert.equal(swing(champion({ const: 0 }), 19), "hit", "a sheet reading under 2 has no range");
+  assert.equal(who(fight(champion({ const: 0 }), [fighter(), mote()], 20, 1), "brenna").criticalFrom, undefined);
+  assert.equal(who(fight(champion({ const: 19 }), [fighter(), mote()], 20, 1), "brenna").criticalFrom, 19);
+  // Held for a reaction to the hit, a natural 19 that would miss the defense stays the critical it was.
+  {
+    const definition = champion({ const: 19 });
+    // A stat block behind a defense no 19 meets, who parries what hits it.
+    const warded = foe("warded", "Warded", {
+      health: 60,
+      defense: 30,
+      initiativeModifier: -2,
+      actions: [
+        {
+          id: "parry",
+          name: "Parry",
+          budget: "reaction",
+          self: true,
+          reaction: { on: "hit" },
+          applies: [{ condition: "prone", duration: { rounds: 1 } }],
+        },
+      ],
+    } as RulesetStatBlock);
+    const state = fight(definition, [fighter(), warded], 20, 1);
+    const sword = rulesetCombatOptions(definition, state, "brenna").find((option) => option.label === "Longsword")!;
+    assert.ok(
+      (sword.forecast?.hitChance ?? 0) >= 0.1,
+      `the range is in the forecast: ${JSON.stringify(sword.forecast)}`,
+    );
+    const held = act(definition, state, { actorId: "brenna", optionId: sword.id, targetIds: ["warded"] }, 19);
+    assert.ok(held.state.window, JSON.stringify(held.events));
+    const through = act(
+      definition,
+      held.state,
+      { actorId: "warded", optionId: RULESET_PASS_OPTION, targetIds: [], window: held.state.window!.id },
+      5,
+      6,
+      5,
+      6,
+    );
+    assert.equal(eventsOf(through.events, "damage")[0]?.critical, true, JSON.stringify(through.events));
+  }
+  // Refused where it means nothing: no critical face, or several dice.
+  assert.match(
+    refusal(
+      variant(fiveEText, (doc) => {
+        doc.combat.attackRoll.criticalFrom = { const: 19 };
+        doc.combat.attackRoll.naturals.max = "hit";
+      }),
+    ),
+    /A critical range needs a single attack die/,
+  );
+  assert.match(
+    refusal(
+      variant(fiveEText, (doc) => {
+        doc.combat.attackRoll.criticalFrom = { derived: "no_such_value" };
+      }),
+    ),
+    /no_such_value/,
+  );
+}
+
+// ── A sheet value added to an amount (Capability API 1.83) ──
+{
+  // Mending Light adding the caster's level to its 1d8+4: the menu's action carries it in its flat.
+  const added = {
+    ...wizard(),
+    catalogs: {
+      spells: spellEntries.map((entry) =>
+        entry.id === "mending-light"
+          ? { ...entry, mechanics: { ...entry.mechanics, amountAdd: { field: "level" } } }
+          : entry,
+      ),
+    },
+  } as RulesetCombatantInput;
+  const heal = (input: RulesetCombatantInput) =>
+    who(fight(fiveE, [input, mote()], 20, 1), "corwin").actions.find((action) => action.label === "Mending Light")!
+      .heal;
+  const level = Number((wizardBuild().fields as Record<string, unknown>).level);
+  assert.deepEqual(heal(added), { ...heal(wizard())!, flat: 4 + level });
+  assert.equal(heal(wizard())!.flat, 4, "without it, the amount as written");
+}
+
 // ── Advantage, disadvantage, and the two cancelling out ──
 {
   // Dodging: the next attack against the dodger is rolled twice and the worse one is kept.
@@ -1031,6 +1138,7 @@ const labels = (definition: RulesetDefinition, state: RulesetEncounterState, id:
     pool: "slots_3",
     label: "3rd-level slots",
     amount: 1,
+    on: "Fireball",
   });
   const hits = eventsOf(blast.events, "damage");
   assert.deepEqual(
@@ -1095,12 +1203,22 @@ const labels = (definition: RulesetDefinition, state: RulesetEncounterState, id:
   );
 }
 
-// ── A price the sheet would refuse is not offered, and is refused if asked for anyway ──
+// ── A price the sheet would refuse is offered only from a higher pool, and refused if asked for anyway ──
 {
   const state = fight(fiveE, [wizard({ pools: { slots_3: { value: 0 } } }), snag()], 20, 5);
+  // No third-level slot: Fireball is cast with a higher one or not at all (1.171).
+  const fireball = rulesetCombatOptions(fiveE, state, "corwin").find((option) => option.label === "Fireball");
+  assert.equal(fireball?.upcastOnly, true, "no third-level slot, Fireball only from a higher one");
+  assert.ok(!fireball?.payWith?.includes("slots_3"));
+  const none = fight(
+    fiveE,
+    [wizard({ pools: { slots_3: { value: 0 }, slots_4: { value: 0 }, slots_5: { value: 0 } } }), snag()],
+    20,
+    5,
+  );
   assert.ok(
-    !rulesetCombatOptions(fiveE, state, "corwin").some((option) => option.label === "Fireball"),
-    "no third-level slot, no Fireball",
+    !rulesetCombatOptions(fiveE, none, "corwin").some((option) => option.label === "Fireball"),
+    "no slot that could pay, no Fireball",
   );
   assert.deepEqual(act(fiveE, state, { actorId: "corwin", optionId: "ability:0:1", targetIds: ["snag"] }).events, [
     { type: "refused", actorId: "corwin", optionId: "ability:0:1", reason: "insufficient" },
@@ -1167,6 +1285,24 @@ const labels = (definition: RulesetDefinition, state: RulesetEncounterState, id:
   assert.deepEqual(act(fiveE, state, { actorId: "snag", optionId: "scimitar", targetIds: ["corwin"] }).events, [
     { type: "refused", actorId: "snag", optionId: "scimitar", reason: "cannot-act" },
   ]);
+
+  // Shaken off at the end of its turn, the hold holds nobody, and the caster stops concentrating.
+  const shaken = endTurn(fiveE, state, "snag", 19);
+  assert.equal(who(shaken.state, "corwin").concentrating, null, "nobody left held");
+  assert.equal(firstOf(shaken.events, "concentration").state, "ended");
+
+  // Killed while held, it holds nobody either (playtest): the caster lets go, the fight going on.
+  {
+    let two = fight(fiveE, [wizard({ pools: { slots_3: { value: 0 } } }), fighter(), snag(), mote()], 20, 15, 5, 1);
+    two = act(fiveE, two, { actorId: "corwin", optionId: hold.id, targetIds: ["snag"] }, 5).state;
+    assert.ok(who(two, "corwin").concentrating, "holding");
+    two = endTurn(fiveE, two, "corwin").state;
+    const blow = rulesetCombatOptions(fiveE, two, "brenna").find((option) => option.kind === "attack")!;
+    who(two, "snag").health!.value = 1;
+    const killed = act(fiveE, two, { actorId: "brenna", optionId: blow.id, targetIds: ["snag"] }, 15, 6, 6, 6, 6);
+    assert.ok(who(killed.state, "snag").defeated, JSON.stringify(killed.events.slice(0, 5)));
+    assert.equal(who(killed.state, "corwin").concentrating, null, "a hold on the fallen holds nobody");
+  }
 
   // The end of its own turn is when it gets to try again, and this one fails.
   const ticked = endTurn(fiveE, state, "snag", 3);
@@ -1252,6 +1388,19 @@ const labels = (definition: RulesetDefinition, state: RulesetEncounterState, id:
   );
   state = felled.state;
   assert.equal(rulesetEncounterOutcome(state), "ongoing", "the party is not beaten while somebody stands");
+  // Nor while one of them is still rolling to live (laptop pass 8 2026-10-26): a natural 20 gets them
+  // up. All of them stable, or dead, the party has fallen.
+  {
+    const all = structuredClone(state);
+    for (const one of all.combatants.filter((combatant) => combatant.side === "party")) {
+      one.down = true;
+      one.dying = true;
+      one.stable = false;
+    }
+    assert.equal(rulesetEncounterOutcome(all), "ongoing", "still rolling to live");
+    for (const one of all.combatants.filter((combatant) => combatant.side === "party")) one.stable = true;
+    assert.equal(rulesetEncounterOutcome(all), "defeat", "all stable");
+  }
 
   const first = endTurn(fiveE, state, "rot", 3);
   const failed = firstOf(first.events, "dying");
@@ -1268,11 +1417,24 @@ const labels = (definition: RulesetDefinition, state: RulesetEncounterState, id:
       (entry) => entry.id === track,
     )!.value;
   assert.equal(tracks("brenna", "death_save_failures"), 2);
+  // The blow is said as what it cost (laptop playtest 2026-10-25: failures that came with no line).
+  assert.deepEqual(
+    [
+      firstOf(kicked.events, "dying").harmed,
+      firstOf(kicked.events, "dying").result,
+      firstOf(kicked.events, "dying").failures,
+    ],
+    [1, "failure", 2],
+  );
 
   const up = endTurn(fiveE, kicked.state, "rot", 20);
   assert.equal(firstOf(up.events, "dying").result, "revived");
   assert.deepEqual(firstOf(up.events, "revived"), { type: "revived", actorId: "brenna", health: 1 });
   assert.deepEqual([who(up.state, "brenna").down, who(up.state, "brenna").dying], [false, false]);
+  // The roll is said before the revival, and she acts on the turn it brings her back on.
+  const said = up.events.findIndex((event) => event.type === "dying");
+  assert.ok(said >= 0 && said < up.events.findIndex((event) => event.type === "revived"));
+  assert.ok(labels(fiveE, up.state, "brenna").includes("Longsword"), "brought back up, she acts on this turn");
   assert.equal(tracks("brenna", "death_save_failures", up.state), 0, "the tracks are cleared with her");
   assert.deepEqual(rulesetEncounterSummary(fiveE, up.state).party[0]!.conditions, [], "and so is being down");
 }
@@ -1281,12 +1443,19 @@ const labels = (definition: RulesetDefinition, state: RulesetEncounterState, id:
 {
   let state = fight(fiveE, [fighter({ pools: { hp: { value: 0 } } }), wizard(), rot()], 10, 9, 18);
   assert.deepEqual([who(state, "brenna").down, who(state, "brenna").dying], [true, true]);
+  let rolled: ReturnType<typeof endTurn> | undefined;
   for (const face of [3, 5, 7]) {
-    state = endTurn(fiveE, state, "rot", face).state;
-    state = endTurn(fiveE, state, "brenna").state;
+    rolled = endTurn(fiveE, state, "rot", face);
+    state = endTurn(fiveE, rolled.state, "brenna").state;
     state = endTurn(fiveE, state, "corwin").state;
   }
   assert.equal(who(state, "brenna").defeated, true, "three failures and she is gone");
+  // The roll that kills is said with its roll, once (laptop playtest 2026-10-25: a death at 2 passed
+  // and 1 failed with no roll shown).
+  assert.deepEqual(
+    eventsOf(rolled!.events, "dying").map((event) => [event.rolls, event.result, event.failures, event.harmed]),
+    [[[7], "dead", 3, undefined]],
+  );
   assert.equal(rulesetEncounterOutcome(state), "ongoing");
 
   // Healing brings somebody back from zero, which is why a downed ally is still a legal target.
@@ -1346,7 +1515,12 @@ const labels = (definition: RulesetDefinition, state: RulesetEncounterState, id:
 // ── Defeat, and a fight that is over ──
 {
   const state = fight(fiveE, [fighter({ pools: { hp: { value: 3 } } }), rot()], 5, 18);
-  const over = act(fiveE, state, { actorId: "rot", optionId: "bite", targetIds: ["brenna"] }, 18, 8);
+  const dropped = act(fiveE, state, { actorId: "rot", optionId: "bite", targetIds: ["brenna"] }, 18, 8);
+  // Down, she still rolls to live, so the fight goes on (laptop pass 8 2026-10-26); stable, it is lost.
+  assert.equal(rulesetEncounterOutcome(dropped.state), "ongoing", "still rolling to live");
+  let over = endTurn(fiveE, dropped.state, "rot", 12);
+  for (const face of [14, 16]) over = endTurn(fiveE, endTurn(fiveE, over.state, "brenna").state, "rot", face);
+  assert.equal(who(over.state, "brenna").stable, true);
   assert.deepEqual(firstOf(over.events, "outcome"), { type: "outcome", outcome: "defeat" });
   assert.deepEqual(act(fiveE, over.state, { actorId: "rot", optionId: "bite", targetIds: ["brenna"] }).events, [
     { type: "refused", actorId: "rot", optionId: "bite", reason: "encounter-over" },
@@ -1355,7 +1529,8 @@ const labels = (definition: RulesetDefinition, state: RulesetEncounterState, id:
   const summary = rulesetEncounterSummary(fiveE, over.state);
   assert.deepEqual(summary, {
     outcome: "defeat",
-    rounds: 1,
+    rounds: 3,
+    turns: 2,
     party: [
       {
         id: "brenna",
@@ -1365,7 +1540,7 @@ const labels = (definition: RulesetDefinition, state: RulesetEncounterState, id:
         temp: 0,
         down: true,
         dying: true,
-        stable: false,
+        stable: true,
         conditions: ["unconscious"],
       },
     ],
@@ -1603,6 +1778,7 @@ const labels = (definition: RulesetDefinition, state: RulesetEncounterState, id:
     pool: "luck",
     label: "Luck",
     amount: 1,
+    on: "Hold the Line",
   });
   assert.equal(firstOf(steady.events, "temporary").amount, 2);
   assert.equal(pool(steady.state, "juno", "luck").value, 2, "the sheet is where the price came from");
@@ -1668,6 +1844,7 @@ const labels = (definition: RulesetDefinition, state: RulesetEncounterState, id:
   assert.deepEqual(summary, {
     outcome: "victory",
     rounds: 1,
+    turns: 0,
     party: [
       {
         id: "juno",
@@ -1961,7 +2138,7 @@ const labels = (definition: RulesetDefinition, state: RulesetEncounterState, id:
         (creature) => (creature.actions[0].damage.plus = [1, 2, 3, 4].map(() => ({ dice: "1d4", type: "fire" }))),
       ),
     ),
-    /at most 3 element/,
+    /damage\.plus: Too big: expected array to have <=3 items/,
   );
   assert.match(
     refusal(withEntry(emberText, (mechanics) => (mechanics.plus = [{ dice: "1d6" }]))),
@@ -2278,7 +2455,9 @@ const labels = (definition: RulesetDefinition, state: RulesetEncounterState, id:
     const holdFast = rulesetCombatOptions(fiveE, running, "corwin").find((option) => option.label === "Hold Fast")!;
     // The biter shakes the hold off, so it is still the thing that bites back.
     running = act(fiveE, running, { actorId: "corwin", optionId: holdFast.id, targetIds: ["biter"] }, 19).state;
-    assert.equal(who(running, "corwin").concentrating?.label, "Hold Fast");
+    // Held on nobody, it is let go at once; held again here, so the bite has something to shake.
+    assert.equal(who(running, "corwin").concentrating, null, "a hold every target shook off holds nothing");
+    who(running, "corwin").concentrating = { actionId: holdFast.id, label: "Hold Fast" };
     running = endTurn(fiveE, running, "corwin").state;
     assert.equal(currentRulesetActor(running)?.id, "biter");
     const struck = act(fiveE, running, { actorId: "biter", optionId: "bite", targetIds: ["corwin"] }, 15, 6, 4, 3, 14);
@@ -2514,6 +2693,12 @@ const labels = (definition: RulesetDefinition, state: RulesetEncounterState, id:
         ["standard:hide@bonus", "bonus"],
       ],
       "only the three the entry named, and only for the budget it named",
+    );
+    // Each named after the entry that grants it, so a menu says Quick Hands rather than a plain Dash
+    // (laptop class builds 2026-10-24: Patient Defense read as Dodge).
+    assert.deepEqual(
+      [...new Set(menu.filter((option) => option.id.includes("@")).map((option) => option.grantedBy))],
+      ["Quick Hands"],
     );
     // Nobody helps themselves, whichever budget the help was bought with: the rule reads the
     // action's NAME, so the budgeted id is held to it exactly as the plain one is. The permission
@@ -3096,7 +3281,13 @@ console.info("game ruleset combat core regressions passed.");
   const aimed = act(fiveE, endTurn(fiveE, state, "corwin").state, swing);
   const window = aimed.state.window;
   assert.ok(window, "the swing is held while the one it is aimed at is asked");
-  assert.deepEqual(window.trigger, { kind: "aimed", sourceId: "snag", optionId: "scimitar", label: "Scimitar" });
+  assert.deepEqual(window.trigger, {
+    kind: "aimed",
+    sourceId: "snag",
+    optionId: "scimitar",
+    label: "Scimitar",
+    blow: "melee",
+  });
   assert.deepEqual(window.waiting, ["corwin"]);
   assert.equal(eventsOf(aimed.events, "attack").length, 0, "and nothing is rolled until it is answered");
   // Paid for before the asking: the budget is gone whatever the answer turns out to be.
@@ -3143,6 +3334,7 @@ console.info("game ruleset combat core regressions passed.");
     optionId: "scimitar",
     label: "Scimitar",
     byId: "corwin",
+    with: "Unmake",
   });
   assert.equal(eventsOf(stopped.events, "attack").length, 0, "the swing never lands");
   assert.equal(eventsOf(stopped.events, "damage").length, 0);

@@ -1,4 +1,5 @@
 import type { FastifyReply, FastifyRequest } from "fastify";
+import { isApiRequest } from "../utils/api-request.js";
 
 export type MarinaraRouteRateLimit = {
   readonly max: number;
@@ -13,6 +14,7 @@ declare module "fastify" {
 
 type Bucket = {
   count: number;
+  /** On the monotonic clock (monotonicNow), not the wall clock. */
   resetAt: number;
 };
 
@@ -24,6 +26,42 @@ type RateLimitRule = {
 
 const DEFAULT_RULE: RateLimitRule = { key: "default", limit: 600, windowMs: 60_000 };
 
+/** Connection probes can submit credentials and call a paid provider. */
+export const CONNECTION_TEST_RATE_LIMIT = {
+  max: 30,
+  timeWindow: 60_000,
+} as const satisfies MarinaraRouteRateLimit;
+
+/** Quick answers call a model per request; a person asks a few per minute, never in a loop. */
+export const PROFESSOR_MARI_QUICK_RATE_LIMIT = {
+  max: 30,
+  timeWindow: 60_000,
+} as const satisfies MarinaraRouteRateLimit;
+
+/** Bulk "skip these agent updates" writes the package catalog; a person clicks it, not a script. */
+export const PACKAGE_UPDATE_DECLINE_RATE_LIMIT = {
+  max: 30,
+  timeWindow: 60_000,
+} as const satisfies MarinaraRouteRateLimit;
+
+/** Experience file imports: each one streams a whole file through the package checks. */
+export const EXPERIENCE_FILE_IMPORT_RATE_LIMIT = {
+  max: 10,
+  timeWindow: 60_000,
+} as const satisfies MarinaraRouteRateLimit;
+
+// Installing a package downloads and verifies its archive; a ruleset language switch fetches one
+// pack per installed catalog ruleset. Both are a click each, never a loop.
+export const PACKAGE_INSTALL_RATE_LIMIT = {
+  max: 20,
+  timeWindow: 60_000,
+} as const satisfies MarinaraRouteRateLimit;
+
+export const RULESET_LANGUAGE_RATE_LIMIT = {
+  max: 20,
+  timeWindow: 60_000,
+} as const satisfies MarinaraRouteRateLimit;
+
 export const UPDATE_CHANNEL_RATE_LIMIT = {
   max: 30,
   timeWindow: 60_000,
@@ -34,8 +72,43 @@ export const AVATAR_STORAGE_RATE_LIMIT = {
   timeWindow: 60_000,
 } as const satisfies MarinaraRouteRateLimit;
 
+/** Avatar faces: a streaming reply asks at most once per 1.2 seconds (about 50 a minute); room for two tabs. */
+export const AVATAR_CLASSIFY_RATE_LIMIT = {
+  max: 120,
+  timeWindow: 60_000,
+} as const satisfies MarinaraRouteRateLimit;
+
 export const SPRITE_RENAME_RATE_LIMIT = {
   max: 60,
+  timeWindow: 60_000,
+} as const satisfies MarinaraRouteRateLimit;
+
+/**
+ * Tile packs: the overworld reads the list, the selection and one built-in pack per family from disk;
+ * saving, importing and removing write the store. A person browsing or editing packs stays far below
+ * this; a scripted loop does not.
+ */
+export const GAME_TILE_PACKS_RATE_LIMIT = {
+  max: 120,
+  timeWindow: 60_000,
+} as const satisfies MarinaraRouteRateLimit;
+
+/**
+ * The world library: listing, reading and editing kept worlds, and making or importing one, which compiles
+ * a whole world. A person building worlds stays far below this; a scripted loop does not.
+ */
+export const GAME_WORLDS_RATE_LIMIT = {
+  max: 120,
+  timeWindow: 60_000,
+} as const satisfies MarinaraRouteRateLimit;
+
+/**
+ * Rulesets and creature packs: reading a package file, a ruleset's own files or the published schema, and
+ * filing or choosing a creature pack. A person importing or editing stays far below this; a scripted loop
+ * does not.
+ */
+export const GAME_RULESETS_RATE_LIMIT = {
+  max: 120,
   timeWindow: 60_000,
 } as const satisfies MarinaraRouteRateLimit;
 
@@ -49,9 +122,36 @@ export const REQUEST_TIMEOUT_SETTINGS_RATE_LIMIT = {
   timeWindow: 60_000,
 } as const satisfies MarinaraRouteRateLimit;
 
+/** Revision settings can prune stored code history; bound reads and writes together. */
+export const EXTENSION_REVISION_HISTORY_RATE_LIMIT = {
+  max: 30,
+  timeWindow: 60_000,
+} as const satisfies MarinaraRouteRateLimit;
+
 /** Support snapshot of storage residency and package runtimes; a person reads it a few times, not in a loop. */
 export const RUNTIME_DIAGNOSTICS_RATE_LIMIT = {
   max: 30,
+  timeWindow: 60_000,
+} as const satisfies MarinaraRouteRateLimit;
+
+/** Setting the remote login; also bounds tries of the one-time setup code. */
+export const ACCESS_LOGIN_RATE_LIMIT = {
+  max: 10,
+  timeWindow: 60_000,
+} as const satisfies MarinaraRouteRateLimit;
+
+/**
+ * The sign-in pages (/login, /login/setup). Behind a proxy every browser shares one address, so this
+ * only caps volume; wrong passwords and codes have their own per-browser buckets in basic-auth.
+ */
+export const LOGIN_PAGE_RATE_LIMIT = {
+  max: 120,
+  timeWindow: 60_000,
+} as const satisfies MarinaraRouteRateLimit;
+
+/** Marinara notices; each tab asks once on load and then hourly. */
+export const MARINARA_NOTICES_RATE_LIMIT = {
+  max: 10,
   timeWindow: 60_000,
 } as const satisfies MarinaraRouteRateLimit;
 
@@ -69,6 +169,12 @@ export const MULTIPLAYER_GUEST_VIEW_RATE_LIMIT = {
  */
 export const BEHOLDER_STATE_RATE_LIMIT = {
   max: 60,
+  timeWindow: 60_000,
+} as const satisfies MarinaraRouteRateLimit;
+
+/** Each greeting-image bake downloads up to ten web images on the server. */
+export const GREETING_IMAGE_BAKE_RATE_LIMIT = {
+  max: 20,
   timeWindow: 60_000,
 } as const satisfies MarinaraRouteRateLimit;
 
@@ -111,6 +217,22 @@ export const HEALTH_RATE_LIMIT = {
 
 const ROUTE_RULES: Array<{ pattern: RegExp; rule: RateLimitRule }> = [
   {
+    pattern: /^\/api\/connections\/[^/]+\/test(?:\?|$)/,
+    rule: {
+      key: "connection-test",
+      limit: CONNECTION_TEST_RATE_LIMIT.max,
+      windowMs: CONNECTION_TEST_RATE_LIMIT.timeWindow,
+    },
+  },
+  {
+    pattern: /^\/api\/access\/login(?:\?|$)/,
+    rule: { key: "access-login", limit: ACCESS_LOGIN_RATE_LIMIT.max, windowMs: ACCESS_LOGIN_RATE_LIMIT.timeWindow },
+  },
+  {
+    pattern: /^\/login(?:\/setup)?(?:\?|$)/,
+    rule: { key: "login-page", limit: LOGIN_PAGE_RATE_LIMIT.max, windowMs: LOGIN_PAGE_RATE_LIMIT.timeWindow },
+  },
+  {
     pattern: /^\/api\/health(?:\?|$)/,
     rule: { key: "health", limit: HEALTH_RATE_LIMIT.max, windowMs: HEALTH_RATE_LIMIT.timeWindow },
   },
@@ -130,6 +252,30 @@ const ROUTE_RULES: Array<{ pattern: RegExp; rule: RateLimitRule }> = [
   },
   { pattern: /^\/api\/import\/st-bulk(?:\/|$)/, rule: { key: "bulk-import", limit: 20, windowMs: 60_000 } },
   {
+    pattern: /^\/api\/characters\/[^/]+\/gallery\/bake(?:\?|$)/,
+    rule: {
+      key: "greeting-image-bake",
+      limit: GREETING_IMAGE_BAKE_RATE_LIMIT.max,
+      windowMs: GREETING_IMAGE_BAKE_RATE_LIMIT.timeWindow,
+    },
+  },
+  {
+    pattern: /^\/api\/game-worlds(?:\/|$)/,
+    rule: {
+      key: "game-worlds",
+      limit: GAME_WORLDS_RATE_LIMIT.max,
+      windowMs: GAME_WORLDS_RATE_LIMIT.timeWindow,
+    },
+  },
+  {
+    pattern: /^\/api\/game-tile-packs(?:\/|$)/,
+    rule: {
+      key: "game-tile-packs",
+      limit: GAME_TILE_PACKS_RATE_LIMIT.max,
+      windowMs: GAME_TILE_PACKS_RATE_LIMIT.timeWindow,
+    },
+  },
+  {
     pattern: /^\/api\/backup(?:\/|$)/,
     rule: { key: "backup", limit: BACKUP_RATE_LIMIT.max, windowMs: BACKUP_RATE_LIMIT.timeWindow },
   },
@@ -139,6 +285,14 @@ const ROUTE_RULES: Array<{ pattern: RegExp; rule: RateLimitRule }> = [
       key: "avatar-storage",
       limit: AVATAR_STORAGE_RATE_LIMIT.max,
       windowMs: AVATAR_STORAGE_RATE_LIMIT.timeWindow,
+    },
+  },
+  {
+    pattern: /^\/api\/avatar-classify(?:\/|\?|$)/,
+    rule: {
+      key: "avatar-classify",
+      limit: AVATAR_CLASSIFY_RATE_LIMIT.max,
+      windowMs: AVATAR_CLASSIFY_RATE_LIMIT.timeWindow,
     },
   },
   {
@@ -159,6 +313,14 @@ const ROUTE_RULES: Array<{ pattern: RegExp; rule: RateLimitRule }> = [
       key: "runtime-diagnostics",
       limit: RUNTIME_DIAGNOSTICS_RATE_LIMIT.max,
       windowMs: RUNTIME_DIAGNOSTICS_RATE_LIMIT.timeWindow,
+    },
+  },
+  {
+    pattern: /^\/api\/personal-extensions\/revision-history\/?$/,
+    rule: {
+      key: "extension-revision-history",
+      limit: EXTENSION_REVISION_HISTORY_RATE_LIMIT.max,
+      windowMs: EXTENSION_REVISION_HISTORY_RATE_LIMIT.timeWindow,
     },
   },
   { pattern: /^\/api\/updates\/apply(?:\?|$)/, rule: { key: "updates-apply", limit: 5, windowMs: 60_000 } },
@@ -183,6 +345,46 @@ const ROUTE_RULES: Array<{ pattern: RegExp; rule: RateLimitRule }> = [
     },
   },
   { pattern: /^\/api\/haptic\/command(?:\?|$)/, rule: { key: "haptic-command", limit: 30, windowMs: 60_000 } },
+  {
+    pattern: /^\/api\/professor-mari\/quick\/(?:prompt|proposals\/[^/]+\/apply)(?:\?|$)/,
+    rule: {
+      key: "professor-mari-quick",
+      limit: PROFESSOR_MARI_QUICK_RATE_LIMIT.max,
+      windowMs: PROFESSOR_MARI_QUICK_RATE_LIMIT.timeWindow,
+    },
+  },
+  {
+    pattern: /^\/api\/capability-packages\/updates\/decline(?:\?|$)/,
+    rule: {
+      key: "package-update-decline",
+      limit: PACKAGE_UPDATE_DECLINE_RATE_LIMIT.max,
+      windowMs: PACKAGE_UPDATE_DECLINE_RATE_LIMIT.timeWindow,
+    },
+  },
+  {
+    pattern: /^\/api\/capability-packages\/[^/?]+\/install(?:\?|$)/,
+    rule: {
+      key: "package-install",
+      limit: PACKAGE_INSTALL_RATE_LIMIT.max,
+      windowMs: PACKAGE_INSTALL_RATE_LIMIT.timeWindow,
+    },
+  },
+  {
+    pattern: /^\/api\/capability-packages\/rulesets\/language(?:\?|$)/,
+    rule: {
+      key: "ruleset-language",
+      limit: RULESET_LANGUAGE_RATE_LIMIT.max,
+      windowMs: RULESET_LANGUAGE_RATE_LIMIT.timeWindow,
+    },
+  },
+  {
+    pattern: /^\/api\/capability-packages\/experience-file(?:\?|$)/,
+    rule: {
+      key: "experience-file-import",
+      limit: EXPERIENCE_FILE_IMPORT_RATE_LIMIT.max,
+      windowMs: EXPERIENCE_FILE_IMPORT_RATE_LIMIT.timeWindow,
+    },
+  },
   // One-shot LLM call per user click; keep it out of the 600/min default
   // class so a runaway loop can't burn API credits.
   {
@@ -223,22 +425,31 @@ const ROUTE_RULES: Array<{ pattern: RegExp; rule: RateLimitRule }> = [
 
 const buckets = new Map<string, Bucket>();
 let lastSweepAt = 0;
+/**
+ * Windows run on a monotonic clock: a wall clock set back (NTP, a resumed VM, a time-zone fix) would otherwise leave
+ * every bucket counting down to a reset hours away, locking all clients out for that long.
+ */
+const monotonicNow = () => performance.now();
 const isE2ERateLimitDisabled = process.env.MARINARA_E2E_DISABLE_RATE_LIMIT === "true";
 
-function selectRule(url: string): RateLimitRule {
-  let path = url.split("?")[0] ?? url;
-  // Match rules against the DECODED path the router actually dispatches on:
-  // matching the raw URL let "/api/generat%65"-style percent-encoding slip any
-  // rule in this table back into the permissive default bucket while the route
-  // still resolved. Collapse duplicate slashes for the same reason. A malformed
-  // escape keeps the raw path — the router rejects those requests anyway.
-  try {
-    path = decodeURIComponent(path);
-  } catch {
-    // fall through with the raw path
-  }
-  path = path.replace(/\/{2,}/g, "/");
-  return ROUTE_RULES.find((entry) => entry.pattern.test(path))?.rule ?? DEFAULT_RULE;
+function selectRule(request: FastifyRequest): RateLimitRule {
+  // Match rules against the route the router dispatched to, not the raw target:
+  // "/api/generat%65"-style percent-encoding, duplicate slashes or an
+  // absolute-form target ("POST http://host/api/generate") otherwise slipped
+  // past every rule in this table into the permissive default bucket while the
+  // route still resolved. The table's `[^/]+` segments also match a pattern's
+  // `:param`s. An unrouted request is a 404 whichever bucket it lands in.
+  const { url: routeUrl, config } = request.routeOptions;
+  // Fastify's automatic HEAD route for a prefix root ("/api/notices" + "/") reports
+  // the trailing-slash pattern; trim it so that HEAD lands in its GET's bucket.
+  const routePath = routeUrl && routeUrl.length > 1 ? routeUrl.replace(/\/$/u, "") : routeUrl;
+  const tableRule = ROUTE_RULES.find((entry) => entry.pattern.test(routePath ?? request.url))?.rule;
+  if (tableRule) return tableRule;
+  const declared = config?.rateLimit;
+  if (!declared || routePath === undefined) return DEFAULT_RULE;
+  // A route the table does not cover keeps the limit it declares, in a bucket of its own; HEAD shares GET's.
+  const method = request.method === "HEAD" ? "GET" : request.method;
+  return { key: `route:${method} ${routePath}`, limit: declared.max, windowMs: declared.timeWindow };
 }
 
 function sweepExpired(now: number) {
@@ -250,13 +461,14 @@ function sweepExpired(now: number) {
 }
 
 export function rateLimitHook(request: FastifyRequest, reply: FastifyReply, done: () => void) {
-  if (!request.url.startsWith("/api/")) return done();
   if (isE2ERateLimitDisabled) return done();
+  const rule = selectRule(request);
+  // Pages and assets are not throttled, except the sign-in pages that check passwords and codes.
+  if (!isApiRequest(request) && rule.key !== "login-page") return done();
 
-  const now = Date.now();
+  const now = monotonicNow();
   sweepExpired(now);
 
-  const rule = selectRule(request.url);
   const key = `${rule.key}:${request.ip}`;
   const bucket = buckets.get(key);
   const activeBucket = bucket && bucket.resetAt > now ? bucket : { count: 0, resetAt: now + rule.windowMs };
@@ -266,11 +478,13 @@ export function rateLimitHook(request: FastifyRequest, reply: FastifyReply, done
   const remaining = Math.max(0, rule.limit - activeBucket.count);
   reply.header("RateLimit-Limit", String(rule.limit));
   reply.header("RateLimit-Remaining", String(remaining));
-  reply.header("RateLimit-Reset", String(Math.ceil(activeBucket.resetAt / 1000)));
+  reply.header("RateLimit-Reset", String(Math.ceil((Date.now() + activeBucket.resetAt - now) / 1000)));
 
   if (activeBucket.count > rule.limit) {
-    reply.header("Retry-After", String(Math.ceil((activeBucket.resetAt - now) / 1000)));
-    reply.status(429).send({ error: "Too many requests" });
+    const retryAfter = Math.ceil((activeBucket.resetAt - now) / 1000);
+    reply.header("Retry-After", String(retryAfter));
+    // The body repeats the wait so forms can say "Try again in N minutes".
+    reply.status(429).send({ error: "Too many requests", retryAfter });
     return;
   }
 

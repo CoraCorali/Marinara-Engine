@@ -10,6 +10,7 @@ import { MultiplayerService } from "../services/multiplayer/service.js";
 import { MultiplayerError } from "../services/multiplayer/room-store.js";
 import { multiplayerGuestDocument } from "../services/multiplayer/guest-document.js";
 import { parseRoomGameConfig } from "./game.routes.js";
+import { WORLD_SHARE_FILE_MAX_BYTES } from "@marinara-engine/shared";
 
 const id = z.string().regex(/^[A-Za-z0-9_-]{8,64}$/u);
 const identity = { displayName: z.string().trim().min(1).max(80), persona: multiplayerPersonaSchema };
@@ -24,6 +25,7 @@ const hostAction = z.discriminatedUnion("type", [
   z.object({ type: z.literal("revoke-invite") }).strict(),
   z.object({ type: z.literal("pause") }).strict(),
   z.object({ type: z.literal("resume") }).strict(),
+  z.object({ type: z.literal("retry") }).strict(),
   z.object({ type: z.literal("stop") }).strict(),
   z
     .object({
@@ -40,6 +42,7 @@ const hostAction = z.discriminatedUnion("type", [
   z.object({ type: z.literal("proposal-decline"), proposalId: id }).strict(),
   z.object({ type: z.literal("add-character"), characterId: id, role: z.enum(["character", "gm"]) }).strict(),
   z.object({ type: z.literal("remove-character"), characterId: id }).strict(),
+  z.object({ type: z.literal("fight-result"), text: z.string().min(1).max(8000) }).strict(),
   z
     .object({
       type: z.literal("startGame"),
@@ -116,7 +119,8 @@ export async function multiplayerRoutes(app: FastifyInstance, options: { service
   app.post("/host/action", { bodyLimit: 16_384 }, async (request) =>
     service.hostParticipantAction(multiplayerActionSchema.parse(request.body)),
   );
-  app.post("/host/actions", { bodyLimit: 65_536 }, async (request) =>
+  // Room for a game's start with a world's snapshot (W11), which can be as large as a world file.
+  app.post("/host/actions", { bodyLimit: WORLD_SHARE_FILE_MAX_BYTES + 65_536 }, async (request) =>
     service.hostAction(hostAction.parse(request.body)),
   );
   app.post("/preview", { bodyLimit: 4096 }, async (request) =>

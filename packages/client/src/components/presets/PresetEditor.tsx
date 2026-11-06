@@ -1,4 +1,4 @@
-import { DEFAULT_GENERATION_PARAMS } from "@marinara-engine/shared";
+import { DEFAULT_GENERATION_PARAMS, withoutPresetTokenLimits } from "@marinara-engine/shared";
 import { GenerationParametersFields, getEditableGenerationParameters } from "../ui/GenerationParametersEditor";
 // ──────────────────────────────────────────────
 // Full-Page Preset Editor
@@ -8,6 +8,7 @@ import {
   useState,
   useCallback,
   useEffect,
+  useEffectEvent,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -15,7 +16,6 @@ import {
   type FC,
   type ReactNode,
 } from "react";
-import { createPortal } from "react-dom";
 import { useTranslation, useTranslation as useUiTranslation } from "react-i18next";
 import { useUIStore } from "../../stores/ui.store";
 import { toast } from "sonner";
@@ -65,12 +65,10 @@ import {
   Bot,
   X,
   AlertTriangle,
-  Maximize2,
-  ListChecks,
-  Shuffle,
   Copy,
   Camera,
   Loader2,
+  MessageCircleQuestion,
   Regex,
   Pencil,
 } from "lucide-react";
@@ -80,6 +78,7 @@ import { DraftNumberInput } from "../ui/DraftNumberInput";
 import { MacroTextarea } from "../ui/MacroTextarea";
 import { applyTextareaQuoteFormat } from "../../lib/textarea-quotes";
 import { api } from "../../lib/api-client";
+import { requestProfessorMariOpen } from "../../lib/professor-mari-open";
 import { useAgentConfigs, type AgentConfigRow } from "../../hooks/use-agents";
 import {
   isStockMarinaraUniversalPreset,
@@ -98,58 +97,14 @@ import { useEditorLeaveSave } from "../../hooks/use-editor-leave-save";
 import { hasEditorLeaveHandler, leaveWithoutSaving } from "../../lib/editor-leave";
 import { useTouchFolderDrag } from "../../hooks/use-touch-folder-drag";
 import { getTouchReorderDropIndex } from "../../lib/touch-reorder";
-import { handleTextareaTab } from "../../lib/textarea-editing";
 import { SettingsSwitch } from "../panels/settings/SettingControls";
 import { resolvePresetArtwork } from "../../lib/preset-artwork";
+import { formatEstimatedTokens } from "../../lib/character-token-count";
+import { estimateEnabledStaticPresetTokens, estimatePresetSectionTokens } from "../../lib/preset-section-tokens";
 import { useRegexScripts } from "../../hooks/use-regex-scripts";
-
-// ── Input caret helpers ──
-type TextSelection = { start: number; end: number };
-
-function shouldSelectTextOnFocus() {
-  if (typeof window === "undefined" || typeof window.matchMedia !== "function") return true;
-  return !window.matchMedia("(pointer: coarse)").matches;
-}
-
-function useRestoreTextSelection<T extends HTMLInputElement | HTMLTextAreaElement>(
-  inputRef: { current: T | null },
-  selectionRef: { current: TextSelection | null },
-  value: string,
-) {
-  useLayoutEffect(() => {
-    const input = inputRef.current;
-    const selection = selectionRef.current;
-    if (!input || !selection || typeof document === "undefined" || document.activeElement !== input) return;
-
-    selectionRef.current = null;
-    const start = Math.min(selection.start, input.value.length);
-    const end = Math.min(selection.end, input.value.length);
-    input.setSelectionRange(start, end);
-  }, [inputRef, selectionRef, value]);
-}
-
-function getFormattedTextSelection(
-  rawValue: string,
-  selectionStart: number,
-  selectionEnd: number,
-  formatValue: (value: string) => string,
-): TextSelection {
-  const formattedBeforeSelection = formatValue(rawValue.slice(0, selectionStart));
-  const formattedSelection = formatValue(rawValue.slice(selectionStart, selectionEnd));
-  return {
-    start: formattedBeforeSelection.length,
-    end: formattedBeforeSelection.length + formattedSelection.length,
-  };
-}
-
-const sanitizeVariableName = (value: string) => value.replace(/[^\w]/g, "");
-
-function getSanitizedVariableSelection(rawValue: string, selectionStart: number, selectionEnd: number): TextSelection {
-  return {
-    start: sanitizeVariableName(rawValue.slice(0, selectionStart)).length,
-    end: sanitizeVariableName(rawValue.slice(0, selectionEnd)).length,
-  };
-}
+import { PresetVariablesEditor, reorderIdsByOffset, reorderIdsToGap } from "./PresetVariablesEditor";
+import { useMariCompanionEditor, useMariEditorFields } from "../../hooks/use-mari-editor-fields";
+import { MariFieldReview, MariFieldReviewProvider, useMariFieldReview } from "../characters/MariFieldReview";
 
 // ── Tab definitions ──
 const TABS = [
@@ -193,66 +148,8 @@ function lorebookWarningDismissalKey(presetId: string) {
   return `preset:loreWarning:dismissed:${presetId}`;
 }
 
-function reorderIdsByOffset(items: Array<{ id: string }>, index: number, offset: number): string[] | null {
-  const targetIndex = index + offset;
-  if (targetIndex < 0 || targetIndex >= items.length) return null;
-  const ids = items.map((item) => item.id);
-  const [moved] = ids.splice(index, 1);
-  if (!moved) return null;
-  ids.splice(targetIndex, 0, moved);
-  return ids;
-}
-
-function reorderItems<T>(items: T[], sourceIndex: number, targetIndex: number): T[] | null {
-  if (sourceIndex < 0 || sourceIndex >= items.length || targetIndex < 0 || targetIndex >= items.length) return null;
-  if (sourceIndex === targetIndex) return null;
-  const next = [...items];
-  const [moved] = next.splice(sourceIndex, 1);
-  if (moved === undefined) return null;
-  next.splice(targetIndex, 0, moved);
-  return next;
-}
-
-function reorderIdsToGap(items: Array<{ id: string }>, sourceIndex: number, targetGapIndex: number): string[] | null {
-  if (sourceIndex < 0 || sourceIndex >= items.length || targetGapIndex < 0 || targetGapIndex > items.length)
-    return null;
-  let insertAt = targetGapIndex;
-  if (sourceIndex < insertAt) insertAt--;
-  if (sourceIndex === insertAt) return null;
-  const ids = items.map((item) => item.id);
-  const [moved] = ids.splice(sourceIndex, 1);
-  if (!moved) return null;
-  ids.splice(insertAt, 0, moved);
-  return ids;
-}
-
-function reorderItemsToGap<T>(items: T[], sourceIndex: number, targetGapIndex: number): T[] | null {
-  if (sourceIndex < 0 || sourceIndex >= items.length || targetGapIndex < 0 || targetGapIndex > items.length)
-    return null;
-  let insertAt = targetGapIndex;
-  if (sourceIndex < insertAt) insertAt--;
-  if (sourceIndex === insertAt) return null;
-  const next = [...items];
-  const [moved] = next.splice(sourceIndex, 1);
-  if (moved === undefined) return null;
-  next.splice(insertAt, 0, moved);
-  return next;
-}
-
 function readBoolFlag(value: unknown): boolean {
   return value === true || value === "true";
-}
-
-type ChoiceDisplayMode = "auto" | "buttons" | "listbox";
-type ChoiceOptionSort = "manual" | "alphabetical";
-type VariableOptionDraft = { id: string; label: string; value: string };
-
-function readChoiceDisplayMode(value: unknown): ChoiceDisplayMode {
-  return value === "buttons" || value === "listbox" ? value : "auto";
-}
-
-function readChoiceOptionSort(value: unknown): ChoiceOptionSort {
-  return value === "alphabetical" ? "alphabetical" : "manual";
 }
 
 function readMarkerConfig(value: unknown) {
@@ -269,6 +166,55 @@ function readMarkerConfig(value: unknown) {
 //  Main Editor
 // ═══════════════════════════════════════════════
 
+// The preset's own form fields as loaded, so a save sends only what the user changed.
+type PresetFormFields = {
+  name: string;
+  description: string;
+  wrapFormat: WrapFormat;
+  author: string;
+  conversationPrompt: string;
+  gamePrompt: string;
+  parameters: Record<string, unknown>;
+  scopedRegexMode: ScopedRegexMode;
+};
+
+function presetFormFields(p: any): PresetFormFields {
+  let parameters: Record<string, unknown> = {};
+  try {
+    const parsed = typeof p.parameters === "string" ? JSON.parse(p.parameters) : p.parameters;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) parameters = parsed;
+  } catch {
+    // Unreadable stored parameters start from the defaults.
+  }
+  return {
+    name: p.name ?? "",
+    description: p.description ?? "",
+    wrapFormat: (p.wrapFormat ?? "xml") as WrapFormat,
+    author: p.author ?? "",
+    conversationPrompt: p.conversationPrompt ?? "",
+    gamePrompt: p.gamePrompt ?? "",
+    parameters,
+    scopedRegexMode: resolveScopedRegexMode(p.scopedRegexMode),
+  };
+}
+
+function presetSavePayload(form: PresetFormFields): Record<string, unknown> {
+  return {
+    ...form,
+    parameters: withoutPresetTokenLimits({ ...DEFAULT_GENERATION_PARAMS, ...form.parameters }),
+  };
+}
+
+/** Only the keys that differ from the loaded preset, so a save cannot undo a change Prof. Mari made meanwhile. */
+function presetSavePatch(form: PresetFormFields, loaded: PresetFormFields | null): Record<string, unknown> {
+  const next = presetSavePayload(form);
+  if (!loaded) return next;
+  const before = presetSavePayload(loaded);
+  return Object.fromEntries(
+    Object.entries(next).filter(([key, value]) => JSON.stringify(value) !== JSON.stringify(before[key])),
+  );
+}
+
 export function PresetEditor() {
   const { t: localizeUi } = useUiTranslation();
   const presetDetailId = useUIStore((s) => s.presetDetailId);
@@ -277,7 +223,7 @@ export function PresetEditor() {
   const openPresetDetail = useUIStore((s) => s.openPresetDetail);
   const activeChatId = useChatStore((s) => s.activeChatId);
 
-  const { data, isLoading } = usePresetFull(presetDetailId);
+  const { data, isLoading, refetch: refetchPreset } = usePresetFull(presetDetailId);
   const { data: activeChat } = useChat(activeChatId);
   const updatePreset = useUpdatePreset();
   const deletePreset = useDeletePreset();
@@ -295,7 +241,7 @@ export function PresetEditor() {
   const reorderVariables = useReorderVariables();
 
   const [activeTab, setActiveTab] = useState<TabId>(() => presetDetailInitialTab ?? "overview");
-  const { contentRef, scrollToSection } = useEditorSections(
+  const { contentRef, scrollToSection, scrollToElement } = useEditorSections(
     presetDetailId,
     !!data,
     presetDetailInitialTab ?? "overview",
@@ -332,26 +278,27 @@ export function PresetEditor() {
     dirtyRef.current = dirty;
   }, [dirty]);
 
+  const loadedFormRef = useRef<PresetFormFields | null>(null);
+  const adoptPreset = useCallback((preset: unknown) => {
+    const form = presetFormFields(preset);
+    setLocalName(form.name);
+    setLocalDescription(form.description);
+    setLocalWrapFormat(form.wrapFormat);
+    setLocalAuthor(form.author);
+    setLocalConversationPrompt(form.conversationPrompt);
+    setLocalGamePrompt(form.gamePrompt);
+    setLocalParameters(form.parameters);
+    setLocalScopedRegexMode(form.scopedRegexMode);
+    loadedFormRef.current = form;
+  }, []);
+
   // Populate local state when data loads
   useEffect(() => {
     if (!data || !presetDetailId) return;
     if (dirtyRef.current && hydratedPresetIdRef.current === presetDetailId) return;
-    const p = data.preset as any;
     hydratedPresetIdRef.current = presetDetailId;
-    setLocalName(p.name ?? "");
-    setLocalDescription(p.description ?? "");
-    setLocalWrapFormat((p.wrapFormat ?? "xml") as WrapFormat);
-    setLocalAuthor(p.author ?? "");
-    setLocalConversationPrompt(p.conversationPrompt ?? "");
-    setLocalGamePrompt(p.gamePrompt ?? "");
-    try {
-      const parameters = typeof p.parameters === "string" ? JSON.parse(p.parameters) : p.parameters;
-      setLocalParameters(parameters && typeof parameters === "object" && !Array.isArray(parameters) ? parameters : {});
-    } catch {
-      setLocalParameters({});
-    }
-    setLocalScopedRegexMode(resolveScopedRegexMode(p.scopedRegexMode));
-  }, [data, presetDetailId]);
+    adoptPreset(data.preset);
+  }, [data, presetDetailId, adoptPreset]);
 
   useEffect(() => {
     setStockCopyError(null);
@@ -385,18 +332,18 @@ export function PresetEditor() {
   const handleSave = useCallback(async () => {
     if (!presetDetailId) return false;
     const revision = editRevisionRef.current;
-    const payload: { id: string } & Record<string, unknown> = {
-      id: presetDetailId,
+    const form: PresetFormFields = {
       name: localName,
       description: localDescription,
       wrapFormat: localWrapFormat,
       author: localAuthor,
       conversationPrompt: localConversationPrompt,
       gamePrompt: localGamePrompt,
-      parameters: { ...DEFAULT_GENERATION_PARAMS, ...localParameters },
+      parameters: localParameters,
       scopedRegexMode: localScopedRegexMode,
     };
-    await updatePreset.mutateAsync(payload);
+    await updatePreset.mutateAsync({ id: presetDetailId, ...presetSavePatch(form, loadedFormRef.current) });
+    loadedFormRef.current = form;
     if (editRevisionRef.current !== revision) return false;
     setDirty(false);
     setShowSaved(true);
@@ -457,6 +404,88 @@ export function PresetEditor() {
     editRevisionRef.current += 1;
     setDirty(true);
   }, []);
+
+  // Prof. Mari and the preset's own fields, as in the Lorebook editor. Prompt sections are their own records.
+  const editorReady = !isLoading && !!data;
+  const { workingOffscreen, revealWorkingField } = useMariEditorFields(
+    contentRef,
+    presetDetailId,
+    editorReady,
+    scrollToElement,
+  );
+  useMariCompanionEditor(contentRef, editorReady);
+  const mariFieldText = (fieldId: string): string =>
+    ({
+      name: localName,
+      description: localDescription,
+      author: localAuthor,
+      conversationPrompt: localConversationPrompt,
+      gamePrompt: localGamePrompt,
+    })[fieldId] ?? "";
+  const editMariField = (fieldId: string, text: string) => {
+    const set = {
+      name: setLocalName,
+      description: setLocalDescription,
+      author: setLocalAuthor,
+      conversationPrompt: setLocalConversationPrompt,
+      gamePrompt: setLocalGamePrompt,
+    }[fieldId];
+    if (!set) return;
+    set(text);
+    markDirty();
+  };
+  // Her change lands on a saved preset and Undo restores that saved text. Fields the user took over
+  // with Edit get the user's text back after her change lands, unsaved.
+  const takenOverRef = useRef<{ presetId: string; values: Record<string, string> } | null>(null);
+  useEffect(() => {
+    takenOverRef.current = null;
+  }, [presetDetailId]);
+  const mariReview = useMariFieldReview({
+    entityId: presetDetailId,
+    current: mariFieldText,
+    touched: (fieldId) => {
+      const loaded = loadedFormRef.current;
+      return dirty && !!loaded && mariFieldText(fieldId) !== loaded[fieldId as keyof PresetFormFields];
+    },
+    edit: editMariField,
+    beforeKeep: async (takenOver) => {
+      takenOverRef.current =
+        presetDetailId && takenOver && takenOver.length > 0
+          ? { presetId: presetDetailId, values: Object.fromEntries(takenOver.map((id) => [id, mariFieldText(id)])) }
+          : null;
+      if (!dirtyRef.current) return "clean";
+      if (await handleSave().catch(() => false)) return "saved";
+      takenOverRef.current = null;
+      return "failed";
+    },
+    keepDropped: () => {
+      takenOverRef.current = null;
+    },
+  });
+  const handledKeptRef = useRef(mariReview.review?.mode === "kept" ? mariReview.review.key : null);
+  const reviewModeRef = useRef(mariReview.review?.mode);
+  const restoreTakenOver = useEffectEvent(async () => {
+    const taken = takenOverRef.current;
+    takenOverRef.current = null;
+    if (!taken || taken.presetId !== presetDetailId) return;
+    const revision = editRevisionRef.current;
+    const fresh = await refetchPreset();
+    if (useUIStore.getState().presetDetailId !== taken.presetId) return;
+    // Her other fields show at once, unless the user typed meanwhile.
+    if (fresh.data && editRevisionRef.current === revision) adoptPreset(fresh.data.preset);
+    for (const [fieldId, text] of Object.entries(taken.values)) editMariField(fieldId, text);
+  });
+  useEffect(() => {
+    const review = mariReview.review;
+    const wasBusy = reviewModeRef.current === "busy";
+    reviewModeRef.current = review?.mode;
+    const mine = (field: { entityId: string }) => field.entityId === presetDetailId;
+    // Her apply failed and the change waits again: the text captured for that Keep is stale.
+    if (wasBusy && review?.mode === "waiting" && review.fields.some(mine)) takenOverRef.current = null;
+    if (review?.mode !== "kept" || handledKeptRef.current === review.key) return;
+    handledKeptRef.current = review.key;
+    if (review.fields.some(mine)) void restoreTakenOver();
+  }, [mariReview.review, presetDetailId]);
 
   // Parse sections in order
   const sectionOrder = useMemo(() => {
@@ -588,6 +617,7 @@ export function PresetEditor() {
             )}
           </div>
           <input
+            data-mari-field="name"
             value={localName}
             onFocus={(e) => e.target.select()}
             onChange={(e) => {
@@ -602,6 +632,25 @@ export function PresetEditor() {
         <EditorTabNavigation tabs={TABS} activeId={activeTab} onChange={scrollToSection} />
 
         <div className="mari-editor-actions flex">
+          <button
+            type="button"
+            onClick={() => {
+              requestProfessorMariOpen({
+                destination: "omnibar",
+                draft: localizeUi("professorMari.handoff.explainResourceDraft"),
+                context: {
+                  source: "preset-editor",
+                  capability: "explain",
+                  resource: { kind: "preset", id: presetDetailId, label: data.preset.name },
+                },
+              });
+            }}
+            className="mari-editor-action inline-flex"
+            title={localizeUi("professorMari.handoff.ask")}
+            aria-label={localizeUi("professorMari.handoff.ask")}
+          >
+            <MessageCircleQuestion size="0.8125rem" />
+          </button>
           <button
             onClick={handleSave}
             disabled={updatePreset.isPending}
@@ -652,36 +701,54 @@ export function PresetEditor() {
       )}
 
       {/* ── Body ── */}
-      <div className="mari-editor-body">
+      <div className="mari-editor-body relative">
+        {workingOffscreen && (
+          <button
+            type="button"
+            className="mari-topbar-status mari-field-chip"
+            data-state="working"
+            data-edge={workingOffscreen}
+            onClick={revealWorkingField}
+          >
+            {workingOffscreen === "above" ? (
+              <ArrowUp size="0.75rem" aria-hidden="true" />
+            ) : (
+              <ArrowDown size="0.75rem" aria-hidden="true" />
+            )}
+            {localizeUi("ui.characters.charactereditor.mariIsHere")}
+          </button>
+        )}
         {/* Content area */}
         <div ref={contentRef} className="mari-editor-content @max-5xl:p-4">
           <div className="mari-editor-content-inner space-y-6">
             <section data-editor-section="overview">
-              <OverviewTab
-                preset={data.preset}
-                name={localName}
-                onNameChange={(v) => {
-                  setLocalName(v);
-                  markDirty();
-                }}
-                description={localDescription}
-                onDescriptionChange={(v) => {
-                  setLocalDescription(formatQuotes(v));
-                  markDirty();
-                }}
-                wrapFormat={localWrapFormat}
-                onWrapFormatChange={(v) => {
-                  setLocalWrapFormat(v);
-                  markDirty();
-                }}
-                author={localAuthor}
-                onAuthorChange={(v) => {
-                  setLocalAuthor(formatQuotes(v));
-                  markDirty();
-                }}
-                sectionCount={orderedSections.length}
-                groupCount={data.groups?.length ?? 0}
-              />
+              <MariFieldReviewProvider value={mariReview.value}>
+                <OverviewTab
+                  preset={data.preset}
+                  name={localName}
+                  onNameChange={(v) => {
+                    setLocalName(v);
+                    markDirty();
+                  }}
+                  description={localDescription}
+                  onDescriptionChange={(v) => {
+                    setLocalDescription(formatQuotes(v));
+                    markDirty();
+                  }}
+                  wrapFormat={localWrapFormat}
+                  onWrapFormatChange={(v) => {
+                    setLocalWrapFormat(v);
+                    markDirty();
+                  }}
+                  author={localAuthor}
+                  onAuthorChange={(v) => {
+                    setLocalAuthor(formatQuotes(v));
+                    markDirty();
+                  }}
+                  sectionCount={orderedSections.length}
+                  groupCount={data.groups?.length ?? 0}
+                />
+              </MariFieldReviewProvider>
             </section>
             <section data-editor-section="sections">
               <SectionsTab
@@ -706,18 +773,20 @@ export function PresetEditor() {
               />
             </section>
             <section data-editor-section="prompts">
-              <PromptsTab
-                conversationPrompt={localConversationPrompt}
-                onConversationPromptChange={(v) => {
-                  setLocalConversationPrompt(v);
-                  markDirty();
-                }}
-                gamePrompt={localGamePrompt}
-                onGamePromptChange={(v) => {
-                  setLocalGamePrompt(v);
-                  markDirty();
-                }}
-              />
+              <MariFieldReviewProvider value={mariReview.value}>
+                <PromptsTab
+                  conversationPrompt={localConversationPrompt}
+                  onConversationPromptChange={(v) => {
+                    setLocalConversationPrompt(v);
+                    markDirty();
+                  }}
+                  gamePrompt={localGamePrompt}
+                  onGamePromptChange={(v) => {
+                    setLocalGamePrompt(v);
+                    markDirty();
+                  }}
+                />
+              </MariFieldReviewProvider>
             </section>
             <section data-editor-section="parameters" className="space-y-3">
               <h3 className="text-sm font-semibold">{localizeUi("generationParameters.preset.title")}</h3>
@@ -725,6 +794,7 @@ export function PresetEditor() {
               <GenerationParametersFields
                 value={getEditableGenerationParameters(DEFAULT_GENERATION_PARAMS, localParameters)}
                 showServiceTier
+                showTokenLimits={false}
                 onChange={(next) => {
                   setLocalParameters((previous) => ({ ...previous, ...next }));
                   markDirty();
@@ -1048,16 +1118,19 @@ function OverviewTab({
       </FieldGroup>
 
       <FieldGroup
+        mariField="description"
         label={localizeUi("chat.settings.inlineEditor.fields.description")}
         help={localizeUi("ui.presets.overviewtab.aShortSummaryOfWhatThisPresetIsDesigned")}
       >
-        <textarea
-          value={description}
-          onFocus={(e) => e.target.select()}
-          onChange={(e) => onDescriptionChange(e.target.value)}
-          placeholder={localizeUi("ui.presets.overviewtab.whatDoesThisPresetDo")}
-          className="mari-editor-field min-h-[5rem] w-full p-3 text-sm"
-        />
+        <MariFieldReview field="description">
+          <textarea
+            value={description}
+            onFocus={(e) => e.target.select()}
+            onChange={(e) => onDescriptionChange(e.target.value)}
+            placeholder={localizeUi("ui.presets.overviewtab.whatDoesThisPresetDo")}
+            className="mari-editor-field min-h-[5rem] w-full p-3 text-sm"
+          />
+        </MariFieldReview>
       </FieldGroup>
 
       <FieldGroup
@@ -1099,6 +1172,7 @@ function OverviewTab({
       </FieldGroup>
 
       <FieldGroup
+        mariField="author"
         label={localizeUi("ui.presets.overviewtab.author")}
         help={localizeUi("ui.presets.overviewtab.optionalCreatorNameUsefulIfYouSharePresetsWith")}
       >
@@ -1217,21 +1291,24 @@ function PromptsTab({
   return (
     <>
       <FieldGroup
+        mariField="conversationPrompt"
         label={localizeUi("onboarding.conversation.title")}
         help={localizeUi("ui.presets.promptstab.usedAsThePromptPresetSConversationPromptIn")}
       >
-        <MacroTextarea
-          showTokenCount
-          value={conversationPrompt}
-          tokenCountAlign="start"
-          onChange={onConversationPromptChange}
-          title={localizeUi("ui.presets.promptstab.editConversationModePrompt")}
-          placeholder={localizeUi("ui.presets.promptstab.leaveEmptyToUseMarinaraSBuiltInConversation")}
-          className="mari-editor-field min-h-[12rem] w-full p-3 font-mono text-xs"
-          formatOnChange={formatPrompt}
-          showMarkdownPreview
-          spellCheck={false}
-        />
+        <MariFieldReview field="conversationPrompt">
+          <MacroTextarea
+            showTokenCount
+            value={conversationPrompt}
+            tokenCountAlign="start"
+            onChange={onConversationPromptChange}
+            title={localizeUi("ui.presets.promptstab.editConversationModePrompt")}
+            placeholder={localizeUi("ui.presets.promptstab.leaveEmptyToUseMarinaraSBuiltInConversation")}
+            className="mari-editor-field mari-prompt-font min-h-[12rem] w-full p-3 text-xs"
+            formatOnChange={formatPrompt}
+            showMarkdownPreview
+            spellCheck={false}
+          />
+        </MariFieldReview>
       </FieldGroup>
 
       <FieldGroup
@@ -1244,21 +1321,24 @@ function PromptsTab({
       </FieldGroup>
 
       <FieldGroup
+        mariField="gamePrompt"
         label={localizeUi("onboarding.game.title")}
         help={localizeUi("ui.presets.promptstab.usedAsThePromptPresetSGamePromptIn")}
       >
-        <MacroTextarea
-          showTokenCount
-          value={gamePrompt}
-          tokenCountAlign="start"
-          onChange={onGamePromptChange}
-          title={localizeUi("ui.presets.promptstab.editGameModePrompt")}
-          placeholder={localizeUi("ui.presets.promptstab.leaveEmptyToUseMarinaraSBuiltInGame")}
-          className="mari-editor-field min-h-[12rem] w-full p-3 font-mono text-xs"
-          formatOnChange={formatPrompt}
-          showMarkdownPreview
-          spellCheck={false}
-        />
+        <MariFieldReview field="gamePrompt">
+          <MacroTextarea
+            showTokenCount
+            value={gamePrompt}
+            tokenCountAlign="start"
+            onChange={onGamePromptChange}
+            title={localizeUi("ui.presets.promptstab.editGameModePrompt")}
+            placeholder={localizeUi("ui.presets.promptstab.leaveEmptyToUseMarinaraSBuiltInGame")}
+            className="mari-editor-field mari-prompt-font min-h-[12rem] w-full p-3 text-xs"
+            formatOnChange={formatPrompt}
+            showMarkdownPreview
+            spellCheck={false}
+          />
+        </MariFieldReview>
       </FieldGroup>
     </>
   );
@@ -1371,6 +1451,15 @@ function SectionsTab({
     }
     setLorebookWarningDismissed(true);
   }, [presetId]);
+
+  // Every count in the panel comes from this one pass, so edits, enable toggles, duplicates, deletes and
+  // reorders all update together: sections arrive already ordered from the preset. Markers and disabled
+  // sections are excluded from the total by the helper, which also documents those rules.
+  const sectionTokenEstimates = useMemo(
+    () => sections.map((section: any) => estimatePresetSectionTokens(section)),
+    [sections],
+  );
+  const enabledStaticTokens = useMemo(() => estimateEnabledStaticPresetTokens(sections), [sections]);
 
   // Fetch agent configs and filter to those with injectAsSection enabled
   const { data: agentConfigs } = useAgentConfigs();
@@ -1652,6 +1741,18 @@ function SectionsTab({
           <FolderOpen size="0.8125rem" /> {localizeUi("ui.presets.sectionstab.groups")}
           {groupMap.size})
         </button>
+        <span
+          data-preset-token-total
+          className={cn(
+            "mari-editor-chip ml-auto shrink-0 whitespace-nowrap px-2 py-1 tabular-nums",
+            compact ? "text-[0.625rem] max-sm:basis-full max-sm:whitespace-normal max-sm:px-1.5" : "text-[0.6875rem]",
+          )}
+          title={localizeUi("ui.presets.sectionstab.enabledStaticPresetValue1TokensDescription")}
+        >
+          {localizeUi("ui.presets.sectionstab.enabledStaticPresetValue1Tokens", {
+            value1: enabledStaticTokens.toLocaleString(),
+          })}
+        </span>
         {!hasLorebookMarker && parentChatHasLorebook && !lorebookWarningDismissed && (
           <div className="mari-editor-chip mari-editor-chip--warning shrink px-2.5 py-1.5 text-[0.6875rem]">
             <AlertTriangle size="0.75rem" className="shrink-0" />
@@ -1781,6 +1882,7 @@ function SectionsTab({
             const RoleIcon = ROLE_ICONS[role] ?? Settings2;
             const markerConfig = isMarker ? readMarkerConfig(section.markerConfig) : null;
             const hasContentTextarea = !isMarker || markerConfig?.type === "agent_data";
+            const sectionTokens = sectionTokenEstimates[idx] ?? null;
             const positionControls = (
               <div
                 className={cn(
@@ -1969,6 +2071,28 @@ function SectionsTab({
                     )}
                     <span className="hidden shrink-0 text-[0.625rem] text-[var(--muted-foreground)] sm:inline">
                       {role}
+                    </span>
+
+                    {/* Rough cost of this section's own text. Markers are assembled per chat, so they say so
+                        instead of showing a misleading zero; a disabled section keeps its count, struck through
+                        to show it is left out of the header total. */}
+                    <span
+                      data-preset-section-tokens
+                      className={cn(
+                        "shrink-0 whitespace-nowrap tabular-nums text-[var(--muted-foreground)]",
+                        compact ? "text-[0.5625rem]" : "text-[0.625rem]",
+                        sectionTokens === null && "italic",
+                        !isEnabled && "line-through",
+                      )}
+                      title={
+                        sectionTokens === null
+                          ? localizeUi("ui.presets.sectionstab.dynamicSectionDescription")
+                          : undefined
+                      }
+                    >
+                      {sectionTokens === null
+                        ? localizeUi("ui.presets.sectionstab.dynamic")
+                        : formatEstimatedTokens(sectionTokens, localizeUi)}
                     </span>
 
                     <div className="flex shrink-0 items-center gap-0.5">
@@ -2239,971 +2363,26 @@ function SectionsTab({
 
       {/* ── Preset Variables ── */}
       <PresetVariablesEditor
-        presetId={presetId}
         variables={choiceBlocks}
-        onCreateVariable={onCreateVariable}
-        onUpdateVariable={onUpdateVariable}
-        onDeleteVariable={onDeleteVariable}
-        onReorderVariables={onReorderVariables}
+        onCreate={() =>
+          onCreateVariable.mutate({
+            presetId,
+            variableName: `VAR_${Date.now()}`,
+            question: "Choose an option",
+            options: [
+              { id: `opt_${Date.now()}_a`, label: "Option A", value: "value_a" },
+              { id: `opt_${Date.now()}_b`, label: "Option B", value: "value_b" },
+            ],
+          })
+        }
+        onUpdate={(variableId, patch) => onUpdateVariable.mutate({ presetId, variableId, ...patch })}
+        onDelete={(variableId) => onDeleteVariable.mutate({ presetId, variableId })}
+        onReorder={(variableIds) => onReorderVariables.mutate({ presetId, variableIds })}
+        isSaving={onUpdateVariable.isPending}
+        isReordering={onReorderVariables.isPending}
         compact={compact}
       />
     </>
-  );
-}
-
-// ── Preset Variables Editor (preset-level, supports multiple) ──
-
-function PresetVariablesEditor({
-  presetId,
-  variables,
-  onCreateVariable,
-  onUpdateVariable,
-  onDeleteVariable,
-  onReorderVariables,
-  compact = false,
-}: {
-  presetId: string;
-  variables: any[];
-  onCreateVariable: any;
-  onUpdateVariable: any;
-  onDeleteVariable: any;
-  onReorderVariables: any;
-  compact?: boolean;
-}) {
-  const { t: localizeUi } = useUiTranslation();
-  const [expandedId, setExpandedId] = useState<string | null>(null);
-  const [draggingIdx, setDraggingIdx] = useState<number | null>(null);
-  const [dropIdx, setDropIdx] = useState<number | null>(null);
-  const [dragReady, setDragReady] = useState<number | null>(null);
-
-  const handleDragStart = (idx: number, e: React.DragEvent) => {
-    setDraggingIdx(idx);
-    e.dataTransfer.effectAllowed = "move";
-    e.dataTransfer.setData("text/plain", String(idx));
-  };
-
-  const calcDropIdx = (cardIdx: number, e: React.DragEvent) => {
-    const rect = e.currentTarget.getBoundingClientRect();
-    const midY = rect.top + rect.height / 2;
-    return e.clientY < midY ? cardIdx : cardIdx + 1;
-  };
-
-  const handleDragOver = (cardIdx: number, e: React.DragEvent) => {
-    e.preventDefault();
-    e.dataTransfer.dropEffect = "move";
-    setDropIdx(calcDropIdx(cardIdx, e));
-  };
-
-  const handleContainerDragOver = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.dataTransfer.dropEffect = "move";
-    setDropIdx(variables.length);
-  };
-
-  const commitVariableReorder = useCallback(
-    (sourceIdx: number, target: number) => {
-      const ids = reorderIdsToGap(variables, sourceIdx, target);
-      if (!ids) return;
-      onReorderVariables.mutate({ presetId, variableIds: ids });
-    },
-    [onReorderVariables, presetId, variables],
-  );
-
-  const commitDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    const sourceIdx = draggingIdx;
-    const target = dropIdx;
-    setDraggingIdx(null);
-    setDropIdx(null);
-    if (sourceIdx === null || target === null) return;
-    commitVariableReorder(sourceIdx, target);
-  };
-
-  const handleDragEnd = () => {
-    setDraggingIdx(null);
-    setDropIdx(null);
-  };
-
-  const moveVariableByOffset = (idx: number, offset: number) => {
-    const variableIds = reorderIdsByOffset(variables, idx, offset);
-    if (!variableIds) return;
-    onReorderVariables.mutate({ presetId, variableIds });
-  };
-
-  const { startTouchDrag: startVariableTouchDrag } = useTouchFolderDrag({
-    onActivate: (variableId) => {
-      const idx = variables.findIndex((variable: any) => variable.id === variableId);
-      if (idx < 0) return;
-      setDraggingIdx(idx);
-      setDragReady(idx);
-    },
-    onDrop: (variableId, x, y) => {
-      const sourceIdx = variables.findIndex((variable: any) => variable.id === variableId);
-      const targetIdx = getTouchReorderDropIndex({
-        x,
-        y,
-        itemSelector: '[data-touch-reorder-item="preset-variable"]',
-        rootSelector: "[data-preset-variable-root]",
-        itemCount: variables.length,
-      });
-      setDraggingIdx(null);
-      setDropIdx(null);
-      setDragReady(null);
-      if (sourceIdx < 0 || targetIdx === null) return;
-      commitVariableReorder(sourceIdx, targetIdx);
-    },
-    onCancel: () => {
-      setDraggingIdx(null);
-      setDropIdx(null);
-      setDragReady(null);
-    },
-  });
-
-  return (
-    <div className={cn("mari-editor-panel space-y-3", compact ? "mt-3 p-2" : "mt-6 p-3")}>
-      <div
-        data-preset-variables-header
-        className={cn(
-          "flex items-center justify-between gap-3",
-          compact && "max-sm:flex-wrap max-sm:gap-x-3 max-sm:gap-y-2",
-        )}
-      >
-        <div className="flex min-w-0 items-center gap-2">
-          <Hash size="0.875rem" className="mari-chrome-accent-icon mari-accent-animated" />
-          <span className="text-sm font-semibold">
-            {localizeUi("ui.presets.presetvariableseditor.presetVariables")}
-          </span>
-          <span
-            data-preset-variable-count
-            className="mari-editor-chip mari-editor-chip--accent px-1.5 py-0.5 text-[0.5625rem]"
-          >
-            {variables.length}
-          </span>
-        </div>
-        <button
-          onClick={() =>
-            onCreateVariable.mutate({
-              presetId,
-              variableName: `VAR_${Date.now()}`,
-              question: "Choose an option",
-              options: [
-                { id: `opt_${Date.now()}_a`, label: "Option A", value: "value_a" },
-                { id: `opt_${Date.now()}_b`, label: "Option B", value: "value_b" },
-              ],
-            })
-          }
-          className={cn(
-            "mari-editor-action mari-editor-action--primary mari-editor-action--compact flex items-center gap-1.5 px-2.5 py-1.5 text-[0.6875rem]",
-            compact && "max-sm:ml-auto",
-          )}
-        >
-          <Plus size="0.6875rem" /> {localizeUi("ui.presets.presetvariableseditor.addVariable")}
-        </button>
-      </div>
-
-      <p className="text-[0.625rem] text-[var(--muted-foreground)]">
-        {localizeUi("ui.presets.presetvariableseditor.defineVariablesThatUsersSelectWhenAssigningThisPreset")}{" "}
-        <code className="mari-editor-chip mari-editor-chip--accent rounded px-1 text-[0.625rem]">
-          {"{{variable_name}}"}
-        </code>{" "}
-        {localizeUi("ui.presets.presetvariableseditor.inAnySectionToInsertTheSelectedValue")}
-      </p>
-
-      {variables.length === 0 ? (
-        <div className="mari-editor-empty flex flex-col items-center gap-2 py-6 text-center">
-          <Hash size="1.25rem" className="text-[var(--muted-foreground)]" />
-          <p className="text-[0.6875rem] text-[var(--muted-foreground)]">
-            {localizeUi("ui.presets.presetvariableseditor.noVariablesYetAddOneToLetUsersCustomize")}
-          </p>
-        </div>
-      ) : (
-        <div data-preset-variable-root className="space-y-2" onDragOver={handleContainerDragOver} onDrop={commitDrop}>
-          {variables.map((variable: any, idx: number) => {
-            const showDropBefore =
-              dropIdx === idx && draggingIdx !== null && draggingIdx !== idx && draggingIdx !== idx - 1;
-            const showDropAfter =
-              idx === variables.length - 1 &&
-              dropIdx === variables.length &&
-              draggingIdx !== null &&
-              draggingIdx !== idx;
-            return (
-              <div key={variable.id}>
-                {showDropBefore && (
-                  <div className="mari-chrome-accent-progress mari-accent-animated mx-2 mb-1 h-0.5 rounded-full" />
-                )}
-                <div
-                  data-touch-reorder-item="preset-variable"
-                  data-touch-reorder-index={idx}
-                  draggable={dragReady === idx}
-                  onDragStart={(e) => handleDragStart(idx, e)}
-                  onDragOver={(e) => {
-                    e.stopPropagation();
-                    handleDragOver(idx, e);
-                  }}
-                  onDrop={(e) => {
-                    e.stopPropagation();
-                    commitDrop(e);
-                  }}
-                  onDragEnd={() => {
-                    handleDragEnd();
-                    setDragReady(null);
-                  }}
-                  className={cn(draggingIdx === idx && "opacity-40")}
-                >
-                  <VariableCard
-                    presetId={presetId}
-                    variable={variable}
-                    isExpanded={expandedId === variable.id}
-                    onToggle={() => setExpandedId(expandedId === variable.id ? null : variable.id)}
-                    onUpdateVariable={onUpdateVariable}
-                    onDeleteVariable={onDeleteVariable}
-                    onGripDown={() => setDragReady(idx)}
-                    onGripUp={() => setDragReady(null)}
-                    onGripTouchStart={(event) => {
-                      event.stopPropagation();
-                      startVariableTouchDrag(event, variable.id, {
-                        allowInteractiveTarget: true,
-                        sourceElement: event.currentTarget.closest<HTMLElement>(
-                          '[data-touch-reorder-item="preset-variable"]',
-                        ),
-                      });
-                    }}
-                    onMoveUp={() => moveVariableByOffset(idx, -1)}
-                    onMoveDown={() => moveVariableByOffset(idx, 1)}
-                    canMoveUp={idx > 0}
-                    canMoveDown={idx < variables.length - 1}
-                    isReordering={onReorderVariables.isPending}
-                  />
-                </div>
-                {showDropAfter && (
-                  <div className="mari-chrome-accent-progress mari-accent-animated mx-2 mt-1 h-0.5 rounded-full" />
-                )}
-              </div>
-            );
-          })}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ── Single Variable Card ──
-
-function VariableCard({
-  presetId,
-  variable,
-  isExpanded,
-  onToggle,
-  onUpdateVariable,
-  onDeleteVariable,
-  onGripDown,
-  onGripUp,
-  onGripTouchStart,
-  onMoveUp,
-  onMoveDown,
-  canMoveUp,
-  canMoveDown,
-  isReordering,
-}: {
-  presetId: string;
-  variable: any;
-  isExpanded: boolean;
-  onToggle: () => void;
-  onUpdateVariable: any;
-  onDeleteVariable: any;
-  onGripDown: () => void;
-  onGripUp: () => void;
-  onGripTouchStart: (event: React.TouchEvent<HTMLElement>) => void;
-  onMoveUp: () => void;
-  onMoveDown: () => void;
-  canMoveUp: boolean;
-  canMoveDown: boolean;
-  isReordering: boolean;
-}) {
-  const { t: localizeUi } = useUiTranslation();
-  // Parse options
-  const opts = useMemo<VariableOptionDraft[]>(() => {
-    try {
-      return typeof variable.options === "string" ? JSON.parse(variable.options) : (variable.options ?? []);
-    } catch {
-      return [];
-    }
-  }, [variable.options]);
-
-  const varName = variable.variableName ?? variable.variable_name ?? "";
-  const question = variable.question ?? "";
-  const isMultiSelect = variable.multiSelect === "true" || variable.multiSelect === true;
-  const isRandomPick = variable.randomPick === "true" || variable.randomPick === true;
-  const separatorValue = variable.separator ?? ", ";
-  const displayMode = readChoiceDisplayMode(variable.displayMode ?? variable.display_mode);
-  const optionSort = readChoiceOptionSort(variable.optionSort ?? variable.option_sort);
-  const optionOrderIsAlphabetical = optionSort === "alphabetical";
-
-  // Track which option is expanded in the big editor.
-  const [expandedOptId, setExpandedOptId] = useState<string | null>(null);
-  const [draggingOptIdx, setDraggingOptIdx] = useState<number | null>(null);
-  const [dropOptIdx, setDropOptIdx] = useState<number | null>(null);
-  const [dragReadyOptIdx, setDragReadyOptIdx] = useState<number | null>(null);
-  const optsRef = useRef<VariableOptionDraft[]>(opts);
-  const expandedOpt = expandedOptId ? (opts.find((opt) => opt.id === expandedOptId) ?? null) : null;
-
-  useEffect(() => {
-    if (!onUpdateVariable.isPending) optsRef.current = opts;
-  }, [onUpdateVariable.isPending, opts]);
-
-  const update = (data: Record<string, unknown>) => {
-    onUpdateVariable.mutate({ presetId, variableId: variable.id, ...data });
-  };
-
-  const updateOpts = (newOpts: VariableOptionDraft[]) => {
-    optsRef.current = newOpts;
-    update({ options: newOpts });
-  };
-
-  const currentOpts = () => (optsRef.current.length > 0 ? optsRef.current : opts);
-
-  const updateOptionField = (optionId: string, field: "label" | "value", value: string) => {
-    updateOpts(currentOpts().map((opt) => (opt.id === optionId ? { ...opt, [field]: value } : opt)));
-  };
-
-  const calcOptionDropIdx = (optionIdx: number, e: React.DragEvent) => {
-    const rect = e.currentTarget.getBoundingClientRect();
-    const midY = rect.top + rect.height / 2;
-    return e.clientY < midY ? optionIdx : optionIdx + 1;
-  };
-
-  const handleOptionDragStart = (optionIdx: number, e: React.DragEvent) => {
-    if (optionOrderIsAlphabetical) return;
-    setDraggingOptIdx(optionIdx);
-    e.dataTransfer.effectAllowed = "move";
-    e.dataTransfer.setData("text/plain", String(optionIdx));
-  };
-
-  const handleOptionDragOver = (optionIdx: number, e: React.DragEvent) => {
-    if (optionOrderIsAlphabetical) return;
-    e.preventDefault();
-    e.dataTransfer.dropEffect = "move";
-    setDropOptIdx(calcOptionDropIdx(optionIdx, e));
-  };
-
-  const commitOptionDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    const sourceIdx = draggingOptIdx;
-    const target = dropOptIdx;
-    setDraggingOptIdx(null);
-    setDropOptIdx(null);
-    setDragReadyOptIdx(null);
-    if (optionOrderIsAlphabetical || sourceIdx === null || target === null) return;
-    const next = reorderItemsToGap(currentOpts(), sourceIdx, target);
-    if (next) updateOpts(next);
-  };
-
-  const moveOptionByOffset = (optionIdx: number, offset: number) => {
-    if (optionOrderIsAlphabetical) return;
-    const next = reorderItems(currentOpts(), optionIdx, optionIdx + offset);
-    if (next) updateOpts(next);
-  };
-
-  const { startTouchDrag: startOptionTouchDrag } = useTouchFolderDrag({
-    onActivate: (optionId) => {
-      if (optionOrderIsAlphabetical) return;
-      const idx = currentOpts().findIndex((option) => option.id === optionId);
-      if (idx < 0) return;
-      setDraggingOptIdx(idx);
-      setDragReadyOptIdx(idx);
-    },
-    onDrop: (optionId, x, y) => {
-      const options = currentOpts();
-      const sourceIdx = options.findIndex((option) => option.id === optionId);
-      const targetIdx = getTouchReorderDropIndex({
-        x,
-        y,
-        itemSelector: `[data-touch-reorder-item="preset-variable-option-${variable.id}"]`,
-        rootSelector: `[data-preset-variable-option-root="${variable.id}"]`,
-        itemCount: options.length,
-      });
-      setDraggingOptIdx(null);
-      setDropOptIdx(null);
-      setDragReadyOptIdx(null);
-      if (optionOrderIsAlphabetical || sourceIdx < 0 || targetIdx === null) return;
-      const next = reorderItemsToGap(options, sourceIdx, targetIdx);
-      if (next) updateOpts(next);
-    },
-    onCancel: () => {
-      setDraggingOptIdx(null);
-      setDropOptIdx(null);
-      setDragReadyOptIdx(null);
-    },
-  });
-
-  return (
-    <div className="mari-editor-panel mari-editor-panel--soft transition-all">
-      {/* Header */}
-      <div className="flex min-w-0 items-center gap-2 px-3 py-2.5">
-        <div className="flex shrink-0 items-center gap-0.5">
-          <div
-            className="cursor-grab rounded p-0.5 hover:bg-[var(--accent)] active:cursor-grabbing"
-            title={localizeUi("ui.presets.sectionstab.dragToReorder")}
-            onMouseDown={onGripDown}
-            onMouseUp={onGripUp}
-            onTouchStart={onGripTouchStart}
-          >
-            <GripVertical size="0.875rem" className="text-[var(--muted-foreground)]" />
-          </div>
-          <button
-            type="button"
-            onClick={onMoveUp}
-            disabled={!canMoveUp || isReordering}
-            className="rounded p-0.5 text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)] disabled:pointer-events-none disabled:opacity-30"
-            title={localizeUi("ui.presets.sectionstab.moveUp")}
-            aria-label={localizeUi("ui.presets.sectionstab.moveValue1Up", {
-              value1: varName || localizeUi("ui.presets.variablecard.variable"),
-            })}
-          >
-            <ArrowUp size="0.75rem" />
-          </button>
-          <button
-            type="button"
-            onClick={onMoveDown}
-            disabled={!canMoveDown || isReordering}
-            className="rounded p-0.5 text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)] disabled:pointer-events-none disabled:opacity-30"
-            title={localizeUi("ui.presets.sectionstab.moveDown")}
-            aria-label={localizeUi("ui.presets.sectionstab.moveValue1Down", {
-              value1: varName || localizeUi("ui.presets.variablecard.variable"),
-            })}
-          >
-            <ArrowDown size="0.75rem" />
-          </button>
-        </div>
-        <button onClick={onToggle} className="shrink-0 rounded p-0.5 hover:bg-[var(--accent)]">
-          {isExpanded ? (
-            <ChevronDown size="0.875rem" className="text-[var(--muted-foreground)]" />
-          ) : (
-            <ChevronRight size="0.875rem" className="text-[var(--muted-foreground)]" />
-          )}
-        </button>
-        <Hash size="0.875rem" className="mari-chrome-accent-icon mari-accent-animated shrink-0" />
-        <span
-          className="mari-chrome-accent-text mari-accent-animated min-w-0 flex-1 cursor-pointer truncate text-sm font-medium"
-          onClick={onToggle}
-        >
-          {varName}
-        </span>
-        <span className="mari-editor-chip mari-editor-chip--accent shrink-0 px-1.5 py-0.5 text-[0.5625rem]">
-          {opts.length} {localizeUi("ui.presets.variablecard.options")}
-        </span>
-        {opts.length === 1 && !isMultiSelect && (
-          <span className="mari-chrome-accent-surface mari-accent-animated shrink-0 rounded px-1.5 py-0.5 text-[0.5625rem] font-medium">
-            {localizeUi("ui.presets.variablecard.boolean")}
-          </span>
-        )}
-        {isMultiSelect && (
-          <span className="mari-chrome-accent-surface mari-accent-animated shrink-0 rounded px-1.5 py-0.5 text-[0.5625rem] font-medium">
-            {isRandomPick ? localizeUi("ui.presets.variablecard.random") : localizeUi("ui.presets.variablecard.multi")}
-          </span>
-        )}
-        <code className="hidden shrink-0 text-[0.625rem] text-[var(--muted-foreground)] sm:inline">{`{{${varName}}}`}</code>
-        <button
-          onClick={async () => {
-            if (
-              await showConfirmDialog({
-                title: localizeUi("ui.presets.variablecard.deleteVariable_8ceffd4"),
-                message: localizeUi("ui.presets.variablecard.deleteVariableValue1", { value1: varName }),
-                confirmLabel: localizeUi("lorebook.editor.batch.delete"),
-                tone: "destructive",
-              })
-            ) {
-              onDeleteVariable.mutate({ presetId, variableId: variable.id });
-            }
-          }}
-          className="shrink-0 rounded-lg p-1 text-[var(--muted-foreground)] hover:bg-[var(--accent)] hover:text-[var(--foreground)]"
-          title={localizeUi("ui.presets.variablecard.deleteVariable")}
-        >
-          <Trash2 size="0.75rem" />
-        </button>
-      </div>
-
-      {/* Expanded content */}
-      {isExpanded && (
-        <div className="space-y-3 border-t border-[var(--marinara-editor-divider)] px-3 py-3">
-          {/* Variable Name */}
-          <div className="space-y-1">
-            <label className="text-[0.625rem] font-medium text-[var(--muted-foreground)]">
-              {localizeUi("ui.presets.variablecard.variableName")}
-            </label>
-            <VariableNameInput value={varName} onCommit={(v) => update({ variableName: v })} />
-            <p className="text-[0.5625rem] text-[var(--muted-foreground)]">
-              {localizeUi("ui.presets.variablecard.use")}{" "}
-              <code className="mari-chrome-accent-text mari-accent-animated">{`{{${varName}}}`}</code>{" "}
-              {localizeUi("ui.presets.variablecard.inAnyPromptSectionToInsertTheSelectedValue")}
-            </p>
-          </div>
-
-          {/* Question */}
-          <div className="space-y-1">
-            <label className="text-[0.625rem] font-medium text-[var(--muted-foreground)]">
-              {localizeUi("ui.presets.variablecard.questionShownToUser")}
-            </label>
-            <VariableQuestionInput value={question} onCommit={(v) => update({ question: v })} />
-          </div>
-
-          {/* Multi-Select & Random Pick (not shown for single-option/boolean variables) */}
-          {opts.length === 1 && !isMultiSelect ? (
-            <div className="mari-editor-panel mari-editor-panel--soft space-y-1.5 p-2.5">
-              <div className="flex items-center gap-1.5">
-                <ListChecks size="0.75rem" className="mari-chrome-accent-icon mari-accent-animated" />
-                <span className="mari-chrome-accent-text mari-accent-animated text-[0.625rem] font-medium">
-                  {localizeUi("ui.presets.variablecard.booleanToggle")}
-                </span>
-              </div>
-              <p className="text-[0.5625rem] text-[var(--muted-foreground)]">
-                {localizeUi("ui.presets.variablecard.thisVariableHasOnlyOneOptionSoItBehaves")}
-              </p>
-            </div>
-          ) : (
-            <div className="mari-editor-panel mari-editor-panel--soft space-y-2 p-2.5">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-1.5">
-                  <ListChecks size="0.75rem" className="mari-chrome-accent-icon mari-accent-animated" />
-                  <span className="text-[0.625rem] font-medium text-[var(--foreground)]">
-                    {localizeUi("ui.presets.variablecard.multiSelect")}
-                  </span>
-                </div>
-                <SettingsSwitch
-                  ariaLabel={isMultiSelect ? "Disable multi-select" : "Enable multi-select"}
-                  checked={isMultiSelect}
-                  onChange={(checked) => update({ multiSelect: checked })}
-                  className="p-0 hover:bg-transparent"
-                />
-              </div>
-              <p className="text-[0.5625rem] text-[var(--muted-foreground)]">
-                {localizeUi("ui.presets.variablecard.allowUsersToSelectMultipleOptionsInsteadOfJust")}
-              </p>
-
-              <div className="space-y-2 border-t border-[var(--border)] pt-2">
-                {/* Random Pick Toggle */}
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-1.5">
-                    <Shuffle size="0.75rem" className="mari-chrome-accent-icon mari-accent-animated" />
-                    <span className="text-[0.625rem] font-medium text-[var(--foreground)]">
-                      {localizeUi("ui.presets.variablecard.randomPick")}
-                    </span>
-                  </div>
-                  <SettingsSwitch
-                    ariaLabel={localizeUi("ui.presets.variablecard.randomPick")}
-                    checked={isRandomPick}
-                    onChange={(checked) => update({ randomPick: checked })}
-                    className="p-0 hover:bg-transparent"
-                  />
-                </div>
-                <p className="text-[0.5625rem] text-[var(--muted-foreground)]">
-                  {isMultiSelect
-                    ? isRandomPick
-                      ? localizeUi("ui.presets.variablecard.oneOfTheUserSSelectedOptionsWillBe")
-                      : localizeUi("ui.presets.variablecard.allSelectedOptionsWillBeJoinedTogetherWithThe")
-                    : isRandomPick
-                      ? localizeUi("ui.presets.variablecard.aRandomOptionIsRolledOnceWhenTheVariable")
-                      : localizeUi("ui.presets.variablecard.theFirstOptionIsUsedByDefaultUntilThe")}
-                </p>
-
-                {/* Separator (only shown for multi-select, and not random pick) */}
-                {isMultiSelect && !isRandomPick && (
-                  <div className="flex items-center gap-2">
-                    <label className="shrink-0 text-[0.625rem] font-medium text-[var(--muted-foreground)]">
-                      {localizeUi("ui.presets.variablecard.separator")}
-                    </label>
-                    <OptionFieldInput
-                      value={separatorValue}
-                      onCommit={(value) => update({ separator: value })}
-                      className="mari-editor-field w-20 px-1.5 py-0.5 text-center font-mono text-xs"
-                      placeholder=", "
-                    />
-                    <span className="text-[0.5625rem] text-[var(--muted-foreground)]">
-                      {localizeUi("ui.presets.variablecard.eGBecomesRomanceFantasyAction")}
-                    </span>
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-
-          {/* Presentation */}
-          <div className="mari-editor-panel mari-editor-panel--soft space-y-2 p-2.5">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="flex items-center gap-1.5">
-                <ListChecks size="0.75rem" className="mari-chrome-accent-icon mari-accent-animated" />
-                <span className="text-[0.625rem] font-medium text-[var(--foreground)]">
-                  {localizeUi("ui.presets.variablecard.presentation")}
-                </span>
-              </div>
-              <div className="mari-editor-field flex p-0.5">
-                {(
-                  [
-                    ["auto", "Auto"],
-                    ["buttons", isMultiSelect ? "Checkboxes" : "Radios"],
-                    ["listbox", isMultiSelect ? "Listbox" : "Dropdown"],
-                  ] as const
-                ).map(([mode, label]) => (
-                  <button
-                    key={mode}
-                    type="button"
-                    onClick={() => update({ displayMode: mode })}
-                    className={cn(
-                      "rounded-md px-2 py-1 text-[0.625rem] font-medium transition-colors",
-                      displayMode === mode
-                        ? "mari-chrome-accent-surface mari-accent-animated"
-                        : "text-[var(--muted-foreground)] hover:text-[var(--foreground)]",
-                    )}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
-            </div>
-            <div className="flex items-center justify-between gap-2 border-t border-[var(--border)] pt-2">
-              <div className="min-w-0">
-                <p className="text-[0.625rem] font-medium text-[var(--foreground)]">
-                  {localizeUi("ui.presets.variablecard.alphabeticalOptionDisplay")}
-                </p>
-                <p className="text-[0.5625rem] text-[var(--muted-foreground)]">
-                  {localizeUi("ui.presets.variablecard.manualOrderIsKeptForEditingAndExports")}
-                </p>
-              </div>
-              <SettingsSwitch
-                ariaLabel={
-                  optionOrderIsAlphabetical
-                    ? "Use manual option display order"
-                    : "Use alphabetical option display order"
-                }
-                checked={optionOrderIsAlphabetical}
-                onChange={(checked) => update({ optionSort: checked ? "alphabetical" : "manual" })}
-                className="p-0 hover:bg-transparent"
-              />
-            </div>
-          </div>
-
-          {/* Options */}
-          <div className="space-y-1.5" data-preset-variable-option-root={variable.id}>
-            <label className="text-[0.625rem] font-medium text-[var(--muted-foreground)]">
-              {localizeUi("ui.presets.variablecard.options_6bf5da9")}
-            </label>
-            {opts.map((opt, oi) => {
-              const valueIsBlank = !opt.value || !opt.value.trim();
-              const showDropBefore =
-                dropOptIdx === oi && draggingOptIdx !== null && draggingOptIdx !== oi && draggingOptIdx !== oi - 1;
-              const showDropAfter =
-                oi === opts.length - 1 &&
-                dropOptIdx === opts.length &&
-                draggingOptIdx !== null &&
-                draggingOptIdx !== oi;
-              return (
-                <div key={opt.id}>
-                  {showDropBefore && (
-                    <div className="mari-chrome-accent-progress mari-accent-animated mx-2 mb-1 h-0.5 rounded-full" />
-                  )}
-                  <div
-                    data-touch-reorder-item={`preset-variable-option-${variable.id}`}
-                    data-touch-reorder-index={oi}
-                    draggable={dragReadyOptIdx === oi && !optionOrderIsAlphabetical}
-                    onDragStart={(e) => handleOptionDragStart(oi, e)}
-                    onDragOver={(e) => {
-                      e.stopPropagation();
-                      handleOptionDragOver(oi, e);
-                    }}
-                    onDrop={(e) => {
-                      e.stopPropagation();
-                      commitOptionDrop(e);
-                    }}
-                    onDragEnd={() => {
-                      setDraggingOptIdx(null);
-                      setDropOptIdx(null);
-                      setDragReadyOptIdx(null);
-                    }}
-                    className={cn(
-                      "flex min-w-0 flex-wrap items-center gap-2 rounded-lg px-2.5 py-1.5 ring-1 sm:flex-nowrap",
-                      "mari-editor-panel mari-editor-panel--soft",
-                      draggingOptIdx === oi && "opacity-40",
-                    )}
-                  >
-                    <div className="flex shrink-0 items-center gap-0.5">
-                      <div
-                        className={cn(
-                          "rounded p-0.5",
-                          optionOrderIsAlphabetical
-                            ? "cursor-not-allowed opacity-30"
-                            : "cursor-grab hover:bg-[var(--accent)] active:cursor-grabbing",
-                        )}
-                        title={
-                          optionOrderIsAlphabetical
-                            ? localizeUi("ui.presets.variablecard.disableAlphabeticalDisplayToReorder")
-                            : localizeUi("ui.presets.sectionstab.dragToReorder")
-                        }
-                        onMouseDown={() => {
-                          if (!optionOrderIsAlphabetical) setDragReadyOptIdx(oi);
-                        }}
-                        onMouseUp={() => setDragReadyOptIdx(null)}
-                        onTouchStart={(event) => {
-                          event.stopPropagation();
-                          if (optionOrderIsAlphabetical) return;
-                          startOptionTouchDrag(event, opt.id, {
-                            allowInteractiveTarget: true,
-                            sourceElement: event.currentTarget.closest<HTMLElement>(
-                              `[data-touch-reorder-item="preset-variable-option-${variable.id}"]`,
-                            ),
-                          });
-                        }}
-                      >
-                        <GripVertical size="0.75rem" className="text-[var(--muted-foreground)]" />
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => moveOptionByOffset(oi, -1)}
-                        disabled={optionOrderIsAlphabetical || oi === 0}
-                        className="rounded p-0.5 text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)] disabled:pointer-events-none disabled:opacity-30"
-                        title={localizeUi("ui.presets.variablecard.moveOptionUp")}
-                        aria-label={localizeUi("ui.presets.sectionstab.moveValue1Up", {
-                          value1: opt.label || localizeUi("ui.presets.variablecard.optionValue1", { value1: oi + 1 }),
-                        })}
-                      >
-                        <ArrowUp size="0.625rem" />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => moveOptionByOffset(oi, 1)}
-                        disabled={optionOrderIsAlphabetical || oi === opts.length - 1}
-                        className="rounded p-0.5 text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)] disabled:pointer-events-none disabled:opacity-30"
-                        title={localizeUi("ui.presets.variablecard.moveOptionDown")}
-                        aria-label={localizeUi("ui.presets.sectionstab.moveValue1Down", {
-                          value1: opt.label || localizeUi("ui.presets.variablecard.optionValue1", { value1: oi + 1 }),
-                        })}
-                      >
-                        <ArrowDown size="0.625rem" />
-                      </button>
-                    </div>
-                    <span className="mari-chrome-accent-text mari-accent-animated shrink-0 text-[0.625rem] font-medium">
-                      {oi + 1}.
-                    </span>
-                    <OptionFieldInput
-                      value={opt.label}
-                      onCommit={(v) => updateOptionField(opt.id, "label", v)}
-                      className="mari-editor-field min-w-[7rem] flex-[1_1_7rem] px-1.5 py-0.5 text-xs sm:min-w-0 sm:flex-1"
-                      placeholder={localizeUi("ui.presets.variablecard.label")}
-                    />
-                    <OptionFieldInput
-                      value={opt.value}
-                      onCommit={(v) => updateOptionField(opt.id, "value", v)}
-                      className="mari-editor-field min-w-[7rem] flex-[1_1_7rem] rounded px-1.5 py-0.5 font-mono text-xs focus:outline-none focus:ring-1 sm:min-w-0 sm:flex-1"
-                      placeholder={localizeUi("ui.presets.variablecard.value")}
-                    />
-                    <button
-                      onClick={() => setExpandedOptId(opt.id)}
-                      className="shrink-0 rounded p-0.5 text-[var(--muted-foreground)] hover:bg-[var(--accent)] hover:text-[var(--foreground)]"
-                      title={localizeUi("ui.presets.variablecard.expandValueEditor")}
-                    >
-                      <Maximize2 size="0.625rem" />
-                    </button>
-                    <button
-                      onClick={() => {
-                        if (currentOpts().length <= 1)
-                          return toast.error(localizeUi("ui.presets.variablecard.aVariableNeedsAtLeast1Option"));
-                        updateOpts(currentOpts().filter((option) => option.id !== opt.id));
-                      }}
-                      className="shrink-0 rounded p-0.5 hover:bg-[var(--destructive)]/15"
-                      title={localizeUi("ui.presets.variablecard.removeOption")}
-                    >
-                      <X size="0.625rem" className="text-[var(--destructive)]" />
-                    </button>
-                  </div>
-                  {valueIsBlank && (
-                    <p className="mt-1 pl-6 text-[0.5625rem] text-[var(--muted-foreground)]">
-                      {localizeUi("ui.presets.variablecard.blankValueInsertsNothing")}
-                    </p>
-                  )}
-                  {showDropAfter && (
-                    <div className="mari-chrome-accent-progress mari-accent-animated mx-2 mt-1 h-0.5 rounded-full" />
-                  )}
-                </div>
-              );
-            })}
-            <button
-              onClick={() => {
-                const newOpt = {
-                  id: `opt_${Date.now()}`,
-                  label: `Option ${String.fromCharCode(65 + currentOpts().length)}`,
-                  value: "",
-                };
-                updateOpts([...currentOpts(), newOpt]);
-              }}
-              className="mari-editor-action mari-editor-action--compact flex items-center gap-1 px-2 py-1 text-[0.625rem]"
-            >
-              <Plus size="0.625rem" /> {localizeUi("ui.noodle.noodlehome.addOption")}
-            </button>
-          </div>
-
-          {/* Expanded value editor for a single option */}
-          {expandedOpt && (
-            <ExpandedEditorModal
-              title={localizeUi("ui.presets.variablecard.editValueValue1", {
-                value1: expandedOpt.label || localizeUi("ui.presets.variablecard.option"),
-              })}
-              value={expandedOpt.value}
-              onChange={(v) => updateOptionField(expandedOpt.id, "value", v)}
-              onClose={() => setExpandedOptId(null)}
-            />
-          )}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ── Variable Name Input (local state, commits on blur/Enter) ──
-function VariableNameInput({ value, onCommit }: { value: string; onCommit: (v: string) => void }) {
-  const { t: localizeUi } = useUiTranslation();
-  const [local, setLocal] = useState(value);
-  const inputRef = useRef<HTMLInputElement>(null);
-  const selectionRef = useRef<TextSelection | null>(null);
-  const focusedRef = useRef(false);
-  useRestoreTextSelection(inputRef, selectionRef, local);
-  useEffect(() => {
-    if (!focusedRef.current) setLocal(value);
-  }, [value]);
-  return (
-    <input
-      ref={inputRef}
-      value={local}
-      onFocus={(e) => {
-        focusedRef.current = true;
-        if (shouldSelectTextOnFocus()) e.target.select();
-      }}
-      onChange={(e) => {
-        const rawValue = e.target.value;
-        const selectionStart = e.target.selectionStart ?? rawValue.length;
-        const selectionEnd = e.target.selectionEnd ?? selectionStart;
-        selectionRef.current = getSanitizedVariableSelection(rawValue, selectionStart, selectionEnd);
-        setLocal(sanitizeVariableName(rawValue));
-      }}
-      onBlur={() => {
-        focusedRef.current = false;
-        if (local !== value) onCommit(local);
-      }}
-      onKeyDown={(e) => {
-        if (e.key === "Enter") {
-          (e.target as HTMLInputElement).blur();
-        }
-      }}
-      className="mari-editor-field w-full px-2 py-1 font-mono text-xs"
-      placeholder={localizeUi("ui.presets.variablenameinput.variableName")}
-    />
-  );
-}
-
-// ── Option field input (local state, debounced commit + commit on blur) ──
-function OptionFieldInput({
-  value,
-  onCommit,
-  className,
-  placeholder,
-}: {
-  value: string;
-  onCommit: (v: string) => void;
-  className?: string;
-  placeholder?: string;
-}) {
-  const [local, setLocal] = useState(value);
-  const inputRef = useRef<HTMLInputElement>(null);
-  const selectionRef = useRef<TextSelection | null>(null);
-  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const focusedRef = useRef(false);
-  const formatQuotes = useQuoteFormatter();
-  useRestoreTextSelection(inputRef, selectionRef, local);
-  useEffect(() => {
-    if (!focusedRef.current) setLocal(value);
-  }, [value]);
-  useEffect(
-    () => () => {
-      if (timeoutRef.current) clearTimeout(timeoutRef.current);
-    },
-    [],
-  );
-  return (
-    <input
-      ref={inputRef}
-      value={local}
-      onFocus={(e) => {
-        focusedRef.current = true;
-        if (shouldSelectTextOnFocus()) e.target.select();
-      }}
-      onChange={(e) => {
-        const rawValue = e.target.value;
-        const selectionStart = e.target.selectionStart ?? rawValue.length;
-        const selectionEnd = e.target.selectionEnd ?? selectionStart;
-        selectionRef.current = getFormattedTextSelection(rawValue, selectionStart, selectionEnd, formatQuotes);
-        const nextValue = formatQuotes(rawValue);
-        setLocal(nextValue);
-        if (timeoutRef.current) clearTimeout(timeoutRef.current);
-        timeoutRef.current = setTimeout(() => {
-          onCommit(nextValue);
-        }, 600);
-      }}
-      onBlur={() => {
-        focusedRef.current = false;
-        if (timeoutRef.current) {
-          clearTimeout(timeoutRef.current);
-          timeoutRef.current = null;
-        }
-        if (local !== value) onCommit(local);
-      }}
-      onKeyDown={(e) => {
-        if (e.key === "Enter") {
-          (e.target as HTMLInputElement).blur();
-        }
-      }}
-      className={className}
-      placeholder={placeholder}
-    />
-  );
-}
-
-// ── Variable Question Input (local state, commits on blur/Enter) ──
-function VariableQuestionInput({ value, onCommit }: { value: string; onCommit: (v: string) => void }) {
-  const { t: localizeUi } = useUiTranslation();
-  const [local, setLocal] = useState(value);
-  const inputRef = useRef<HTMLInputElement>(null);
-  const selectionRef = useRef<TextSelection | null>(null);
-  const focusedRef = useRef(false);
-  const formatQuotes = useQuoteFormatter();
-  useRestoreTextSelection(inputRef, selectionRef, local);
-  useEffect(() => {
-    if (!focusedRef.current) setLocal(value);
-  }, [value]);
-  return (
-    <input
-      ref={inputRef}
-      value={local}
-      onFocus={(e) => {
-        focusedRef.current = true;
-        if (shouldSelectTextOnFocus()) e.target.select();
-      }}
-      onChange={(e) => {
-        const rawValue = e.target.value;
-        const selectionStart = e.target.selectionStart ?? rawValue.length;
-        const selectionEnd = e.target.selectionEnd ?? selectionStart;
-        selectionRef.current = getFormattedTextSelection(rawValue, selectionStart, selectionEnd, formatQuotes);
-        setLocal(formatQuotes(rawValue));
-      }}
-      onBlur={() => {
-        focusedRef.current = false;
-        if (local !== value) onCommit(local);
-      }}
-      onKeyDown={(e) => {
-        if (e.key === "Enter") {
-          (e.target as HTMLInputElement).blur();
-        }
-      }}
-      className="mari-editor-field w-full px-2 py-1 text-xs"
-      placeholder={localizeUi("ui.presets.variablequestioninput.whatShouldTheUserChoose")}
-    />
   );
 }
 
@@ -3221,13 +2400,18 @@ function SectionContentTextarea({
 }) {
   const { t: localizeUi } = useUiTranslation();
   const [local, setLocal] = useState(value);
+  // The latest text, for a commit that runs before the render that would show it: closing the expanded editor
+  // sends its text and commits at once, after a refetch may have reset `local` behind it.
+  const localRef = useRef(value);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const focusedRef = useRef(false);
   const quoteFormat = useUIStore((s) => s.quoteFormat);
 
   // Only sync from parent when not actively editing
   useEffect(() => {
-    if (!focusedRef.current) setLocal(value);
+    if (focusedRef.current) return;
+    localRef.current = value;
+    setLocal(value);
   }, [value]);
 
   const commit = useCallback(() => {
@@ -3235,12 +2419,13 @@ function SectionContentTextarea({
       clearTimeout(timeoutRef.current);
       timeoutRef.current = null;
     }
-    if (local !== value) onCommit(local);
-  }, [local, value, onCommit]);
+    if (localRef.current !== value) onCommit(localRef.current);
+  }, [value, onCommit]);
 
   // Debounced auto-save while typing (800ms)
   const handleChange = (nextRawValue: string) => {
     const nextValue = nextRawValue;
+    localRef.current = nextValue;
     setLocal(nextValue);
     if (timeoutRef.current) clearTimeout(timeoutRef.current);
     timeoutRef.current = setTimeout(() => {
@@ -3283,137 +2468,9 @@ function SectionContentTextarea({
           : localizeUi("ui.presets.sectioncontenttextarea.editPrompt")
       }
       showMarkdownPreview
-      className="mari-editor-field min-h-[7.5rem] w-full p-2.5 font-mono text-xs"
+      className="mari-editor-field mari-prompt-font min-h-[7.5rem] w-full p-2.5 text-xs"
       placeholder={localizeUi("ui.presets.sectioncontenttextarea.promptContentSupportsUserCharCommentTrimMacros")}
     />
-  );
-}
-
-// ── Expanded prompt editor modal ──
-function PresetModalPortal({ children }: { children: ReactNode }) {
-  if (typeof document === "undefined") return null;
-  return createPortal(children, document.body);
-}
-
-function ExpandedEditorModal({
-  title,
-  value,
-  onChange,
-  onClose,
-}: {
-  title: string;
-  value: string;
-  onChange: (v: string) => void;
-  onClose: () => void;
-}) {
-  const { t: localizeUi } = useUiTranslation();
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const selectionRef = useRef<TextSelection | null>(null);
-  const [local, setLocal] = useState(value);
-  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const formatQuotes = useQuoteFormatter();
-  useRestoreTextSelection(textareaRef, selectionRef, local);
-
-  // Sync from parent only on initial mount (not on every re-render)
-  useEffect(() => {
-    setLocal(value);
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Focus the textarea on mount
-  useEffect(() => {
-    setTimeout(() => textareaRef.current?.focus(), 100);
-  }, []);
-
-  // Close on Escape
-  useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        if (local !== value) onChange(local);
-        onClose();
-      }
-    };
-    document.addEventListener("keydown", handler);
-    return () => document.removeEventListener("keydown", handler);
-  }, [onClose, onChange, local, value]);
-
-  // Cleanup timer on unmount
-  useEffect(
-    () => () => {
-      if (timeoutRef.current) clearTimeout(timeoutRef.current);
-    },
-    [],
-  );
-
-  const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
-    const rawValue = e.target.value;
-    const selectionStart = e.target.selectionStart ?? rawValue.length;
-    const selectionEnd = e.target.selectionEnd ?? selectionStart;
-    selectionRef.current = getFormattedTextSelection(rawValue, selectionStart, selectionEnd, formatQuotes);
-    const v = formatQuotes(rawValue);
-    setLocal(v);
-    // Debounced commit so the parent stays in sync without cursor jumps
-    if (timeoutRef.current) clearTimeout(timeoutRef.current);
-    timeoutRef.current = setTimeout(() => {
-      onChange(v);
-    }, 600);
-  };
-
-  const handleClose = () => {
-    if (timeoutRef.current) {
-      clearTimeout(timeoutRef.current);
-      timeoutRef.current = null;
-    }
-    onClose();
-  };
-
-  return (
-    <PresetModalPortal>
-      <div
-        data-chat-floating-panel
-        className="fixed inset-0 z-50 flex items-center justify-center p-3 pb-[max(0.75rem,var(--mari-safe-area-inset-bottom,env(safe-area-inset-bottom)))] pt-[max(0.75rem,env(safe-area-inset-top))] sm:p-6"
-      >
-        <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={handleClose} />
-        <div className="mari-editor-shell mari-editor-legacy-bridge relative flex h-[80vh] max-h-[calc(100vh-1.5rem)] w-full max-w-3xl flex-col rounded-2xl border border-[var(--marinara-editor-border)] bg-[var(--marinara-editor-surface-bg)] shadow-2xl shadow-black/50 [--marinara-editor-bg:var(--sidebar)] [--marinara-editor-control-bg:var(--sidebar)] [--marinara-editor-surface-bg:var(--sidebar)] supports-[height:100dvh]:h-[80dvh] supports-[height:100dvh]:max-h-[calc(100dvh-1.5rem)]">
-          {/* Header */}
-          <div className="flex items-center justify-between border-b border-[var(--border)] px-4 py-3">
-            <h3 className="text-sm font-semibold">{title}</h3>
-            <button onClick={handleClose} className="rounded-lg p-1.5 hover:bg-[var(--accent)]">
-              <X size="1rem" />
-            </button>
-          </div>
-          {/* Editor */}
-          <div className="flex-1 overflow-hidden p-4">
-            <textarea
-              ref={textareaRef}
-              value={local}
-              onChange={handleChange}
-              onBlur={() => {
-                if (timeoutRef.current) {
-                  clearTimeout(timeoutRef.current);
-                  timeoutRef.current = null;
-                }
-                if (local !== value) onChange(local);
-              }}
-              onKeyDown={handleTextareaTab}
-              className="mari-editor-field h-full w-full resize-none p-4 font-mono text-sm"
-              placeholder={localizeUi("ui.presets.expandededitormodal.promptContentSupportsMacrosLikeUserCharEtc")}
-            />
-          </div>
-          {/* Footer */}
-          <div className="flex items-center justify-between border-t border-[var(--border)] px-4 py-2.5">
-            <p className="text-[0.625rem] text-[var(--muted-foreground)]">
-              {localizeUi("ui.presets.expandededitormodal.changesAutoSavePressEscapeToClose")}
-            </p>
-            <button
-              onClick={handleClose}
-              className="mari-editor-action mari-editor-action--primary mari-editor-action--compact inline-flex px-4 py-1.5"
-            >
-              {localizeUi("lorebook.editor.batch.done")}
-            </button>
-          </div>
-        </div>
-      </div>
-    </PresetModalPortal>
   );
 }
 
@@ -3455,9 +2512,19 @@ function SectionNameInput({ value, onCommit }: { value: string; onCommit: (v: st
 //  Shared UI Components
 // ═══════════════════════════════════════════════
 
-function FieldGroup({ label, help, children }: { label: string; help?: string; children: React.ReactNode }) {
+function FieldGroup({
+  label,
+  help,
+  mariField,
+  children,
+}: {
+  label: string;
+  help?: string;
+  mariField?: string;
+  children: React.ReactNode;
+}) {
   return (
-    <div className="mari-editor-panel space-y-2 p-3">
+    <div className="mari-editor-panel space-y-2 p-3" data-mari-field={mariField}>
       <label className="mb-1.5 flex items-center gap-1.5 text-xs font-medium text-[var(--muted-foreground)]">
         {label}
         {help && <HelpTooltip text={help} />}

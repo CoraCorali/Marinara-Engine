@@ -12,7 +12,7 @@ import { useTTSConfig, useTTSVoices, useUpdateTTSVoiceAssignment, useUpdateTTSVo
 import { getCharacterNameVoice, getCharacterVoiceAssignment, resolveTTSVoiceForSpeaker } from "../../lib/tts-dialogue";
 import { ttsService } from "../../lib/tts-service";
 import { cn } from "../../lib/utils";
-import { useUIStore } from "../../stores/ui.store";
+import { openAddConnection } from "../../lib/add-connection";
 import { buildTTSVoiceOptions, CustomizableVoiceInput, VoiceSelect } from "../panels/settings/TTSConfigCard";
 
 const SAVE_DELAY_MS = 600;
@@ -36,7 +36,12 @@ export function CharacterVoicePicker({
   const updateVoiceMode = useUpdateTTSVoiceMode();
   const updateVoiceAssignment = useUpdateTTSVoiceAssignment();
   const perCharacter = config?.enabled === true && config.voiceMode === "per-character";
-  const voicesQuery = useTTSVoices(config?.source ?? "openai", config?.baseUrl ?? "", perCharacter);
+  const voicesQuery = useTTSVoices(
+    config?.source ?? "openai",
+    config?.baseUrl ?? "",
+    perCharacter,
+    config?.connectionId ?? "",
+  );
 
   const savedVoice = getCharacterVoiceAssignment(config?.voiceAssignments, characterId);
   const [draftVoice, setDraftVoice] = useState<string | null>(null);
@@ -175,7 +180,7 @@ export function CharacterVoicePicker({
           )}
           <button
             type="button"
-            onClick={() => useUIStore.getState().openRightPanel("connections")}
+            onClick={() => openAddConnection({ category: "device", item: "tts" })}
             className={ACTION_CLS}
           >
             <Settings2 size="0.8rem" />

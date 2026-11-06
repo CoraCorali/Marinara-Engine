@@ -1,8 +1,30 @@
 import {
+  findSpriteExpressionFacetMatches,
+  inferExpressionCandidates,
+  isSpriteTalkOrBlinkFrame,
   normalizeSpriteExpressionKey as normalizeUnicodeSpriteExpressionKey,
   normalizeSpriteLookupToken,
+  spriteExpressionFacetKey,
 } from "@marinara-engine/shared";
 import { buildSpriteExpressionChoices } from "../../services/game/sprite.service.js";
+import { parseExtra } from "../../services/generation/prompt-attachments.js";
+
+/**
+ * Whether the player's latest message still needs the persona's expression: no reply after it has had its own
+ * Expression Engine result yet. A swipe, a continuation or a whole group turn keeps the persona. Later replies
+ * leave it to the Expression Engine, so a persona who has left the scene is not shown again (#7378).
+ */
+export function playerTurnAwaitsExpression(
+  messages: readonly { role?: unknown; content?: unknown; extra?: unknown }[],
+  before: number,
+): boolean {
+  for (let index = Math.min(before, messages.length) - 1; index >= 0; index--) {
+    const message = messages[index]!;
+    if (message.role === "user" && typeof message.content === "string" && message.content.trim()) return true;
+    if (message.role === "assistant" && Array.isArray(parseExtra(message.extra).expressionSpriteIds)) return false;
+  }
+  return false;
+}
 
 export type SpriteDisplayMode = "expressions" | "full-body";
 
@@ -11,6 +33,7 @@ export type AvailableSpriteCharacter = {
   characterName: string;
   expressions: string[];
   expressionChoices?: string[];
+  expressionAliases?: Record<string, string>;
 };
 
 export type SpriteExpressionEntry = {
@@ -71,20 +94,43 @@ export function normalizeSpriteDisplayModes(value: unknown): SpriteDisplayMode[]
 export function buildAvailableSpriteCharacter(
   characterId: string,
   characterName: string,
-  sprites: { expressions: string[]; fullBody: string[]; automaticFullBody: string[] },
+  sprites: {
+    expressions: string[];
+    fullBody: string[];
+    automaticFullBody: string[];
+    expressionAliases?: Record<string, string>;
+    fullBodyAliases?: Record<string, string>;
+  },
   displayModes: readonly SpriteDisplayMode[],
 ): AvailableSpriteCharacter | null {
-  const expressions = uniqueStrings([
-    ...(displayModes.includes("expressions") ? sprites.expressions : []),
-    ...(displayModes.includes("full-body") ? [...sprites.fullBody, ...sprites.automaticFullBody] : []),
-  ]);
+  const expressions = displayModes.includes("expressions") ? uniqueStrings(sprites.expressions) : [];
+  const portraits = new Map(expressions.map((expression) => [expression.toLowerCase(), expression]));
+  const expressionAliases: Record<string, string> = Object.create(null);
+  for (const expression of expressions) {
+    expressionAliases[expression] = sprites.expressionAliases?.[expression] ?? expression;
+  }
+  if (displayModes.includes("full-body")) {
+    for (const expression of uniqueStrings([...sprites.fullBody, ...sprites.automaticFullBody])) {
+      const label = sprites.fullBodyAliases?.[expression] ?? expression;
+      const portrait = portraits.get(expression.toLowerCase());
+      // Keep the legacy shared choice until the two file families have different labels.
+      if (portrait && expressionAliases[portrait]!.toLowerCase() === label.toLowerCase()) continue;
+      const baseLabel = expression.replace(/_sprite_[a-f0-9]{12}$/iu, "").toLowerCase();
+      const handle = portrait || label.toLowerCase() !== baseLabel ? `full_${expression}` : expression;
+      expressions.push(handle);
+      expressionAliases[handle] = label;
+    }
+  }
 
   if (expressions.length === 0) return null;
   return {
     characterId,
     characterName,
     expressions,
-    expressionChoices: buildSpriteExpressionChoices(expressions),
+    expressionChoices: buildSpriteExpressionChoices(
+      expressions.map((expression) => expressionAliases[expression] ?? expression),
+    ),
+    expressionAliases,
   };
 }
 
@@ -193,14 +239,51 @@ function resolveCharacter(
   return null;
 }
 
-function resolveExpression(expression: string, availableExpressions: string[]): string | null {
+function resolveExpression(
+  expression: string,
+  availableExpressions: string[],
+  aliases?: Record<string, string>,
+): string | null {
   const trimmed = expression.trim();
   if (!trimmed) return null;
+  if (aliases) {
+    const savedHandle = availableExpressions.find(
+      (entry) =>
+        entry.toLowerCase() === trimmed.toLowerCase() &&
+        (/^full_/iu.test(entry) || /_sprite_[a-f0-9]{12}$/iu.test(entry)),
+    );
+    if (savedHandle) return savedHandle;
+    const label = resolveExpression(
+      trimmed,
+      uniqueStrings(availableExpressions.map((entry) => aliases[entry] ?? entry)),
+    );
+    const choices = label ? availableExpressions.filter((entry) => (aliases[entry] ?? entry) === label) : [];
+    if (choices.length) return choices.length === 1 ? choices[0]! : pickRandomExpression(choices);
+  }
 
   const lower = trimmed.toLowerCase();
-
-  const prefixMatches = availableExpressions.filter((entry) => getExpressionPrefixVariant(entry, trimmed));
   const exact = availableExpressions.find((entry) => entry.toLowerCase() === lower);
+
+  // A faceted name (#8637) picks among the variants of its own facets, dropping its lowest-priority facets
+  // when none exist; see findSpriteExpressionFacetMatches. A plain group key keeps the prefix grouping below,
+  // and the group key is everything before the first underscore, so half-smile stays a group key.
+  const facetKey = spriteExpressionFacetKey(trimmed);
+  const groupKey = trimmed.replace(/^full_/iu, "").split("_")[0]!;
+  const faceted = facetKey !== spriteExpressionFacetKey(groupKey);
+  if (faceted) {
+    // A concrete numbered handle such as happy_pajamas_02 is never rerolled to a sibling variant.
+    if (exact && facetKey !== lower) return exact;
+    const facetMatch = pickRandomExpression(
+      findSpriteExpressionFacetMatches(availableExpressions, trimmed, (entry) => entry),
+    );
+    if (facetMatch) return facetMatch;
+  }
+  // A faceted name never falls back to a PNGTuber talk or blink frame: those are frames of another face.
+  const pool = faceted
+    ? availableExpressions.filter((entry) => !isSpriteTalkOrBlinkFrame(spriteExpressionFacetKey(entry)))
+    : availableExpressions;
+
+  const prefixMatches = pool.filter((entry) => getExpressionPrefixVariant(entry, trimmed));
   if (prefixMatches.length > 1) {
     const groupPool = exact ? [exact, ...prefixMatches] : prefixMatches;
     const randomGroupMatch = pickRandomExpression(groupPool);
@@ -210,58 +293,36 @@ function resolveExpression(expression: string, availableExpressions: string[]): 
   if (exact) return exact;
 
   const normalized = normalizeExpressionToken(trimmed);
-  const normalizedExact = availableExpressions.find((entry) => normalizeExpressionToken(entry) === normalized);
+  const normalizedExact = pool.find((entry) => normalizeExpressionToken(entry) === normalized);
   if (normalizedExact) return normalizedExact;
 
+  // With no facet left to match, a faceted name falls back to its own group key's variants before any loose
+  // substring match, which could land on an unrelated name (unhappy_pajamas for happy_pajamas).
+  const groupFallback = faceted ? resolveExpression(groupKey, pool) : null;
+  if (groupFallback) return groupFallback;
+
   return (
-    availableExpressions.find((entry) => {
+    pool.find((entry) => {
       const option = normalizeExpressionToken(entry);
       return hasUsefulContainmentMatch(normalized, option);
     }) ?? null
   );
 }
 
-function inferExpressionCandidatesFromText(text: string): string[] {
-  const lower = text.toLowerCase();
-  const candidates: string[] = [];
-
-  const add = (...values: string[]) => {
-    for (const value of values) {
-      if (!candidates.includes(value)) candidates.push(value);
-    }
-  };
-
-  if (/\b(blush|blushing|fluster|flustered|embarrass|embarrassed|shy|bashful)\b/.test(lower)) {
-    add("blush", "embarrassed", "shy", "flustered");
+function pickFallbackExpression(
+  expressions: string[],
+  sourceText: string,
+  aliases?: Record<string, string>,
+): string | null {
+  if (aliases) {
+    const label = pickFallbackExpression(
+      uniqueStrings(expressions.map((expression) => aliases[expression] ?? expression)),
+      sourceText,
+    );
+    const matches = label ? expressions.filter((expression) => (aliases[expression] ?? expression) === label) : [];
+    return matches.length === 1 ? matches[0]! : pickRandomExpression(matches);
   }
-  if (/\b(angry|anger|rage|furious|annoyed|irritated|frustrated|glare|scowl)\b/.test(lower)) {
-    add("angry", "annoyed", "irritated");
-  }
-  if (/\b(sad|cry|crying|tears|sorrow|grief|hurt|heartbroken|melancholy)\b/.test(lower)) {
-    add("sad", "crying", "melancholy");
-  }
-  if (/\b(happy|smile|smiling|grin|grinning|laugh|laughing|joy|excited|delighted)\b/.test(lower)) {
-    add("happy", "smile", "joy", "excited");
-  }
-  if (/\b(surprised|surprise|shock|shocked|gasp|startled|stunned)\b/.test(lower)) {
-    add("surprised", "shocked", "startled");
-  }
-  if (/\b(scared|afraid|fear|fearful|terrified|panic|panicked|nervous|anxious)\b/.test(lower)) {
-    add("scared", "afraid", "nervous", "anxious");
-  }
-  if (/\b(disgust|disgusted|gross|repulsed|repulsing)\b/.test(lower)) {
-    add("disgusted", "disgust");
-  }
-  if (/\b(think|thinking|consider|considering|wonder|wondering|hmm|thoughtful|ponder)\b/.test(lower)) {
-    add("thinking", "thoughtful", "ponder");
-  }
-
-  add("neutral", "default", "normal", "calm", "idle");
-  return candidates;
-}
-
-function pickFallbackExpression(expressions: string[], sourceText: string): string | null {
-  for (const candidate of inferExpressionCandidatesFromText(sourceText)) {
+  for (const candidate of inferExpressionCandidates(sourceText)) {
     const resolved = resolveExpression(candidate, expressions);
     if (resolved) return resolved;
   }
@@ -296,7 +357,7 @@ export function completeRequiredSpriteExpressionEntries<T extends SpriteExpressi
     if (!character) continue;
 
     const sourceText = options.sourceTextByCharacterId?.get(characterId) ?? options.defaultSourceText ?? "";
-    const expression = pickFallbackExpression(character.expressions, sourceText);
+    const expression = pickFallbackExpression(character.expressions, sourceText, character.expressionAliases);
     if (!expression) continue;
 
     completed.push({
@@ -317,6 +378,7 @@ export function completeRequiredSpriteExpressionEntries<T extends SpriteExpressi
 export function validateSpriteExpressionEntries<T extends SpriteExpressionEntry>(
   expressions: T[] | undefined,
   availableSprites: AvailableSpriteCharacter[] | undefined,
+  options: { resolvedHandles?: boolean } = {},
 ): ExpressionValidationResult<T> {
   const warnings: ExpressionValidationWarning[] = [];
   if (!Array.isArray(expressions) || !Array.isArray(availableSprites)) {
@@ -352,7 +414,10 @@ export function validateSpriteExpressionEntries<T extends SpriteExpressionEntry>
       });
     }
 
-    const expression = resolveExpression(entry.expression, character.expressions);
+    const requestedHandle = entry.expression.trim().toLowerCase();
+    const expression = options.resolvedHandles
+      ? (character.expressions.find((handle) => handle.toLowerCase() === requestedHandle) ?? null)
+      : resolveExpression(entry.expression, character.expressions, character.expressionAliases);
     if (!expression) {
       warnings.push({
         message: `Expression agent chose "${entry.expression}" for ${character.characterName} which doesn't exist — removing`,

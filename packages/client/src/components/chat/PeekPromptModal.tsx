@@ -1,10 +1,14 @@
 // ──────────────────────────────────────────────
 // Peek Prompt Modal — collapsible section viewer
 // ──────────────────────────────────────────────
-import { useState, useMemo } from "react";
-import { X, ChevronRight, ChevronDown } from "lucide-react";
-import { cn } from "../../lib/utils";
+import { useState, useMemo, useEffect, useRef, useId, useDeferredValue } from "react";
+import { X, ChevronRight, ChevronDown, Copy, Search, ArrowUp, ArrowDown } from "lucide-react";
+import { toast } from "sonner";
+import { cn, copyToClipboard } from "../../lib/utils";
+import { generationLevelLabel } from "../../lib/generation-level-label";
+import { describeGenerationFallback } from "../../lib/generation-fallback-notice";
 import { useBackdropDismiss } from "../../hooks/use-backdrop-dismiss";
+import { usePeekPrompt } from "../../hooks/use-chats";
 import {
   NEUTRAL_PANEL_HEADER,
   NEUTRAL_PANEL_SCROLL_AREA,
@@ -12,8 +16,15 @@ import {
   NEUTRAL_PANEL_TITLE,
 } from "../ui/neutral-surface-styles";
 import { useTranslation as useUiTranslation } from "react-i18next";
-import { estimateTextTokens, type GameToolPlanningInfo, type DecisionDebugPreview } from "@marinara-engine/shared";
+import {
+  estimateTextTokens,
+  type GameToolPlanningInfo,
+  type DecisionDebugPreview,
+  type ReplyCheckupFinding,
+  type ReplyCheckupLink,
+} from "@marinara-engine/shared";
 import { DecisionDebugPanel } from "./DecisionDebugPanel";
+import { ReplyCheckupFacts } from "./ReplyCheckup";
 
 const PROMPT_TAG_CLASS =
   "border border-[var(--marinara-chat-chrome-button-border)] bg-[var(--marinara-chat-chrome-highlight-bg)] text-[var(--marinara-chat-chrome-highlight-text)]";
@@ -46,11 +57,13 @@ interface GenerationInfo {
   tokensCacheWritePrompt?: number | null;
   durationMs?: number | null;
   finishReason?: string | null;
+  fallback?: unknown;
 }
 
 interface PeekPromptModalProps {
   data: {
     chatId?: string;
+    characterId?: string;
     messages: Array<{ role: string; content: string }>;
     chatMode?: string;
     parameters: unknown;
@@ -60,6 +73,8 @@ interface PeekPromptModalProps {
     gameToolPlanning?: GameToolPlanningInfo | null;
     agentNote?: string;
     decisions?: { unanswered: string[]; dropped?: string[]; decisionModelSet: boolean };
+    /** R2: the checkup of the reply this prompt produced. */
+    checkup?: { findings: ReplyCheckupFinding[]; onLink: (link: ReplyCheckupLink) => void };
   };
   onClose: () => void;
 }
@@ -77,7 +92,7 @@ function sourceBadgeClass(data: PeekPromptModalProps["data"]): string {
 }
 
 function prettifyTag(tag: string): string {
-  return tag.replace(/[_-]/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+  return tag.replace(/[_-]/g, " ").replace(/(?<![\p{L}\p{M}\p{N}])\p{L}/gu, (c) => c.toUpperCase());
 }
 
 // ═══════════════════════════════════════════════
@@ -139,7 +154,7 @@ function conversationHistoryDisplayRole(role: string, content: string): string {
 function parseXmlSections(content: string, fallbackLabel: string): SectionBlock[] {
   const blocks: SectionBlock[] = [];
   // Match <tag_name>\n...\n</tag_name> where both tags sit on their own line.
-  const tagRegex = /(?:^|\n)(<([a-z_][a-z0-9_-]*)>\n[\s\S]*?\n<\/\2>)(?:\n|$)/gi;
+  const tagRegex = /(?:^|\n)(<([\p{L}_][\p{L}\p{M}\p{N}_-]*)>\n[\s\S]*?\n<\/\2>)(?:\n|$)/giu;
   let lastIndex = 0;
 
   for (const match of content.matchAll(tagRegex)) {
@@ -511,6 +526,17 @@ export function PeekPromptModal({ data: originalData, onClose }: PeekPromptModal
   const { t: localizeUi } = useUiTranslation();
   const [tested, setTested] = useState<DecisionDebugPreview | null>(null);
   const [showTest, setShowTest] = useState(false);
+  // A saved request predates its turn's summary and hiding; the current context is built on request (#8831).
+  const peekCurrent = usePeekPrompt();
+  const [current, setCurrent] = useState<PeekPromptModalProps["data"] | null>(null);
+  const [showCurrent, setShowCurrent] = useState(false);
+  const [findQuery, setFindQuery] = useState("");
+  const deferredQuery = useDeferredValue(findQuery);
+  const [selection, setSelection] = useState({ query: "", index: 0 });
+  const panelRef = useRef<HTMLDivElement>(null);
+  const findRef = useRef<HTMLInputElement>(null);
+  const activeMatchRef = useRef<HTMLElement>(null);
+  const titleId = useId();
   const data: PeekPromptModalProps["data"] =
     showTest && tested
       ? {
@@ -521,15 +547,103 @@ export function PeekPromptModal({ data: originalData, onClose }: PeekPromptModal
           source: "live_preview",
           exact: false,
         }
-      : originalData;
+      : showCurrent && current
+        ? current
+        : originalData;
   const backdropDismiss = useBackdropDismiss(onClose);
   const sections = useMemo(
     () => buildDisplaySections(data.messages, data.chatMode === "conversation"),
     [data.chatMode, data.messages],
   );
   const totalTokens = useMemo(() => estimateTokens(data.messages.map((m) => m.content).join("")), [data.messages]);
+  const search = useMemo(() => {
+    // Search the original messages, not parsed sections: parsing trims whitespace and removes history wrappers.
+    const pattern = deferredQuery ? new RegExp(deferredQuery.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "giu") : null;
+    let count = 0;
+    const matches = data.messages.map((message) =>
+      pattern
+        ? Array.from(message.content.matchAll(pattern), (match) => ({
+            start: match.index,
+            end: match.index + match[0].length,
+            index: count++,
+          }))
+        : [],
+    );
+    return { matches, count };
+  }, [data.messages, deferredQuery]);
+  const activeMatch = selection.query === deferredQuery ? Math.min(selection.index, Math.max(0, search.count - 1)) : 0;
+
+  useEffect(() => {
+    const previousFocus = document.activeElement as HTMLElement | null;
+    // Keep shortcuts inside this viewer without opening the mobile keyboard on entry.
+    panelRef.current?.focus();
+    return () => previousFocus?.focus();
+  }, []);
+
+  useEffect(() => {
+    activeMatchRef.current?.scrollIntoView({ block: "center" });
+  }, [activeMatch, search]);
+
+  const moveMatch = (direction: number) => {
+    if (search.count && findQuery === deferredQuery) {
+      setSelection({ query: deferredQuery, index: (activeMatch + direction + search.count) % search.count });
+    }
+  };
+
+  // Reuse the highlight tree during urgent input updates; rebuilding it defeats deferred search.
+  const searchContent = useMemo(
+    () =>
+      deferredQuery
+        ? data.messages.map((message, messageIndex) => {
+            let end = 0;
+            const parts = search.matches[messageIndex]!.flatMap((match) => {
+              const before = message.content.slice(end, match.start);
+              end = match.end;
+              return [
+                before,
+                <mark
+                  key={match.index}
+                  ref={match.index === activeMatch ? activeMatchRef : undefined}
+                  data-prompt-match={match.index}
+                  data-active={match.index === activeMatch ? "true" : undefined}
+                  className={cn(
+                    "rounded-sm bg-[var(--marinara-chat-chrome-highlight-bg)] text-[var(--marinara-chat-chrome-highlight-text)]",
+                    match.index === activeMatch && "outline-2 outline-offset-1 outline-[var(--primary)]",
+                  )}
+                >
+                  {message.content.slice(match.start, match.end)}
+                </mark>,
+              ];
+            });
+            return (
+              <div
+                key={messageIndex}
+                className="rounded-lg border border-[var(--border)] bg-[var(--secondary)]/50 px-3 py-2"
+              >
+                <span
+                  className={cn(
+                    "rounded-md px-2 py-0.5 text-[0.625rem] font-bold uppercase tracking-wider",
+                    message.role === "assistant" ? PROMPT_TAG_ACTIVE_CLASS : PROMPT_TAG_CLASS,
+                  )}
+                >
+                  {message.role}
+                </span>
+                <pre
+                  data-prompt-search-message
+                  className="mari-chat-style-text mt-2 whitespace-pre-wrap break-words text-xs leading-relaxed text-[var(--foreground)]/80"
+                >
+                  {parts}
+                  {message.content.slice(end)}
+                </pre>
+              </div>
+            );
+          })
+        : null,
+    [data.messages, deferredQuery, search, activeMatch],
+  );
 
   const gen = data.generationInfo;
+  const fallbackNote = describeGenerationFallback(gen?.fallback);
   const planner = data.gameToolPlanning;
   const params = data.parameters as Record<string, unknown> | null;
 
@@ -540,8 +654,9 @@ export function PeekPromptModal({ data: originalData, onClose }: PeekPromptModal
       if (gen.temperature != null) pills.push({ label: "Temperature", value: String(gen.temperature) });
       if (gen.maxTokens != null) pills.push({ label: "Max Output Tokens", value: fmtTokens(gen.maxTokens) });
       if (gen.showThoughts) pills.push({ label: "Thinking", value: "On" });
-      if (gen.reasoningEffort) pills.push({ label: "Reasoning", value: gen.reasoningEffort });
-      if (gen.verbosity) pills.push({ label: "Verbosity", value: gen.verbosity });
+      if (gen.reasoningEffort)
+        pills.push({ label: "Reasoning", value: generationLevelLabel(gen.reasoningEffort, localizeUi) });
+      if (gen.verbosity) pills.push({ label: "Verbosity", value: generationLevelLabel(gen.verbosity, localizeUi) });
       if (gen.serviceTier) pills.push({ label: "Service Tier", value: gen.serviceTier });
       if (gen.assistantPrefill) pills.push({ label: "Assistant Prefill", value: "On" });
     } else if (params) {
@@ -556,17 +671,30 @@ export function PeekPromptModal({ data: originalData, onClose }: PeekPromptModal
       if (params.presencePenalty != null && params.presencePenalty !== 0)
         pills.push({ label: "Pres Penalty", value: String(params.presencePenalty) });
       if (params.showThoughts) pills.push({ label: "Thinking", value: "On" });
-      if (params.reasoningEffort) pills.push({ label: "Reasoning", value: String(params.reasoningEffort) });
-      if (params.verbosity) pills.push({ label: "Verbosity", value: String(params.verbosity) });
+      if (params.reasoningEffort)
+        pills.push({ label: "Reasoning", value: generationLevelLabel(String(params.reasoningEffort), localizeUi) });
+      if (params.verbosity)
+        pills.push({ label: "Verbosity", value: generationLevelLabel(String(params.verbosity), localizeUi) });
       if (params.serviceTier) pills.push({ label: "Service Tier", value: String(params.serviceTier) });
       if (params.assistantPrefill) pills.push({ label: "Assistant Prefill", value: "On" });
     }
     return pills;
-  }, [gen, params]);
+  }, [gen, params, localizeUi]);
 
   const sectionRoleColor = (role: string, label: string) => {
     if (/last.?message/i.test(label) || role === "assistant") return PROMPT_TAG_ACTIVE_CLASS;
     return PROMPT_TAG_CLASS;
+  };
+
+  // Copies the messages this viewer shows (the saved request when it is exact), never a rebuild:
+  // each message verbatim, in send order, under a "[role]" line.
+  const handleCopyPrompt = async () => {
+    const text = data.messages.map((message) => `[${message.role}]\n${message.content}`).join("\n\n");
+    if (await copyToClipboard(text)) {
+      toast.success(localizeUi("ui.chat.peekpromptmodal.promptCopied"));
+    } else {
+      toast.error(localizeUi("ui.chat.peekpromptmodal.promptCopyFailed"));
+    }
   };
 
   return (
@@ -576,15 +704,48 @@ export function PeekPromptModal({ data: originalData, onClose }: PeekPromptModal
       {...backdropDismiss}
     >
       <div
+        ref={panelRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby={titleId}
+        tabIndex={-1}
         className={cn(
           NEUTRAL_PANEL_SHELL,
           "mari-chat-style-surface mari-chat-action-panel mx-4 flex max-h-[85vh] w-full max-w-3xl flex-col overflow-hidden",
         )}
         onClick={(e) => e.stopPropagation()}
+        onKeyDown={(event) => {
+          if (
+            (event.ctrlKey || event.metaKey) &&
+            !event.altKey &&
+            (event.key.toLowerCase() === "f" || (event.code === "KeyF" && !/^[a-z]$/i.test(event.key)))
+          ) {
+            event.preventDefault();
+            event.stopPropagation();
+            findRef.current?.focus();
+            findRef.current?.select();
+          }
+          if (event.key === "Tab") {
+            const controls = Array.from(
+              event.currentTarget.querySelectorAll<HTMLElement>(
+                'a[href], button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex="0"]',
+              ),
+            ).filter((control) => control.getClientRects().length > 0);
+            const first = controls[0];
+            const last = controls[controls.length - 1];
+            if (event.shiftKey && (document.activeElement === first || document.activeElement === panelRef.current)) {
+              event.preventDefault();
+              last?.focus();
+            } else if (!event.shiftKey && document.activeElement === last) {
+              event.preventDefault();
+              first?.focus();
+            }
+          }
+        }}
       >
         <div className={cn(NEUTRAL_PANEL_HEADER, "shrink-0 flex items-center justify-between gap-3 px-5 py-3")}>
           <div className="flex min-w-0 flex-wrap items-center gap-2">
-            <h3 className={cn(NEUTRAL_PANEL_TITLE, "shrink-0 text-sm")}>
+            <h3 id={titleId} className={cn(NEUTRAL_PANEL_TITLE, "shrink-0 text-sm")}>
               {localizeUi("ui.chat.peekpromptmodal.assembledPrompt")}
             </h3>
             <span
@@ -602,22 +763,102 @@ export function PeekPromptModal({ data: originalData, onClose }: PeekPromptModal
               {fmtTokens(totalTokens)} {localizeUi("ui.agents.agenteditor.tokens")}
             </span>
           </div>
-          <button
-            onClick={onClose}
-            className="mari-chat-style-control mari-chrome-control mari-chrome-control--small p-1.5"
-            aria-label={localizeUi("ui.chat.peekpromptmodal.closeAssembledPrompt")}
-          >
-            <X size="1rem" />
-          </button>
+          <div className="flex shrink-0 items-center gap-1">
+            <button
+              type="button"
+              onClick={() => void handleCopyPrompt()}
+              className="mari-chat-style-control mari-chrome-control mari-chrome-control--small p-1.5"
+              title={localizeUi("ui.chat.peekpromptmodal.copyPromptHint")}
+              aria-label={localizeUi("ui.chat.peekpromptmodal.copyPrompt")}
+            >
+              <Copy size="1rem" />
+            </button>
+            <button
+              onClick={onClose}
+              className="mari-chat-style-control mari-chrome-control mari-chrome-control--small p-1.5"
+              aria-label={localizeUi("ui.chat.peekpromptmodal.closeAssembledPrompt")}
+            >
+              <X size="1rem" />
+            </button>
+          </div>
         </div>
+        <div className={cn(NEUTRAL_PANEL_HEADER, "shrink-0 px-4 py-2")}>
+          <div className="flex flex-wrap items-center gap-2">
+            <label className="flex min-w-0 flex-1 basis-48 items-center gap-2 rounded-md border border-[var(--border)] bg-[var(--background)] px-3 focus-within:ring-2 focus-within:ring-[var(--primary)]">
+              <Search aria-hidden="true" size="0.875rem" className="shrink-0 text-[var(--muted-foreground)]" />
+              <span className="text-xs font-medium">{localizeUi("ui.chat.peekpromptmodal.find.label")}</span>
+              <input
+                ref={findRef}
+                type="search"
+                value={findQuery}
+                onChange={(event) => {
+                  setFindQuery(event.target.value);
+                  setSelection({ query: event.target.value, index: 0 });
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && !event.nativeEvent.isComposing) {
+                    event.preventDefault();
+                    moveMatch(event.shiftKey ? -1 : 1);
+                  }
+                }}
+                aria-label={localizeUi("ui.chat.peekpromptmodal.find.input")}
+                className="min-h-10 min-w-0 flex-1 bg-transparent text-xs text-[var(--foreground)] outline-none"
+              />
+            </label>
+            <div className="ml-auto flex items-center gap-1">
+              <span role="status" className="px-1 text-xs tabular-nums text-[var(--muted-foreground)]">
+                {deferredQuery
+                  ? search.count
+                    ? localizeUi("ui.chat.peekpromptmodal.find.count", {
+                        current: activeMatch + 1,
+                        count: search.count,
+                      })
+                    : localizeUi("ui.chat.peekpromptmodal.find.noMatches")
+                  : null}
+              </span>
+              {[
+                { direction: -1, label: "ui.chat.peekpromptmodal.find.previous", Icon: ArrowUp },
+                { direction: 1, label: "ui.chat.peekpromptmodal.find.next", Icon: ArrowDown },
+              ].map(({ direction, label, Icon }) => (
+                <button
+                  key={direction}
+                  type="button"
+                  disabled={!search.count || findQuery !== deferredQuery}
+                  onClick={() => moveMatch(direction)}
+                  aria-label={localizeUi(label)}
+                  title={localizeUi(label)}
+                  className="mari-chat-style-control mari-chrome-control flex min-h-10 min-w-10 items-center justify-center disabled:opacity-40"
+                >
+                  <Icon aria-hidden="true" size="1rem" />
+                </button>
+              ))}
+            </div>
+          </div>
+          {deferredQuery && (
+            <p className="mt-1 text-xs text-[var(--muted-foreground)]">
+              {localizeUi("ui.chat.peekpromptmodal.find.fullPrompt")}
+            </p>
+          )}
+        </div>
+        {!showTest && !showCurrent && originalData.checkup && originalData.checkup.findings.length > 0 && (
+          <div className={cn(NEUTRAL_PANEL_HEADER, "mari-reply-checkup shrink-0 px-5 pb-3")} data-peek-checkup>
+            <p className="mb-1 font-medium text-[var(--foreground)]">
+              {localizeUi("chat.replyCheckup.peekTitle", "Reply checkup")}
+            </p>
+            <ReplyCheckupFacts findings={originalData.checkup.findings} onLink={originalData.checkup.onLink} />
+          </div>
+        )}
         <div className={cn(NEUTRAL_PANEL_SCROLL_AREA, "min-h-0 flex-1 overflow-y-auto p-4 space-y-2")}>
           {originalData.chatId && (
             <DecisionDebugPanel
-              key={originalData.chatId}
+              key={`${originalData.chatId}:${originalData.characterId ?? ""}`}
               chatId={originalData.chatId}
+              characterId={originalData.characterId}
               onPreview={(preview) => {
                 setTested(preview);
                 setShowTest(preview !== null);
+                // "Show original prompt" then returns to the sent request its hint names.
+                if (preview) setShowCurrent(false);
               }}
             />
           )}
@@ -632,6 +873,44 @@ export function PeekPromptModal({ data: originalData, onClose }: PeekPromptModal
                 onClick={() => setShowTest(!showTest)}
               >
                 {localizeUi(showTest ? "decisionDebug.showOriginal" : "decisionDebug.showTest")}
+              </button>
+            </div>
+          )}
+          {!showTest && originalData.source === "cached" && originalData.chatId && (
+            <div className="flex flex-col items-start gap-2 py-2 text-xs sm:flex-row sm:items-center">
+              <p className="flex-1 text-[var(--muted-foreground)]">
+                {localizeUi(
+                  showCurrent
+                    ? "ui.chat.peekpromptmodal.currentContextHint"
+                    : "ui.chat.peekpromptmodal.sentRequestHint",
+                )}
+              </p>
+              <button
+                type="button"
+                className="mari-chat-style-control mari-chrome-control min-h-10 px-3"
+                disabled={peekCurrent.isPending}
+                onClick={() => {
+                  if (current) {
+                    setShowCurrent(!showCurrent);
+                    return;
+                  }
+                  peekCurrent.mutate(
+                    { chatId: originalData.chatId!, current: true },
+                    {
+                      onSuccess: ({ characterId: _characterId, ...next }) => {
+                        setCurrent({ ...next, chatId: originalData.chatId });
+                        setShowCurrent(true);
+                      },
+                      onError: () => toast.error(localizeUi("ui.chat.peekpromptmodal.currentContextFailed")),
+                    },
+                  );
+                }}
+              >
+                {localizeUi(
+                  showCurrent
+                    ? "ui.chat.peekpromptmodal.showSentRequest"
+                    : "ui.chat.peekpromptmodal.showCurrentContext",
+                )}
               </button>
             </div>
           )}
@@ -709,6 +988,7 @@ export function PeekPromptModal({ data: originalData, onClose }: PeekPromptModal
                   )}
                 </span>
               </div>
+              {fallbackNote && <p className="text-[0.6875rem] text-[var(--muted-foreground)]">{fallbackNote}</p>}
               {gen?.tokensLastRequestInput != null && (
                 <p className="text-[0.6875rem] text-[var(--muted-foreground)]">
                   {localizeUi("ui.chat.peekpromptmodal.lastRequestInput", {
@@ -756,19 +1036,26 @@ export function PeekPromptModal({ data: originalData, onClose }: PeekPromptModal
               {localizeUi("ui.chat.peekpromptmodal.note")} {data.agentNote}
             </div>
           )}
-          {sections.map((s, i) =>
-            s.kind === "chat-history" ? (
-              <ChatHistorySection key={i} entries={s.entries} rawContent={s.rawContent} providerBlocks={data.exact} />
-            ) : (
-              <CollapsibleBlock
-                key={i}
-                label={s.label}
-                content={s.content}
-                defaultOpen={false}
-                roleColor={sectionRoleColor(s.role, s.label)}
-              />
-            ),
-          )}
+          {deferredQuery
+            ? searchContent
+            : sections.map((s, i) =>
+                s.kind === "chat-history" ? (
+                  <ChatHistorySection
+                    key={i}
+                    entries={s.entries}
+                    rawContent={s.rawContent}
+                    providerBlocks={data.exact}
+                  />
+                ) : (
+                  <CollapsibleBlock
+                    key={i}
+                    label={s.label}
+                    content={s.content}
+                    defaultOpen={false}
+                    roleColor={sectionRoleColor(s.role, s.label)}
+                  />
+                ),
+              )}
         </div>
       </div>
     </div>

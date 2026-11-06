@@ -1,5 +1,5 @@
 import { prepareViteFixtureDependencies } from "./vite-fixture-dependencies.js";
-import { expect, test, type APIRequestContext, type Page, type TestInfo } from "@playwright/test";
+import { expect, test, type APIRequestContext, type Page, type Route, type TestInfo } from "@playwright/test";
 import type {
   TacticalBattlefieldBrief,
   TacticalCombatState,
@@ -110,13 +110,13 @@ async function delayNextTacticalStart(
   await page.route("**/api/game/combat/tactical/start", async (route) => {
     const payload = (route.request().postDataJSON() ?? {}) as Record<string, unknown>;
     if (delayed || !shouldDelay(payload)) {
-      await route.continue();
+      await route.continue(pinnedStart(route));
       return;
     }
     delayed = true;
     requestSeen.resolve(payload);
     try {
-      const response = await route.fetch();
+      const response = await route.fetch(pinnedStart(route));
       responseReady.resolve();
       await release.promise;
       await route.fulfill({ response });
@@ -141,6 +141,26 @@ async function unmountBattle(page: Page) {
 
 async function waitForSettledMutations(page: Page) {
   await expect.poll(() => page.evaluate(() => window.__hybridTerrainFixture?.isMutating() ?? 0)).toBe(0);
+}
+
+/** The first board a mount shows waits on a cold start of the fight on the real local API, which ran
+ *  past the 10 s default now and then (ship readiness 2026-10-26: a random test of this file failed
+ *  most runs, waiting for "End Turn" or "Use generated terrain"). */
+const BOARD_READY_MS = 30_000;
+
+/** The first start of a mount asks for a random board, and some boards had no wall in reach or no clash
+ *  between the brief's features (ship readiness 2026-10-26: seed 4069513167 laid the wall and the water
+ *  side by side). Seed 1 has both, so a start that names no seed is sent with it; a restart keeps its
+ *  own seed. */
+const PINNED_SEED = 1;
+
+function pinnedStart(route: Route): { postData?: string } {
+  const payload = (route.request().postDataJSON() ?? {}) as Record<string, unknown>;
+  return payload.seed !== undefined ? {} : { postData: JSON.stringify({ ...payload, seed: PINNED_SEED }) };
+}
+
+async function pinFirstStartSeed(page: Page) {
+  await page.route("**/api/game/combat/tactical/start", (route) => route.continue(pinnedStart(route)));
 }
 
 /** Mount the actual battle surface; start, actions and persistence use the real local API. */
@@ -228,29 +248,39 @@ test("Hybrid battlefield preserves landmarks through a flying move, reload and r
       data: { gameWeather: { type: "rain", wind: "windy", visibility: "reduced" } },
     });
     expect(weatherPatch.ok(), await weatherPatch.text()).toBeTruthy();
+    await pinFirstStartSeed(page);
     await mountBattle(page, testInfo, chatId, brief);
     const battle = page.locator('[data-component="TacticalCombatUI"]');
-    await expect(battle.getByRole("button", { name: "End Turn", exact: true })).toBeVisible();
+    await expect(battle.getByRole("button", { name: "End Turn", exact: true })).toBeVisible({
+      timeout: BOARD_READY_MS,
+    });
     await expect.poll(() => snapshot(request, chatId)).toBeTruthy();
     const start = (await snapshot(request, chatId))!;
     expect(Number.isInteger(start.seed)).toBeTruthy();
     expect(start.weather?.type).toBe("rain");
     await expect(page.getByLabel("Combat conditions", { exact: true })).toContainText("Rain");
     expect([start.grid.width, start.grid.height]).toEqual([14, 10]);
-    expect(start.battlefield?.brief?.features).toEqual(brief.features);
+    expect(start.battlefield?.kind).toBe("generated");
+    expect(start.battlefield?.kind === "generated" && start.battlefield.brief?.features).toEqual(brief.features);
     const scout = start.units.find((unit) => unit.id === "scout")!;
     const destination = start.grid.tiles
       .flatMap((row, y) => row.map((terrain, x) => ({ terrain, x, y })))
       .find(
         (tile) =>
           tile.terrain === "wall" &&
+          // Off the shaped board a tile is drawn as nothing, with no button (ship readiness 2026-10-26:
+          // seed 341014229 put the first wall in reach off it).
+          !start.grid.outside?.[tile.y]?.[tile.x] &&
           Math.abs(tile.x - scout.x) + Math.abs(tile.y - scout.y) <= scout.movement &&
           !start.units.some((unit) => unit.x === tile.x && unit.y === tile.y),
       )!;
     expect(destination).toBeTruthy();
     await battle.getByRole("button", { name: /^Flying scout(?:,|$)/ }).click();
+    // A tile by a mountain stands raised and says so (combat C6b): "Wall, height 1, row …".
     await battle
-      .getByRole("button", { name: `Wall, row ${destination.y + 1}, column ${destination.x + 1}`, exact: true })
+      .getByRole("button", {
+        name: new RegExp(`^Wall, (height \\d, )?row ${destination.y + 1}, column ${destination.x + 1}$`),
+      })
       .click();
     await battle.getByRole("button", { name: "Confirm Move", exact: true }).click();
     await expect
@@ -299,6 +329,7 @@ test("Conflicting terrain requires an explicit generated fallback", async ({ pag
     if (request.url().endsWith("/api/game/combat/tactical/start")) requests.push(request.postDataJSON());
   });
   try {
+    await pinFirstStartSeed(page);
     await mountBattle(page, testInfo, chatId, {
       features: [
         { terrain: "wall", placement: "west", shape: "barrier" },
@@ -306,7 +337,7 @@ test("Conflicting terrain requires an explicit generated fallback", async ({ pag
       ],
     });
     const fallback = page.getByRole("button", { name: "Use generated terrain", exact: true });
-    await expect(fallback).toBeVisible();
+    await expect(fallback).toBeVisible({ timeout: BOARD_READY_MS });
     expect(requests).toHaveLength(1);
     expect(await snapshot(request, chatId)).toBeFalsy();
     await page.screenshot({ path: testInfo.outputPath("hybrid-terrain-fallback.png") });
@@ -317,7 +348,8 @@ test("Conflicting terrain requires an explicit generated fallback", async ({ pag
     const accepted = (await snapshot(request, chatId))!;
     expect(Number.isInteger(accepted.seed)).toBeTruthy();
     expect(accepted.grid.width).toBe(14);
-    expect(accepted.battlefield?.brief?.features).toBeUndefined();
+    expect(accepted.battlefield?.kind).toBe("generated");
+    expect(accepted.battlefield?.kind === "generated" ? accepted.battlefield.brief?.features : null).toBeUndefined();
     expect(requests).toHaveLength(2);
     expect(requests[1]?.battlefield?.features).toBeUndefined();
     await page.getByTitle("Restart the battle", { exact: true }).click();
@@ -350,7 +382,7 @@ test("An invalid GM terrain brief waits for explicit fallback without another mo
       "The GM's terrain request was invalid: Unknown battlefield terrain.",
     );
     const fallback = page.getByRole("button", { name: "Use generated terrain", exact: true });
-    await expect(fallback).toBeVisible();
+    await expect(fallback).toBeVisible({ timeout: BOARD_READY_MS });
     expect(starts).toEqual([]);
     await fallback.click();
     await expect(page.getByRole("button", { name: "End Turn", exact: true })).toBeVisible();
@@ -382,7 +414,9 @@ for (const scenario of [
           { terrain: "water", placement: "west", shape: "barrier" },
         ],
       });
-      await expect(page.getByRole("button", { name: "Use generated terrain", exact: true })).toBeVisible();
+      await expect(page.getByRole("button", { name: "Use generated terrain", exact: true })).toBeVisible({
+        timeout: BOARD_READY_MS,
+      });
     },
     shouldDelay: (payload: Record<string, unknown>) => !("battlefield" in payload),
     async trigger(page: Page) {

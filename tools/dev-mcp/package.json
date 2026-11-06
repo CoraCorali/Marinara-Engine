@@ -18,7 +18,10 @@
     "test:isolation": "node test/isolation.mjs"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.30.0",
-    "zod": "^3.25.76"
+    "@modelcontextprotocol/sdk": "^1.32.1",
+    "zod": "^4.6.7"
+  },
+  "overrides": {
+    "body-parser": "2.4.0"
   }
 }

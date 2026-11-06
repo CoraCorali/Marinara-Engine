@@ -52,9 +52,16 @@ import {
   resolveMacros,
   extractLeadingThinkingBlocks,
   findInvalidInventoryTrackerRow,
+  inventoryTrackerComparableName,
+  resolveTrackerRowsUpdate,
   type CustomAgentContextSources,
 } from "@marinara-engine/shared";
-import { getAgentCallTimeoutMs, getMaxToolRounds, isDebugAgentsEnabled } from "../../config/runtime-config.js";
+import {
+  AGENT_MAX_TOOL_ROUNDS,
+  LOREBOOK_BACKFILL_MAX_TOOL_ROUNDS,
+  getMaxToolRounds,
+  isDebugAgentsEnabled,
+} from "../../config/runtime-config.js";
 import { logger, logDebugOverride } from "../../lib/logger.js";
 import { failureLevel } from "../../lib/log-context.js";
 import { repairJsonText } from "../../lib/json-repair.js";
@@ -64,8 +71,10 @@ import { wrapContent } from "../prompt/format-engine.js";
 import { sanitizePromptLeaf } from "../prompt/prompt-escaping.js";
 import { settleAgentJobsWithConcurrencyLimit } from "./agent-concurrency.js";
 import { completeAgentCall } from "./agent-progress.js";
+import { replyUnfinished } from "../generation/empty-response-reason.js";
 import { normalizeCyoaChoiceOutput } from "./cyoa-choice-normalization.js";
 import { getAssetManifest } from "../game/asset-manifest.service.js";
+import { toolRoundsAsText } from "../tools/tool-executor.js";
 import { normalizeBeholderProse } from "./beholder-normalizer.js";
 import {
   beholderDeltaLacksRemoval,
@@ -80,13 +89,13 @@ import {
   resolveBeholderStateResponse,
   type BeholderPassLane,
 } from "./beholder-state.js";
+import { formatOptionalVideoOffer } from "../generation/image-prompt-instructions.js";
 
 const MAX_AGENT_CONTEXT_MESSAGES = 200;
 const EXPRESSION_AGENT_RECENT_CONTEXT_MESSAGES = 2;
 const EXPRESSION_AGENT_CONTEXT_CHAR_LIMIT = 1200;
 const EXPRESSION_AGENT_RESPONSE_CHAR_LIMIT = 6000;
 const DEFAULT_AGENT_TEMPERATURE = 0.7;
-const ILLUSTRATOR_AGENT_CALL_TIMEOUT_MS = 30 * 60_000;
 const AGENT_BATCH_FALLBACK_MAX_CONCURRENT = 4;
 
 /** Strip HTML/XML-style tags (e.g. <div style="..."> <br> <speaker>) from text to save tokens. */
@@ -270,9 +279,27 @@ export function buildAgentPromptMacroContext(
   return {
     user: value(context.persona?.name?.trim() || "User"),
     char: value(characters.join(", ") || "Assistant"),
-    characters: characters.map(value),
+    characters: (context.chatCharacters?.map((character) => character.name.trim()).filter(Boolean) ?? characters).map(
+      value,
+    ),
+    groupCharacters: (
+      context.chatCharacters
+        ?.filter((character) => character.active)
+        .map((character) => character.name.trim())
+        .filter(Boolean) ?? characters
+    ).map(value),
     variables: {},
     agentData: context.previousOutput ? { [context.previousOutput.agentType]: value(context.previousOutput.text) } : {},
+    worldState: context.gameState
+      ? {
+          date: value(context.gameState.date),
+          time: value(context.gameState.time),
+          worldCustomFields: context.gameState.worldCustomFields?.map((field) => ({
+            ...field,
+            value: value(field.value),
+          })),
+        }
+      : null,
     lastInput: latestUserMessage ? value(latestUserMessage.content) : "",
     chatId: value(context.chatId),
     characterProfiles: context.characters.map((character) => ({
@@ -308,6 +335,7 @@ export function buildAgentPromptMacroContext(
         }
       : undefined,
     lorebookEntryCounts: context.lorebookEntryCounts,
+    lorebookIncludes: context.lorebookIncludes,
     decisions: context.decisions,
   };
 }
@@ -699,32 +727,6 @@ function agentBatchRequestSignature(config: AgentExecConfig): string {
   });
 }
 
-function combineAbortSignals(signals: AbortSignal[]): AbortSignal {
-  const activeSignals = signals.filter((signal) => !signal.aborted);
-  const abortedSignal = signals.find((signal) => signal.aborted);
-  if (abortedSignal) return abortedSignal;
-  if (activeSignals.length === 1) return activeSignals[0]!;
-  if (typeof AbortSignal.any === "function") return AbortSignal.any(activeSignals);
-
-  const controller = new AbortController();
-  const abort = () => controller.abort();
-  for (const signal of activeSignals) {
-    signal.addEventListener("abort", abort, { once: true });
-  }
-  return controller.signal;
-}
-
-function agentCallSignal(parentSignal?: AbortSignal, agentType?: "illustrator"): AbortSignal {
-  // AGENT_CALL_TIMEOUT_MS caps the TOTAL duration of one agent LLM call, even
-  // while streaming; slow local models need a raised value (#3958). The
-  // illustrator keeps at least its generous image-generation budget.
-  const configuredMs = getAgentCallTimeoutMs();
-  const timeoutMs =
-    agentType === "illustrator" ? Math.max(ILLUSTRATOR_AGENT_CALL_TIMEOUT_MS, configuredMs) : configuredMs;
-  const timeoutSignal = AbortSignal.timeout(timeoutMs);
-  return parentSignal ? combineAbortSignals([parentSignal, timeoutSignal]) : timeoutSignal;
-}
-
 function applyProviderMaxTokensOverride(provider: BaseLLMProvider, maxTokens: number): number {
   return provider.maxTokensOverrideValue !== null ? Math.min(maxTokens, provider.maxTokensOverrideValue) : maxTokens;
 }
@@ -956,7 +958,7 @@ export async function executeAgent(
             responseText += chunk;
           }
         : undefined,
-      signal: agentCallSignal(context.signal, config.type === "illustrator" ? "illustrator" : undefined),
+      signal: context.signal,
     });
 
     if (!responseText && result.content) responseText = result.content;
@@ -974,14 +976,15 @@ export async function executeAgent(
     });
 
     // Parse the result based on agent type
-    let parsed = parseAgentResponse(config, responseText);
+    let parsed = parseAgentResponse(config, responseText, context);
     let invalidJson = shouldFailInvalidJsonResult(config, parsed.data);
     let totalTokens = result.usage?.totalTokens ?? 0;
+    let finishReason = result.finishReason;
 
     if (invalidJson && shouldRetryInvalidJsonAgent(config) && !context.signal?.aborted) {
       logger.warn("[agent] %s returned invalid JSON; retrying once with strict JSON reminder", config.type);
       const retryMessages = prepareAgentProviderMessages(
-        buildInvalidJsonRetryMessages(messages, parsed.type, responseText),
+        buildInvalidJsonRetryMessages(messages, parsed.type, responseText, invalidResultReason(parsed.data)),
       );
       emitAgentDebug(context, {
         stage: "retry_request",
@@ -1005,7 +1008,7 @@ export async function executeAgent(
               retryResponseText += chunk;
             }
           : undefined,
-        signal: agentCallSignal(context.signal, config.type === "illustrator" ? "illustrator" : undefined),
+        signal: context.signal,
       });
       totalTokens += retryResult.usage?.totalTokens ?? 0;
       if (!retryResponseText && retryResult.content) retryResponseText = retryResult.content;
@@ -1026,13 +1029,14 @@ export async function executeAgent(
         ...debugUsage(retryResult.usage),
         ...responseDebugFields(responseText),
       });
-      parsed = parseAgentResponse(config, responseText);
+      parsed = parseAgentResponse(config, responseText, context);
       invalidJson = shouldFailInvalidJsonResult(config, parsed.data);
+      finishReason = retryResult.finishReason;
     }
 
     const structured = invalidJson
-      ? { data: parsed.data, valid: false, error: invalidJsonAgentError(parsed.type) }
-      : resolveStructuredAgentResult(config, context, parsed.data);
+      ? { data: parsed.data, valid: false, error: invalidJsonAgentError(parsed.type, parsed.data) }
+      : resolveStructuredAgentResult(config, context, parsed.data, finishReason);
     return {
       agentId: config.id,
       agentType: config.type,
@@ -1091,9 +1095,8 @@ async function executeBeholderLanePasses(args: {
 
   logger.info(`[agent] ${config.type} (${config.name}) — ${model} — ${BEHOLDER_PASS_LANES.length} passes`);
 
-  // Bounded dispatch, not Promise.all: each lane's timeout budget starts when
-  // agentCallSignal builds it, so launching all five at once would let a lane
-  // queued behind a rate limit burn its budget before the provider starts work.
+  // Keep provider dispatch bounded so queued lanes do not spend their inactivity
+  // budget waiting behind other calls.
   const settled = await settleAgentJobsWithConcurrencyLimit(
     [...BEHOLDER_PASS_LANES],
     AGENT_BATCH_FALLBACK_MAX_CONCURRENT,
@@ -1126,7 +1129,7 @@ async function executeBeholderLanePasses(args: {
               laneText += chunk;
             }
           : undefined,
-        signal: agentCallSignal(context.signal),
+        signal: context.signal,
       });
       if (!laneText && result.content) laneText = result.content;
       laneText = laneText.trim();
@@ -1207,7 +1210,7 @@ async function executeBeholderLanePasses(args: {
         cachingAtDepth: config.cachingAtDepth,
         ...args.requestOptions,
         stream: false,
-        signal: agentCallSignal(context.signal),
+        signal: context.signal,
       });
       totalTokens += repair.usage?.totalTokens ?? 0;
       const repairData = parseAgentResponse(config, (repair.content ?? "").trim()).data;
@@ -1255,16 +1258,21 @@ async function executeAgentWithTools(
   startTime: number,
   context: AgentContext,
 ): Promise<AgentResult> {
-  const maxToolRounds = getMaxToolRounds();
+  // An agent works with its tools, then answers: enough rounds for one that saves an entry per call on a
+  // backend that calls one tool a round, never the general limit, so a model that keeps calling tools
+  // (a proxy that loses the results) costs a bounded number of calls, not a hundred.
+  // A run that only saves (a lorebook backfill) may ask for more in its settings' `toolRounds`.
+  const asked = config.settings.toolRounds;
+  // Never past the backfill's own allowance, whatever a stored agent's settings say.
+  const agentRounds =
+    typeof asked === "number" && Number.isInteger(asked) && asked > 0
+      ? Math.min(asked, LOREBOOK_BACKFILL_MAX_TOOL_ROUNDS)
+      : AGENT_MAX_TOOL_ROUNDS;
+  const maxToolRounds = Math.min(getMaxToolRounds(), agentRounds);
   const loopMessages = [...initialMessages];
   let totalTokens = 0;
   const debugAgentsEnabled = isDebugAgentsEnabled() && logger.isLevelEnabled("debug");
   const responseFormatOverride = jsonAgentResponseFormatOverride(config, model);
-  // Fresh per-call so AGENT_CALL_TIMEOUT_MS caps each LLM call, not the whole
-  // tool loop; earlier rounds must not eat a later round's budget.
-  const nextCallSignal = () =>
-    agentCallSignal(context.signal, config.type === "illustrator" ? "illustrator" : undefined);
-
   for (let round = 0; round < maxToolRounds; round++) {
     const roundStartedAt = Date.now();
     const providerMessages = prepareAgentProviderMessages(loopMessages);
@@ -1289,7 +1297,7 @@ async function executeAgentWithTools(
       // no-tools round below carries it instead.
       stream: streamResponses,
       tools: toolContext.tools,
-      signal: nextCallSignal(),
+      signal: context.signal,
     });
 
     totalTokens += result.usage?.totalTokens ?? 0;
@@ -1309,11 +1317,11 @@ async function executeAgentWithTools(
     // No tool calls → final response
     if (!result.toolCalls || result.toolCalls.length === 0) {
       const responseText = result.content?.trim() ?? "";
-      const parsed = parseAgentResponse(config, responseText);
+      const parsed = parseAgentResponse(config, responseText, context);
       const invalidJson = shouldFailInvalidJsonResult(config, parsed.data);
       const structured = invalidJson
-        ? { data: parsed.data, valid: false, error: invalidJsonAgentError(parsed.type) }
-        : resolveStructuredAgentResult(config, context, parsed.data);
+        ? { data: parsed.data, valid: false, error: invalidJsonAgentError(parsed.type, parsed.data) }
+        : resolveStructuredAgentResult(config, context, parsed.data, result.finishReason);
       return {
         agentId: config.id,
         agentType: config.type,
@@ -1360,8 +1368,14 @@ async function executeAgentWithTools(
     }
   }
 
-  // Exhausted tool rounds — make one final call without tools to get JSON response
-  const finalProviderMessages = prepareAgentProviderMessages(loopMessages);
+  // Said where support can see it: a run that ends here may have had more to do (a proxy that loses tool
+  // results, or more entries than rounds).
+  logger.warn("[agent] %s used all %d tool rounds; it answers now without tools", config.name, maxToolRounds);
+  // Exhausted tool rounds: one final call without tools for the answer, its tool exchange as text
+  // (a provider's plain path cannot carry tool calls or results; see toolRoundsAsText).
+  const finalProviderMessages = prepareAgentProviderMessages(
+    toolRoundsAsText(loopMessages, "No more tool calls: give your answer now, in the format you were asked for."),
+  );
   emitAgentDebug(context, {
     stage: "request",
     ...agentDebugBase(config, model, temperature, maxTokens),
@@ -1380,7 +1394,7 @@ async function executeAgentWithTools(
     ...requestOptions,
     ...responseFormatOverride,
     stream: streamResponses,
-    signal: nextCallSignal(),
+    signal: context.signal,
   });
   totalTokens += finalResult.usage?.totalTokens ?? 0;
   const responseText = finalResult.content?.trim() ?? "";
@@ -1395,11 +1409,11 @@ async function executeAgentWithTools(
     ...debugUsage(finalResult.usage),
     ...responseDebugFields(responseText),
   });
-  const parsed = parseAgentResponse(config, responseText);
+  const parsed = parseAgentResponse(config, responseText, context);
   const invalidJson = shouldFailInvalidJsonResult(config, parsed.data);
   const structured = invalidJson
-    ? { data: parsed.data, valid: false, error: invalidJsonAgentError(parsed.type) }
-    : resolveStructuredAgentResult(config, context, parsed.data);
+    ? { data: parsed.data, valid: false, error: invalidJsonAgentError(parsed.type, parsed.data) }
+    : resolveStructuredAgentResult(config, context, parsed.data, finalResult.finishReason);
   return {
     agentId: config.id,
     agentType: config.type,
@@ -1622,10 +1636,7 @@ export async function executeAgentBatch(
               responseText += chunk;
             }
           : undefined,
-        signal: agentCallSignal(
-          context.signal,
-          configs.some((config) => config.type === "illustrator") ? "illustrator" : undefined,
-        ),
+        signal: context.signal,
       }),
     );
 
@@ -1656,7 +1667,7 @@ export async function executeAgentBatch(
     });
 
     // Parse the batched response into individual results
-    const { parsed, failed } = parseBatchResponse(configs, responseText, durationMs, totalTokens);
+    const { parsed, failed } = parseBatchResponse(configs, context, responseText, durationMs, totalTokens);
 
     logger.info(
       "[agent-batch] Batch parse: %d parsed, %d failed %s",
@@ -1759,6 +1770,8 @@ function buildBatchSystemPrompt(
     parts.push(``);
     parts.push(`<agent_task id="${escapeXmlAttribute(config.type)}" name="${escapeXmlAttribute(config.name)}">`);
     parts.push(template);
+    const attachedLorebook = buildCustomAgentTriggeredLorebookBlock(config, context);
+    if (attachedLorebook) parts.push(attachedLorebook);
     parts.push(`</agent_task>`);
   }
   parts.push(`</agents>`);
@@ -1786,6 +1799,7 @@ function buildBatchSystemPrompt(
  */
 function parseBatchResponse(
   configs: AgentExecConfig[],
+  context: Pick<AgentContext, "gameState">,
   responseText: string,
   totalDurationMs: number,
   totalTokens: number = 0,
@@ -1814,7 +1828,7 @@ function parseBatchResponse(
       matchLegacyResultTag(config.type, residualText);
 
     if (matchedOutput !== null) {
-      const parsedResult = parseAgentResponse(config, matchedOutput);
+      const parsedResult = parseAgentResponse(config, matchedOutput, context);
       const invalidJson = shouldFailInvalidJsonResult(config, parsedResult.data);
       if (invalidJson && shouldRetryInvalidJsonAgent(config)) {
         logger.warn(
@@ -1832,7 +1846,7 @@ function parseBatchResponse(
         tokensUsed: perAgentTokens,
         durationMs: perAgentDuration,
         success: !invalidJson,
-        error: invalidJson ? invalidJsonAgentError(parsedResult.type) : null,
+        error: invalidJson ? invalidJsonAgentError(parsedResult.type, parsedResult.data) : null,
       });
     } else {
       // Could not find this agent's output — mark for individual retry
@@ -1998,15 +2012,33 @@ function shouldFailInvalidJsonResult(config: Pick<AgentExecConfig, "type" | "set
   );
 }
 
-function invalidJsonAgentError(resultType: AgentResultType): string {
-  return `Agent returned invalid JSON instead of the requested ${resultType} format. Check this agent's model/connection settings and try again.`;
+const CUT_OFF_TEXT_REWRITE_ERROR =
+  "The rewrite stopped before it finished (often the agent's max tokens), so the reply was kept as written. Raise this agent's max tokens and try again.";
+
+/** Why parsed JSON was still unusable, when parseAgentResponse knows. */
+function invalidResultReason(data: unknown): string | undefined {
+  return isRecord(data) && typeof data.reason === "string" ? data.reason : undefined;
+}
+
+function invalidJsonAgentError(resultType: AgentResultType, data?: unknown): string {
+  const reason = invalidResultReason(data);
+  return reason
+    ? `Agent returned an unusable ${resultType} result. ${reason} Check this agent's model/connection settings and try again.`
+    : `Agent returned invalid JSON instead of the requested ${resultType} format. Check this agent's model/connection settings and try again.`;
 }
 
 function resolveStructuredAgentResult(
-  config: Pick<AgentExecConfig, "type">,
+  config: Pick<AgentExecConfig, "type" | "settings">,
   context: AgentContext,
   data: unknown,
+  finishReason?: string,
 ): { data: unknown; valid: boolean; error?: string } {
+  // A rewrite cut off at the output limit (a reasoning model can spend most of it thinking) holds only the start
+  // of the reply, and JSON repair closes its editedText as if it were whole: applied, it would silently cut the
+  // reply short (#8643). The reply is kept as written instead.
+  if (replyUnfinished(finishReason) && resolveAgentResultType(config) === "text_rewrite") {
+    return { data, valid: false, error: CUT_OFF_TEXT_REWRITE_ERROR };
+  }
   if (config.type !== "beholder") return { data, valid: true };
   const resolution = resolveBeholderStateResponse(data, context.memory._beholderState, context.persona?.name ?? "User");
   return { data: resolution.state, valid: resolution.valid, error: resolution.error };
@@ -2020,6 +2052,7 @@ function buildInvalidJsonRetryMessages(
   messages: ChatMessage[],
   resultType: AgentResultType,
   rawResponse: string,
+  reason?: string,
 ): ChatMessage[] {
   const rawPreview = rawResponse.trim().slice(0, 4000);
   return [
@@ -2028,7 +2061,7 @@ function buildInvalidJsonRetryMessages(
     {
       role: "user",
       content: [
-        `Your previous response was not valid JSON for the requested ${resultType} format.`,
+        reason ?? `Your previous response was not valid JSON for the requested ${resultType} format.`,
         "Return ONLY one valid JSON object that matches the required output format.",
         "Do not include markdown fences, XML tags, commentary, explanations, or any text before or after the JSON.",
       ].join("\n"),
@@ -2102,8 +2135,22 @@ function buildCustomAgentVectorContextBlock(config: AgentExecConfig, context: Ag
 }
 
 function buildCustomAgentTriggeredLorebookBlock(config: AgentExecConfig, context: AgentContext): string {
-  if (config.settings.triggerLorebooksForAgentCalls !== true) return "";
-  const entries = context.triggeredLorebookEntriesByAgentId?.[config.id] ?? [];
+  const agentIds = new Set<string>();
+  if (config.settings.triggerLorebooksForAgentCalls === true || config.settings.chatLorebookAttachmentEnabled === true)
+    agentIds.add(config.id);
+  if (Array.isArray(config.settings._mergedLorebookAttachmentAgentIds)) {
+    for (const id of config.settings._mergedLorebookAttachmentAgentIds) {
+      if (typeof id === "string") agentIds.add(id);
+    }
+  }
+  const seen = new Set<string>();
+  const entries = [...agentIds]
+    .flatMap((id) => context.triggeredLorebookEntriesByAgentId?.[id] ?? [])
+    .filter((entry) => {
+      if (seen.has(entry.id)) return false;
+      seen.add(entry.id);
+      return true;
+    });
   if (entries.length === 0) return "";
   const wrapFormat = normalizeAgentContextWrapFormat(context.wrapFormat);
 
@@ -2249,7 +2296,10 @@ function buildBeholderMessages(
   const narration = narrationOverride ?? context.narrationOverride ?? beholderNarration(config, context);
   const user = buildBeholderUserMessage(context.memory._beholderState, context.persona?.name ?? null, narration);
   return [
-    { role: "system", content: template },
+    {
+      role: "system",
+      content: [template, buildCustomAgentTriggeredLorebookBlock(config, context)].filter(Boolean).join("\n\n"),
+    },
     { role: "user", content: user },
   ];
 }
@@ -2326,6 +2376,8 @@ function buildKnowledgeRetrievalAgentMessages(
   context: AgentContext,
 ): ChatMessage[] {
   const systemParts: string[] = [];
+  const attachedLorebook = buildCustomAgentTriggeredLorebookBlock(config, context);
+  if (attachedLorebook) systemParts.push(attachedLorebook);
   systemParts.push(`<role>`);
   systemParts.push(
     `You are a specialized knowledge retrieval agent. Extract relevant facts from source material; do not roleplay, continue the conversation, write dialogue, or answer as any character.`,
@@ -2499,7 +2551,12 @@ function buildGameAssetsLocalMusicBlock(settings: Record<string, unknown>): stri
   const folder = normalizeCustomMusicFolder(settings.customMusicFolder ?? settings.localMusicFolder);
   const folderPrefix = folder === "music" ? "music/" : `${folder}/`;
   const tracks = (getAssetManifest().byCategory.music ?? [])
-    .filter((entry) => entry.path === folder || entry.path.startsWith(folderPrefix))
+    .filter(
+      (entry) =>
+        (entry.path === folder || entry.path.startsWith(folderPrefix)) &&
+        // A Music & Sound Effects connection's test sample is a diagnostic, not a track to play.
+        !entry.path.startsWith("music/contexts/connection-test/"),
+    )
     .sort((a, b) => a.path.localeCompare(b.path))
     .slice(0, 120);
 
@@ -2551,6 +2608,8 @@ function buildSpotifyAgentMessages(config: AgentExecConfig, template: string, co
   const turnLabel = isGame ? "game" : "roleplay";
   const musicProvider = getMusicProvider(config.settings);
   const systemParts: string[] = [];
+  const attachedLorebook = buildCustomAgentTriggeredLorebookBlock(config, context);
+  if (attachedLorebook) systemParts.push(attachedLorebook);
   const providerLabel =
     musicProvider === "custom" ? "Custom local music" : musicProvider === "youtube" ? "YouTube" : "Spotify";
   systemParts.push(`<role>`);
@@ -2629,6 +2688,8 @@ function buildSpotifyAgentMessages(config: AgentExecConfig, template: string, co
 
 function buildExpressionAgentMessages(config: AgentExecConfig, template: string, context: AgentContext): ChatMessage[] {
   const systemParts: string[] = [];
+  const attachedLorebook = buildCustomAgentTriggeredLorebookBlock(config, context);
+  if (attachedLorebook) systemParts.push(attachedLorebook);
   systemParts.push(`<role>`);
   systemParts.push(`You are a specialized expression-selection agent. Keep the request compact and return only JSON.`);
   systemParts.push(
@@ -2764,7 +2825,7 @@ export function buildIllustratorImageStyleInstructionBlock(styleInstruction: unk
     `If the style instruction contains generic framing or composition defaults that conflict with the selected prompt template, ignore those conflicting defaults and preserve the selected format.`,
     `Never replace Comic Page or manga panels and lettering with a single illustration, and never replace Background, Illustration, or Selfie framing with another format.`,
     `Visual style instruction for the image prompt you write: ${escapeXml(instruction)}`,
-    `Carry the resulting visual treatment into both the JSON "style" field and the generated "prompt". Do not copy this meta-instruction verbatim.`,
+    `Carry the resulting visual treatment into both the JSON "style" field and the generated "prompt", written as words for the image model. Never copy the style instruction's sentences into either field.`,
     `</illustrator_image_style>`,
   ].join("\n");
 }
@@ -2900,8 +2961,19 @@ function buildAgentMessages(
   // assistant. Anthropic treats a trailing assistant turn as prefill and rejects
   // some models, so add a terminal user instruction for that agent type too.
   const outputFormatBlock = options.outputFormatBlock?.trim() ?? "";
+  const generatedVideos =
+    options.includeImagePromptInstructions === true &&
+    context.memory._generatedVideos &&
+    typeof context.memory._generatedVideos === "object"
+      ? (context.memory._generatedVideos as {
+          instructions?: unknown;
+          clipsOnly?: unknown;
+          describeAppearance?: unknown;
+        })
+      : null;
   const requiresTerminalUserInstruction =
     finalParts.length > 0 ||
+    !!generatedVideos ||
     contextAgentTypes.includes("echo-chamber") ||
     !!outputFormatBlock ||
     (options.includeImagePromptInstructions === true &&
@@ -2917,6 +2989,10 @@ function buildAgentMessages(
     );
     finalParts.push(lateImagePromptInstructions);
     finalParts.push("</image_prompting_instructions>");
+  }
+  if (generatedVideos) {
+    // Generated Videos: the picture can become a short clip when the agent decides motion adds to the moment.
+    finalParts.push(`\n${formatOptionalVideoOffer(generatedVideos)}`);
   }
 
   if (requiresTerminalUserInstruction) {
@@ -3029,6 +3105,67 @@ function buildLoreBlock(context: AgentContext, sources: CustomAgentContextSource
   return parts.join("\n");
 }
 
+const MAX_CURRENT_LOCATION_DESCRIPTION_CHARS = 1_500;
+
+/**
+ * The story's current Maps location for image prompts, gated by "Tracker data". The
+ * prompt writer never sees the location's reference image, and image models without
+ * reference support drop it, so the text is what sets the background (#8251).
+ */
+export function buildAgentCurrentLocationBlock(
+  context: AgentContext,
+  sources: CustomAgentContextSources = ALL_AGENT_CONTEXT_SOURCES,
+): string {
+  const location = context.currentLocation;
+  if (!sources.trackerData || !location?.path) return "";
+  const description = location.description.slice(0, MAX_CURRENT_LOCATION_DESCRIPTION_CHARS);
+  return [
+    "<current_location>",
+    "The story's current location, from the chat's map. Use it for the image's setting and background. If it contradicts the scene, the scene wins: treat it as outdated and ignore it.",
+    `Path: ${location.path}`,
+    ...(description ? [`Description: ${description}`] : []),
+    "</current_location>",
+  ].join("\n");
+}
+
+/**
+ * The reference blocks an agent's Context Sources gate: activated lorebook entries,
+ * chat summary and author notes. Shared with the manual Illustrator prompt writer so
+ * `[illustrate:]` commands see the same lore as an automatic Illustrator run (#8246).
+ */
+export function buildAgentReferenceContextBlock(
+  context: AgentContext,
+  sources: CustomAgentContextSources = ALL_AGENT_CONTEXT_SOURCES,
+): string {
+  const parts: string[] = [];
+  const wrapFormat = normalizeAgentContextWrapFormat(context.wrapFormat);
+
+  if (sources.activatedLorebookEntries && context.activatedLorebookEntries?.length) {
+    parts.push(`<activated_lorebook_context>`);
+    parts.push(`Lorebook entries activated for the main generation on this turn:`);
+    for (const entry of context.activatedLorebookEntries) {
+      parts.push(`<entry id="${escapeXml(entry.id)}" name="${escapeXml(entry.name ?? "")}">`);
+      parts.push(sanitizePromptLeaf(entry.content, wrapFormat));
+      parts.push(`</entry>`);
+    }
+    parts.push(`</activated_lorebook_context>`);
+  }
+
+  if (sources.chatSummary && context.chatSummary) {
+    parts.push(`<chat_summary>`);
+    parts.push(escapeXml(context.chatSummary));
+    parts.push(`</chat_summary>`);
+  }
+
+  if (sources.authorNotes && context.authorNotes) {
+    parts.push(`<author_notes>`);
+    parts.push(escapeXml(context.authorNotes));
+    parts.push(`</author_notes>`);
+  }
+
+  return parts.join("\n");
+}
+
 function pushLoreField(parts: string[], label: string, value: string | undefined): void {
   const text = value?.trim();
   if (!text) return;
@@ -3125,7 +3262,6 @@ function buildAgentExtras(
       if (char.appearance) parts.push(`<appearance>${escapeXml(char.appearance)}</appearance>`);
       if (char.firstMes) parts.push(`<first_mes>${escapeXml(char.firstMes)}</first_mes>`);
       if (char.mesExample) parts.push(`<mes_example>${escapeXml(char.mesExample)}</mes_example>`);
-      if (char.creatorNotes) parts.push(`<creator_notes>${escapeXml(char.creatorNotes)}</creator_notes>`);
       if (char.systemPrompt) parts.push(`<system_prompt>${escapeXml(char.systemPrompt)}</system_prompt>`);
       if (char.postHistoryInstructions)
         parts.push(`<post_history_instructions>${escapeXml(char.postHistoryInstructions)}</post_history_instructions>`);
@@ -3163,6 +3299,11 @@ function buildAgentExtras(
     parts.push(`<current_game_state>`);
     parts.push(JSON.stringify(compactGameStateForAgentContext(context.gameState, agentTypes)));
     parts.push(`</current_game_state>`);
+  }
+
+  if (imageCapable) {
+    const currentLocation = buildAgentCurrentLocationBlock(context, sources);
+    if (currentLocation) parts.push(currentLocation);
   }
 
   if (
@@ -3383,28 +3524,8 @@ function buildAgentExtras(
     }
   }
 
-  if (sources.activatedLorebookEntries && context.activatedLorebookEntries?.length) {
-    parts.push(`<activated_lorebook_context>`);
-    parts.push(`Lorebook entries activated for the main generation on this turn:`);
-    for (const entry of context.activatedLorebookEntries) {
-      parts.push(`<entry id="${escapeXml(entry.id)}" name="${escapeXml(entry.name ?? "")}">`);
-      parts.push(sanitizePromptLeaf(entry.content, wrapFormat));
-      parts.push(`</entry>`);
-    }
-    parts.push(`</activated_lorebook_context>`);
-  }
-
-  if (sources.chatSummary && context.chatSummary) {
-    parts.push(`<chat_summary>`);
-    parts.push(escapeXml(context.chatSummary));
-    parts.push(`</chat_summary>`);
-  }
-
-  if (sources.authorNotes && context.authorNotes) {
-    parts.push(`<author_notes>`);
-    parts.push(escapeXml(context.authorNotes));
-    parts.push(`</author_notes>`);
-  }
+  const referenceContext = buildAgentReferenceContextBlock(context, sources);
+  if (referenceContext) parts.push(referenceContext);
 
   if (context.memory._sourceMaterial) {
     parts.push(`<source_material>`);
@@ -3638,12 +3759,71 @@ function sanitizeTextAgentResponse(text: string): string {
   return cleaned;
 }
 
+/** Tracker results with one row group, mapped to the key a root-level envelope belongs under. */
+const SINGLE_GROUP_TRACKER_KEYS: Partial<Record<AgentResultType, string>> = {
+  custom_tracker_update: "fields",
+  character_tracker_update: "presentCharacters",
+};
+
+/** Inventory Tracker groups and the playerStats field each one is saved in. */
+const INVENTORY_TRACKER_GROUP_FIELDS = {
+  currencies: "inventoryTrackerCurrencies",
+  equipped: "inventoryTrackerEquipped",
+  inventory: "inventoryTrackerInventory",
+} as const;
+
+/**
+ * Inventory has three row groups, so a root-level envelope names none of them
+ * (Marinara-Agents#2077). Move each row under the one group that already tracks
+ * its name, merged with any part sent for that group. Removing a name that no
+ * group tracks changes nothing, so it is dropped. Other names that no single group
+ * tracks are reported rather than guessed: a new item could be money or gear.
+ */
+function placeInventoryTrackerRootRows(
+  data: Record<string, unknown> & { updates?: unknown[]; removed?: unknown[] },
+  gameState: AgentContext["gameState"] | undefined,
+): { data: Record<string, unknown>; placed: number; unplaced: string[] } {
+  const { updates = [], removed = [], ...grouped } = data;
+  const parts: Record<string, { updates: unknown[]; removed: unknown[] }> = {};
+  const unplaced: string[] = [];
+  let placed = 0;
+  const place = (name: string, kind: "updates" | "removed", value: unknown) => {
+    const key = inventoryTrackerComparableName(name);
+    const groups = Object.entries(INVENTORY_TRACKER_GROUP_FIELDS).filter(([, field]) => {
+      const rows: unknown = gameState?.playerStats?.[field];
+      return Array.isArray(rows) && rows.some((row) => inventoryTrackerComparableName(row?.name) === key);
+    });
+    if (groups.length === 1) {
+      (parts[groups[0]![0]] ??= { updates: [], removed: [] })[kind].push(value);
+      placed += 1;
+    } else if (kind === "removed" && groups.length === 0) {
+      logger.debug("[agent] Inventory Tracker removed %s, which no group tracks; nothing to remove", name);
+    } else unplaced.push(name);
+  };
+  // Rows and removals were validated with the groups, so every name is a non-empty string.
+  for (const row of updates) place((row as { name: string }).name, "updates", row);
+  for (const name of removed) place(name as string, "removed", name);
+  for (const [group, part] of Object.entries(parts)) {
+    const current = grouped[group];
+    grouped[group] = Array.isArray(current)
+      ? resolveTrackerRowsUpdate(part, current)
+      : isTrackerRowsUpdate(current)
+        ? {
+            updates: [...(current.updates ?? []), ...part.updates],
+            removed: [...(current.removed ?? []), ...part.removed],
+          }
+        : part;
+  }
+  return { data: grouped, placed, unplaced };
+}
+
 /**
  * Parse the raw LLM response into a typed result.
  */
 function parseAgentResponse(
   config: Pick<AgentExecConfig, "type" | "settings">,
   responseText: string,
+  context?: Pick<AgentContext, "gameState">,
 ): {
   type: AgentResultType;
   data: unknown;
@@ -3660,24 +3840,46 @@ function parseAgentResponse(
         throw new Error("Structured agent response must be a JSON object");
       }
       if (resultType === "inventory_tracker_update") {
-        for (const group of ["currencies", "equipped", "inventory"] as const) {
-          if (!(group in parsedData)) continue;
-          const value = (parsedData as Record<string, unknown>)[group];
+        // `null` checks a root-level envelope the same way as a named group.
+        for (const group of ["currencies", "equipped", "inventory", null] as const) {
+          if (group ? !(group in parsedData) : !isTrackerRowsUpdate(parsedData)) continue;
+          const value = group ? (parsedData as Record<string, unknown>)[group] : parsedData;
           const incremental = isTrackerRowsUpdate(value);
           if (
             findInvalidInventoryTrackerRow(incremental ? (value.updates ?? []) : value) ||
             (incremental && value.removed?.some((name) => typeof name !== "string" || !name.trim()))
           ) {
-            throw new Error(`Invalid inventory tracker group: ${group}`);
+            throw new Error(`Invalid inventory tracker group: ${group ?? "root"}`);
           }
         }
       }
       let data = config.type === "cyoa" ? normalizeCyoaChoiceOutput(parsedData) : parsedData;
-      // Custom Tracker has one row group; tolerate the incremental envelope at
-      // the root as well as under fields, then use the usual merge/lock path.
-      if (resultType === "custom_tracker_update" && isTrackerRowsUpdate(data) && !("fields" in data)) {
+      // Custom Tracker and Character Tracker each have one row group; tolerate
+      // the incremental envelope at the root as well as under its key, then use
+      // the usual merge/lock path (#7208).
+      const rowsKey = SINGLE_GROUP_TRACKER_KEYS[resultType];
+      if (rowsKey && isTrackerRowsUpdate(data) && !(rowsKey in data)) {
         const { updates, removed } = data;
-        data = { ...data, fields: { updates, removed } };
+        data = { ...data, [rowsKey]: { updates, removed } };
+      }
+      // The apply path reads only the three groups, so an unplaced root row would
+      // otherwise vanish behind a successful run. Retry it like invalid JSON.
+      if (resultType === "inventory_tracker_update" && isTrackerRowsUpdate(data)) {
+        const placement = placeInventoryTrackerRootRows(data, context?.gameState);
+        if (placement.unplaced.length > 0) {
+          const names = placement.unplaced.join(", ");
+          logger.warn("[agent] %s returned ungrouped inventory changes it could not place: %s", config.type, names);
+          const reason = `Changes to ${names} named no group, and no single tracked group holds them. Put every change under "currencies", "equipped" or "inventory".`;
+          return { type: resultType, data: { raw: responseText, parseError: true, reason } };
+        }
+        if (placement.placed > 0) {
+          logger.warn(
+            "[agent] %s returned %d ungrouped inventory change(s); placed them by tracked name",
+            config.type,
+            placement.placed,
+          );
+        }
+        data = placement.data;
       }
       if (config.settings.jsonContextOutput === true && resultType === "context_injection") {
         const output = data as Record<string, unknown>;

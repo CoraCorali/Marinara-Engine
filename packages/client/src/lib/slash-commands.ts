@@ -9,6 +9,7 @@ import { useGalleryStore } from "../stores/gallery.store";
 import { toast } from "sonner";
 import { startSceneWithPromptPreferences } from "./scene-generation";
 import { isMessageHidden } from "./message-visibility";
+import { rollWithPersonalExtensionDiceFormats } from "./personal-extension-dice-formats";
 export { isMessageHidden } from "./message-visibility";
 import {
   SUPPORTED_MACROS,
@@ -16,8 +17,10 @@ import {
   buildNarratorInstructionMessage,
   isWithinDiceLimits,
   normalizeTextForMatch,
-  parseDiceNotation,
+  formatKeptRolls,
+  parseDicePool,
   rollParsedDice,
+  type MessageReply,
   type ParsedDiceNotation,
 } from "@marinara-engine/shared";
 
@@ -63,6 +66,10 @@ export interface SlashCommandContext {
     characterId?: string | null;
     extra?: Record<string, unknown>;
   }) => void | Promise<void>;
+  /** Prepare typed text as a normal send would store it: user-input regex, input translation and macros. */
+  prepareUserMessage: (text: string) => Promise<string>;
+  /** Whether the composer had files attached, which a posted user message carries (/send). */
+  hasComposerAttachments?: boolean;
   /** Invalidate chat queries to refresh the UI */
   invalidate: () => void;
   /** Invalidate the character detail cache after character-owned changes. */
@@ -84,12 +91,55 @@ export interface SlashCommandContext {
   setSpriteExpression?: (characterId: string, expression: string) => void | Promise<void>;
   /** Trigger the same image illustration action exposed in the chat Gallery. */
   illustrate?: (prompt?: string, messageRange?: [string, string]) => void | Promise<void>;
+  /** Make one in-world HTML artifact on the latest reply. */
+  html?: (prompt: string) => void | Promise<void>;
   /** Trigger the same Conversation selfie action exposed in the chat Gallery. */
   selfie?: (characterId?: string) => void | Promise<void>;
+  /** Have a Conversation character send a video message, as the chat Gallery's Video button does. */
+  video?: (characterId?: string) => void | Promise<void>;
+  /** Roleplay /video: a clip of the latest reply, or of the description. */
+  roleplayVideo?: (description?: string) => void | Promise<void>;
   /** Active downloadable capability packages available to this composer. */
   availableCapabilityIds?: ReadonlySet<string>;
   /** Installed Conversation games that contribute manual slash launchers. */
   conversationGames?: readonly ConversationGameSlashContribution[];
+}
+
+/**
+ * A typed command runs after the composer is cleared. The user message it posts (/send) takes the
+ * composer's attachments and reply target with it, as Send does. Other messages are unchanged.
+ */
+export function withComposerReplyAndAttachments(
+  ctx: SlashCommandContext,
+  composer: {
+    replyTo?: MessageReply | null;
+    attachments: ReadonlyArray<{ type: string; data: string; name: string }>;
+  },
+): SlashCommandContext {
+  const { replyTo } = composer;
+  const attachments = composer.attachments.map(({ type, data, name }) => ({ type, data, filename: name, name }));
+  return {
+    ...ctx,
+    hasComposerAttachments: attachments.length > 0,
+    createMessage: async (data) => {
+      if (data.role !== "user") return ctx.createMessage(data);
+      // A reply picked while the command was preparing its text stays for the next message.
+      if (replyTo && useChatStore.getState().replyDrafts.get(ctx.chatId) === replyTo) {
+        useChatStore.getState().setReplyDraft(ctx.chatId, null);
+      }
+      try {
+        await ctx.createMessage({
+          ...data,
+          extra: { ...data.extra, ...(replyTo ? { replyTo } : {}), ...(attachments.length ? { attachments } : {}) },
+        });
+      } catch (error) {
+        if (replyTo && !useChatStore.getState().replyDrafts.has(ctx.chatId)) {
+          useChatStore.getState().setReplyDraft(ctx.chatId, replyTo);
+        }
+        throw error;
+      }
+    },
+  };
 }
 
 export interface ConversationGameSlashContribution {
@@ -141,7 +191,7 @@ function buildStatusCommandHelp(characters: Array<{ id: string; name: string }>)
 
 function formatGuidedTargetHelp(characters: Array<{ name: string }>): string {
   const available = formatAvailableCharacterList(characters);
-  return `Use /guided respond for <character> <direction>${available ? `\nAvailable: ${available}` : ""}`;
+  return `Use /guided respond as <character> <direction>${available ? `\nAvailable: ${available}` : ""}`;
 }
 
 function trimGuideSeparator(value: string): string {
@@ -212,12 +262,36 @@ async function translateSlash(key: string, options?: Record<string, unknown>): P
 // ── Dice roller ────────────────
 
 function parseDice(notation: string): ParsedDiceNotation | null {
-  const parsed = parseDiceNotation(notation);
+  const parsed = parseDicePool(notation);
   // Same caps the server dice route enforces. Without them "/roll 99999999d6"
   // spins the render thread, and "0d6" rolls nothing at all (the shared grammar
   // already refuses a count below one).
   if (!parsed || !isWithinDiceLimits(parsed)) return null;
   return parsed;
+}
+
+/** Extension text as one plain line in a chat message: no links, images, markup or HTML. */
+function plainDiceText(text: string): string {
+  // Backslashes do not stop HTML, and the chat renderer decodes `&lt;…&gt;` into tags, so `<`, `>` and `&`
+  // become full-width lookalikes.
+  return text
+    .replace(/\s+/g, " ")
+    .replace(/</g, "＜")
+    .replace(/>/g, "＞")
+    .replace(/&/g, "＆")
+    .replace(/[\\`*_{}[\]()#+\-.!|~]/g, "\\$&");
+}
+
+/** `/roll` with notation the shared grammar does not read: ask the formats extensions registered. */
+async function rollExtensionDice(notation: string, ctx: SlashCommandContext): Promise<SlashCommandResult | null> {
+  const rolled = await rollWithPersonalExtensionDiceFormats(notation);
+  if (!rolled) return null;
+  const meaning = rolled.text ? ` · ${plainDiceText(rolled.text)}` : "";
+  await ctx.createMessage({
+    role: "narrator",
+    content: `🎲 **${notation}** → **${rolled.total}** [${formatKeptRolls(rolled.rolls, rolled.kept)}]${meaning} _(${plainDiceText(rolled.formatLabel)})_`,
+  });
+  return { handled: true };
 }
 
 // ── Reminder parser ────────────────
@@ -247,12 +321,16 @@ function parseReminder(input: string): { ms: number; timeStr: string; message: s
   return { ms, timeStr: parts.join(""), message };
 }
 
-function buildMacroHelpText(): string {
+async function buildMacroHelpText(): Promise<string> {
+  const { translate } = await import("../localization/i18n");
   const sections = new Map<string, string[]>();
 
   for (const macro of SUPPORTED_MACROS) {
     const lines = sections.get(macro.category) ?? [];
-    lines.push(`${macro.syntax} - ${macro.description}`);
+    const description = macro.descriptionKey
+      ? translate(macro.descriptionKey, { defaultValue: macro.description })
+      : macro.description;
+    lines.push(`${macro.syntax} - ${description}`);
     sections.set(macro.category, lines);
   }
 
@@ -270,7 +348,6 @@ function buildMacroHelpText(): string {
   ].join("\n");
 }
 
-const MACRO_HELP_TEXT = buildMacroHelpText();
 const ILLUSTRATE_SLASH_TIMEOUT_MS = 1_800_000;
 
 function withSlashCommandTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
@@ -477,13 +554,14 @@ function resolveAsCommandTarget(
   return { target: null, requestedName: fallbackName, message: "" };
 }
 
-async function listSpriteExpressions(characterId: string): Promise<string[]> {
+async function listSpriteExpressions(characterId: string): Promise<Array<{ expression: string; label?: string }>> {
   try {
-    const sprites = await api.get<Array<{ expression?: string }>>(`/sprites/${encodeURIComponent(characterId)}`);
-    const expressions = sprites
-      .map((sprite) => sprite.expression?.trim())
-      .filter((expression): expression is string => !!expression);
-    return Array.from(new Set(expressions)).sort((a, b) => a.localeCompare(b));
+    const sprites = await api.get<Array<{ expression: string; label?: string }>>(
+      `/sprites/${encodeURIComponent(characterId)}`,
+    );
+    return sprites
+      .filter((sprite) => sprite.expression?.trim())
+      .sort((a, b) => (a.label ?? a.expression).localeCompare(b.label ?? b.expression));
   } catch {
     return [];
   }
@@ -493,7 +571,7 @@ async function buildEmoteListFeedback(characters: Array<{ id: string; name: stri
   const rows = await Promise.all(
     characters.map(async (character) => {
       const expressions = await listSpriteExpressions(character.id);
-      return `${character.name}: ${expressions.length > 0 ? expressions.join(", ") : "no uploaded expression sprites"}`;
+      return `${character.name}: ${expressions.length > 0 ? [...new Set(expressions.map((sprite) => sprite.label ?? sprite.expression))].join(", ") : "no uploaded expression sprites"}`;
     }),
   );
 
@@ -506,13 +584,18 @@ async function buildEmoteListFeedback(characters: Array<{ id: string; name: stri
   ].join("\n");
 }
 
-function matchSpriteExpression(expressions: string[], requested: string): string | null {
+function matchSpriteExpression(
+  expressions: Array<{ expression: string; label?: string }>,
+  requested: string,
+): string | null {
   const normalized = normalizeLookup(requested);
   if (!normalized) return null;
   return (
-    expressions.find((expression) => normalizeLookup(expression) === normalized) ??
-    expressions.find((expression) => normalizeLookup(expression).includes(normalized)) ??
-    null
+    (
+      expressions.find((sprite) => normalizeLookup(sprite.label ?? sprite.expression) === normalized) ??
+      expressions.find((sprite) => normalizeLookup(sprite.expression) === normalized) ??
+      expressions.find((sprite) => normalizeLookup(sprite.label ?? sprite.expression).includes(normalized))
+    )?.expression ?? null
   );
 }
 
@@ -618,7 +701,7 @@ export function parseTargetedHideArguments(
 }
 
 function readHiddenFromAICharacterIds(extra: unknown): string[] {
-  let parsed: Record<string, unknown> = {};
+  let parsed: Record<string, unknown>;
   try {
     parsed =
       typeof extra === "string"
@@ -654,21 +737,28 @@ const COMMANDS: SlashCommand[] = [
   {
     name: "roll",
     aliases: ["r", "dice"],
-    description: "Roll dice (e.g. 2d6, 1d20+5)",
+    description: "Roll dice (e.g. 2d6, 1d20+5, 4d6kh3)",
     usage: "/roll [dice (optional)]",
     local: true,
     async execute(args, ctx) {
       const notation = args.trim() || "1d20";
       const parsed = parseDice(notation);
-      if (!parsed) return { handled: true, feedback: `Invalid dice notation: ${notation}` };
-      const { rolls, total: sum } = rollParsedDice(parsed);
+      if (!parsed) {
+        // Only notation the shared grammar cannot read goes to extensions; an oversized 500d6 stays refused.
+        const extensionRoll = parseDicePool(notation) ? null : await rollExtensionDice(notation, ctx);
+        return extensionRoll ?? { handled: true, feedback: `Invalid dice notation: ${notation}` };
+      }
+      const { rolls, total: sum, kept } = rollParsedDice(parsed);
       const modStr = parsed.modifier > 0 ? `+${parsed.modifier}` : parsed.modifier < 0 ? `${parsed.modifier}` : "";
-      const detail = parsed.count > 1 ? ` [${rolls.join(", ")}]${modStr}` : modStr ? ` (${rolls[0]}${modStr})` : "";
+      const detail =
+        parsed.count > 1 ? ` [${formatKeptRolls(rolls, kept)}]${modStr}` : modStr ? ` (${rolls[0]}${modStr})` : "";
       const text = `🎲 **${notation}** → **${sum}**${detail}`;
       await ctx.createMessage({
         role: "narrator",
         content: text,
-        extra: { diceRollResult: { notation, rolls, modifier: parsed.modifier, total: sum } },
+        extra: {
+          diceRollResult: { notation, rolls, modifier: parsed.modifier, total: sum, ...(kept ? { kept } : {}) },
+        },
       });
       return { handled: true };
     },
@@ -714,16 +804,18 @@ const COMMANDS: SlashCommand[] = [
     local: true,
     async execute(args, ctx) {
       const content = stripSingleWrappingQuotePair(args);
-      if (!content) return { handled: true, feedback: "Usage: /send <message>" };
-      await ctx.createMessage({ role: "user", content, characterId: null });
+      // Files with no text post on their own, as Post only posts them.
+      if (!content && !ctx.hasComposerAttachments) return { handled: true, feedback: "Usage: /send <message>" };
+      await ctx.createMessage({ role: "user", content: await ctx.prepareUserMessage(content), characterId: null });
       return { handled: true };
     },
   },
   {
     name: "guided",
     aliases: ["narrator", "narrate", "nar"],
-    description: "Steer the narrative — the AI will narrate events in the direction you describe",
-    usage: "/guided [direction] | /guided respond for [name] [direction (optional)]",
+    description:
+      'Steer the narrative — the AI will narrate events in the direction you describe. Add "respond as" or "reply as" a character name to steer one character.',
+    usage: "/guided [direction] | /guided respond as [name] [direction (optional)]",
     async execute(args, ctx) {
       if (!args.trim()) return { handled: true, feedback: "Usage: /guided <direction to steer the narrative>" };
       const characters = ctx.characters ?? [];
@@ -943,7 +1035,9 @@ const COMMANDS: SlashCommand[] = [
           feedback: [
             `Available Emotes for ${target.name}:`,
             "",
-            availableExpressions.length > 0 ? availableExpressions.join(", ") : "No uploaded expression sprites.",
+            availableExpressions.length > 0
+              ? [...new Set(availableExpressions.map((sprite) => sprite.label ?? sprite.expression))].join(", ")
+              : "No uploaded expression sprites.",
             "",
             `Use /emote "${target.name}" expression to switch one manually.`,
           ].join("\n"),
@@ -956,7 +1050,7 @@ const COMMANDS: SlashCommand[] = [
           handled: true,
           feedback:
             availableExpressions.length > 0
-              ? `Expression "${requestedExpression}" not found for ${target.name}. Available: ${availableExpressions.join(", ")}`
+              ? `Expression "${requestedExpression}" not found for ${target.name}. Available: ${[...new Set(availableExpressions.map((sprite) => sprite.label ?? sprite.expression))].join(", ")}`
               : `No uploaded expression sprites found for ${target.name}.`,
         };
       }
@@ -1083,8 +1177,7 @@ const COMMANDS: SlashCommand[] = [
     usage: "/impersonate [direction (optional)]",
     async execute(args, ctx) {
       const direction = args.trim();
-      const { impersonatePresetId, impersonateConnectionId, impersonateBlockAgents, impersonatePromptTemplate } =
-        useUIStore.getState();
+      const { impersonatePresetId, impersonateBlockAgents, impersonatePromptTemplate } = useUIStore.getState();
       const trimmedPromptTemplate = impersonatePromptTemplate.trim();
       await ctx.generate({
         chatId: ctx.chatId,
@@ -1092,7 +1185,6 @@ const COMMANDS: SlashCommand[] = [
         impersonate: true,
         ...(direction ? { userMessage: direction } : {}),
         ...(impersonatePresetId ? { impersonatePresetId } : {}),
-        ...(impersonateConnectionId ? { impersonateConnectionId } : {}),
         ...(impersonateBlockAgents !== undefined ? { impersonateBlockAgents } : {}),
         ...(trimmedPromptTemplate ? { impersonatePromptTemplate: trimmedPromptTemplate } : {}),
       });
@@ -1147,7 +1239,10 @@ const COMMANDS: SlashCommand[] = [
         };
       }
 
-      const { ms, timeStr, message } = parsed;
+      const { ms, timeStr } = parsed;
+      // The user's own typed words, stored as a normal send stores them, so the chat, the toast and
+      // the model read the same {{random}} pick and names.
+      const message = await ctx.prepareUserMessage(parsed.message);
       const chatId = ctx.chatId;
       const invalidate = ctx.invalidate;
 
@@ -1236,6 +1331,23 @@ const COMMANDS: SlashCommand[] = [
         return { handled: true, feedback: "Usage: /goto <positive message number> (e.g. /goto 27)" };
       }
       useChatStore.getState().requestGotoMessage(ctx.chatId, n);
+      return { handled: true };
+    },
+  },
+  {
+    name: "html",
+    description: "Make one in-world HTML artifact on the latest reply",
+    usage: "/html <what you want, e.g. a spellbook page>",
+    modes: ["roleplay"],
+    local: true,
+    async execute(args, ctx) {
+      const prompt = args.trim();
+      if (!prompt) return { handled: true, feedback: "Usage: /html <what you want, e.g. a spellbook page>" };
+      if (!ctx.html) return { handled: true, feedback: "HTML artifacts are not available in this chat." };
+      if (useChatStore.getState().abortControllers.has(ctx.chatId)) {
+        return { handled: true, feedback: "Wait for the current generation to finish." };
+      }
+      await ctx.html(prompt);
       return { handled: true };
     },
   },
@@ -1339,6 +1451,88 @@ const COMMANDS: SlashCommand[] = [
         toast.error(error instanceof Error ? error.message : "Selfie generation failed.");
       } finally {
         useGalleryStore.getState().setChatGeneratingSelfie(ctx.chatId, false);
+      }
+      return { handled: true };
+    },
+  },
+  {
+    name: "video",
+    description: "Have a character send you a short video message, or in Roleplay, make a clip of the scene",
+    usage: "/video [name (optional)] — in Roleplay: /video [description (optional)]",
+    requiredCapabilityId: "illustrator",
+    modes: ["conversation", "roleplay"],
+    local: true,
+    async execute(args, ctx) {
+      if (ctx.roleplayVideo) {
+        if (useGalleryStore.getState().videoGeneratingChatIds.has(ctx.chatId)) {
+          return { handled: true, feedback: await translateSlash("ui.chat.slash.video.alreadyRunning") };
+        }
+        useGalleryStore.getState().setChatGeneratingVideo(ctx.chatId, true);
+        try {
+          await withSlashCommandTimeout(
+            Promise.resolve(ctx.roleplayVideo(args.trim() || undefined)),
+            ILLUSTRATE_SLASH_TIMEOUT_MS,
+            await translateSlash("ui.chat.slash.video.timedOut"),
+          );
+        } catch (error) {
+          toast.error(error instanceof Error ? error.message : await translateSlash("ui.chat.slash.video.failed"));
+        } finally {
+          useGalleryStore.getState().setChatGeneratingVideo(ctx.chatId, false);
+        }
+        return { handled: true };
+      }
+      if (!ctx.video) {
+        return { handled: true, feedback: await translateSlash("ui.chat.slash.video.unavailable") };
+      }
+      if (useGalleryStore.getState().videoGeneratingChatIds.has(ctx.chatId)) {
+        return { handled: true, feedback: await translateSlash("ui.chat.slash.video.alreadyRunning") };
+      }
+
+      const requestedCharacter = args.trim();
+      const target = requestedCharacter ? findSceneCharacter(ctx.characters ?? [], requestedCharacter) : null;
+      if (requestedCharacter && !target) {
+        const available = formatAvailableCharacterList(ctx.characters ?? []);
+        return {
+          handled: true,
+          feedback: available
+            ? await translateSlash("ui.chat.slash.video.characterNotFound", { name: requestedCharacter, available })
+            : await translateSlash("ui.chat.slash.video.noCharacters"),
+        };
+      }
+      // A name that fits more than one character (an exact name two share, or else a shared partial name) picks
+      // no one, so a paid clip never goes to the wrong character.
+      // ponytail: /video only; the other commands still take the first match. Upgrade path: make
+      // findSceneCharacter itself refuse ambiguous names (changes /selfie, /emote and the rest).
+      if (target) {
+        const requestedLookup = normalizeLookup(requestedCharacter);
+        const characters = ctx.characters ?? [];
+        const exact = characters.filter((character) => normalizeLookup(character.name) === requestedLookup);
+        const matches =
+          exact.length > 0
+            ? exact
+            : characters.filter((character) => normalizeLookup(character.name).includes(requestedLookup));
+        if (matches.length > 1) {
+          return {
+            handled: true,
+            feedback: await translateSlash("ui.chat.slash.video.ambiguousCharacter", {
+              name: requestedCharacter,
+              matches: formatAvailableCharacterList(matches),
+            }),
+          };
+        }
+      }
+
+      useGalleryStore.getState().setChatGeneratingVideo(ctx.chatId, true);
+      try {
+        await withSlashCommandTimeout(
+          Promise.resolve(ctx.video(target?.id)),
+          ILLUSTRATE_SLASH_TIMEOUT_MS,
+          await translateSlash("ui.chat.slash.video.timedOut"),
+        );
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : await translateSlash("ui.chat.slash.video.failed"));
+      } finally {
+        useGalleryStore.getState().setChatGeneratingVideo(ctx.chatId, false);
       }
       return { handled: true };
     },
@@ -1460,7 +1654,7 @@ const COMMANDS: SlashCommand[] = [
     usage: "/macros",
     local: true,
     async execute() {
-      return { handled: true, feedback: MACRO_HELP_TEXT };
+      return { handled: true, feedback: await buildMacroHelpText() };
     },
   },
 ];

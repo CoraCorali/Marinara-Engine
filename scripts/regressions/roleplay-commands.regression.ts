@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 import { stripTypeScriptTypes } from "node:module";
 import { setImmediate as nextTurn } from "node:timers/promises";
 import { runInNewContext } from "node:vm";
+import { GENERATIVE_AUDIO_DEFAULTS } from "../../packages/shared/src/types/connection.js";
 import {
   ROLEPLAY_COMMAND_KEYS,
   isRoleplayCommandEnabled,
@@ -17,11 +18,22 @@ import {
   buildRoleplayCommandsReminder,
   buildRoleplayPersonalContext,
   parseRoleplayCommands,
+  placeAfterPrefix,
+  placeRoleplayActivityInParts,
   readRoleplayPersonalState,
   RoleplayCommandStreamFilter,
   resolveRoleplayWhisperRecipient,
 } from "../../packages/server/src/services/generation/roleplay-commands.js";
 import { collectPastReasoningMetadata } from "../../packages/server/src/services/generation/generation-parameters.js";
+import {
+  ARTIFACT_SVG_ATTR,
+  ARTIFACT_SVG_TAGS,
+  scopeArtifactSvgAttribute,
+} from "../../packages/client/src/lib/artifact-svg.js";
+import {
+  buildHtmlArtifactMessages,
+  parseHtmlArtifactOutput,
+} from "../../packages/server/src/services/generation/html-artifact.js";
 import { conversationPromptHistoryContent } from "../../packages/server/src/routes/generate/conversation-prompt-formatting.js";
 import { generateRoleplaySoundEffect } from "../../packages/server/src/routes/tts.routes.js";
 import { prepareRoleplayRoll } from "../../packages/server/src/services/generation/roleplay-rolls.js";
@@ -31,6 +43,7 @@ import { buildCommittedTrackerContextBlock } from "../../packages/server/src/ser
 import { isDiceRollResult, readRoleplayDiceRolls } from "../../packages/client/src/lib/dice-roll-result.js";
 import { executeToolCalls } from "../../packages/server/src/services/tools/tool-executor.js";
 import { parseRollDiceToolResult } from "../../packages/server/src/services/game/dice.service.js";
+import { splitAtSceneBreaks } from "../../packages/shared/src/utils/scene-breaks.js";
 
 const rollResult = JSON.stringify({ notation: "2d1+3", rolls: [1, 1], modifier: 3, total: 5 });
 const inlineRoll = {
@@ -84,6 +97,14 @@ await assert.rejects(
 const soundSource = readFileSync(new URL("../../packages/server/src/routes/tts.routes.ts", import.meta.url), "utf8");
 const soundEntry = soundSource.match(/^export async function generateRoleplaySoundEffect\([\s\S]*?^}/m)?.[0];
 assert.ok(soundEntry);
+const generationSource = readFileSync(
+  new URL("../../packages/server/src/services/audio/generative-audio.service.ts", import.meta.url),
+  "utf8",
+);
+const soundIdentity = generationSource.match(/^function cacheIdentity\([\s\S]*?^}/m)?.[0];
+assert.ok(soundIdentity);
+const sharedSoundEntry = generationSource.match(/^export async function generateAudioAsset\([\s\S]*?^}/m)?.[0];
+assert.ok(sharedSoundEntry);
 type AudioResult = { tag: string; path: string; cached: boolean };
 let finishAudio!: (value: AudioResult) => void;
 let failAudio!: (error: Error) => void;
@@ -96,18 +117,26 @@ let upstreamAudio = deferredAudio();
 const sharedAudio = new Map<string, Promise<AudioResult>>();
 const audioRequests: unknown[][] = [];
 const sound = runInNewContext(
-  stripTypeScriptTypes(soundEntry.replace(/^export /, "")) + "\ngenerateRoleplaySoundEffect",
+  stripTypeScriptTypes(
+    `${soundIdentity}\n${sharedSoundEntry.replace(/^export /, "")}\n${soundEntry.replace(/^export /, "")}`,
+  ) + "\ngenerateRoleplaySoundEffect",
   {
     addAbortListener,
     Promise,
     Symbol,
-    createAppSettingsStorage: () => ({}),
-    createConnectionsStorage: () => ({}),
-    resolveAudioConfig: async () => ({ source: "elevenlabs", elevenLabsGameSoundEffects: true, apiKey: "fixture-key" }),
-    normalizeGameAudioPrompt: (prompt: string) => prompt.trim(),
+    GENERATIVE_AUDIO_DEFAULTS,
+    resolveGenerativeAudioConfig: async () => ({
+      source: "elevenlabs",
+      ...GENERATIVE_AUDIO_DEFAULTS.elevenlabs,
+      model: "music_v1",
+      legacyId: "fixture",
+      soundEffects: true,
+      apiKey: "fixture-key",
+    }),
     logDebugOverride: () => {},
-    gameAudioGenerationLocks: sharedAudio,
-    generateElevenLabsGameAudio: (...args: unknown[]) => {
+    isDebugAgentsEnabled: () => false,
+    locks: sharedAudio,
+    compose: (...args: unknown[]) => {
       audioRequests.push(args);
       return upstreamAudio;
     },
@@ -119,7 +148,9 @@ const firstWait = sound(null as never, "Shared cue", null, false, firstSound.sig
 const secondWait = sound(null as never, "Shared cue", null, false, secondSound.signal);
 await nextTurn();
 assert.equal(audioRequests.length, 1, "identical cues share a single generation");
-assert.equal(audioRequests[0]?.length, 3, "the shared provider work must not receive a caller's signal");
+assert.equal(audioRequests[0]?.length, 4);
+assert.deepEqual(audioRequests[0]?.slice(1), ["sfx", "Shared cue", undefined]);
+assert(!audioRequests[0]?.includes(firstSound.signal), "shared provider work never receives the caller's signal");
 const gameWait = sharedAudio.get("sfx\0shared cue");
 assert.ok(gameWait, "Game audio joins the same pending generation");
 const cancelledWait = assert.rejects(firstWait, { name: "AbortError" });
@@ -663,6 +694,18 @@ for (const format of ["xml", "markdown", "none"] as const) {
   assert.doesNotMatch(prompt(null), /\[roll:|\[combat\]|\[document:/u);
   assert.doesNotMatch(prompt("narrator", new Set()), /\[illustrate:|\[combat\]/u);
   assert.doesNotMatch(prompt("narrator"), /\n\s*\n\s*-/u);
+  assert.doesNotMatch(prompt("alice"), /appears exactly where you write the command/u);
+  // Render in-line tells the model the image is shown where the command is written (#7748).
+  const inline = buildRoleplayCommandsReminder({
+    metadata: { ...scoped, roleplayIllustrateInline: true },
+    characterId: "alice",
+    privateAvailable: true,
+    availableAgentIds: new Set(["illustrator"]),
+    format,
+    characterNames: ["Alice", "Narrator"],
+  });
+  assert.match(inline, /capture an important moment\. The image appears exactly where you write the command/u);
+  assert.match(inline, /between paragraphs/u);
 }
 const soundtrack = {
   ...metadata,
@@ -793,7 +836,18 @@ const executeRoll = async (args: Record<string, unknown>) => {
   assert.ok(result);
   return { ...result, payload: JSON.parse(result.result) };
 };
+// Every plain die now comes from the shared secure roller (crypto.getRandomValues, #8489), so a
+// pinned Math.random() no longer pins the dice. Pin the secure draw as well; the return undoes it.
+const pinSecureDraws = (draw: number) => {
+  Object.defineProperty(globalThis.crypto, "getRandomValues", {
+    value: <T extends ArrayBufferView>(array: T) => ((array as unknown as Uint32Array).fill(draw), array),
+    configurable: true,
+    writable: true,
+  });
+  return () => Reflect.deleteProperty(globalThis.crypto, "getRandomValues");
+};
 const random = Math.random;
+const unpinSecureDraws = pinSecureDraws(0);
 try {
   Math.random = () => 0;
   for (const [modifier, dc, total, success] of [
@@ -852,5 +906,198 @@ try {
   }
 } finally {
   Math.random = random;
+  unpinSecureDraws();
 }
+// #7481: with Advanced Memory, a new Roleplay reply is saved as one message per scene or POV break.
+assert.deepEqual(
+  splitAtSceneBreaks("CYNO waits alone.\n\n***\n\nMARI and MAUKIE run."),
+  ["CYNO waits alone.", "***\n\nMARI and MAUKIE run."],
+  "the break line opens the next part",
+);
+for (const line of ["---", "___", "* * *", "- - -", "_ _ _\t", "*****", "   ***"])
+  assert.deepEqual(
+    splitAtSceneBreaks(`A\n${line}\nB`),
+    ["A", `${line.trimStart()}\nB`],
+    `${JSON.stringify(line)} is a break`,
+  );
+for (const line of ["**", "    ***", "*-*", "***bold***", "— — —", "--- and more"])
+  assert.deepEqual(splitAtSceneBreaks(`A\n${line}\nB`), [`A\n${line}\nB`], `${JSON.stringify(line)} is not a break`);
+assert.deepEqual(
+  splitAtSceneBreaks("A\n```\n***\n```\nB\n~~~md\n---\n~~~"),
+  ["A\n```\n***\n```\nB\n~~~md\n---\n~~~"],
+  "breaks inside code fences are code",
+);
+assert.deepEqual(splitAtSceneBreaks("A\n````\n***\n```\n---\n````\n***\nB"), [
+  "A\n````\n***\n```\n---\n````",
+  "***\nB",
+]);
+assert.deepEqual(splitAtSceneBreaks("  Only text.\n"), ["  Only text.\n"], "text without a break is unchanged");
+assert.deepEqual(splitAtSceneBreaks("***\nA"), ["***\nA"], "a leading break makes no empty part");
+assert.deepEqual(splitAtSceneBreaks("A\n\n***\n"), ["A\n\n***\n"], "nor does a trailing one");
+assert.deepEqual(
+  splitAtSceneBreaks("***\nA\n\n---\n\n***\nB\n***\n"),
+  ["***\nA", "---\n\n***\nB\n***"],
+  "adjacent breaks open the part after them; a trailing one stays with the last part",
+);
+assert.deepEqual(splitAtSceneBreaks("A\r\n***\r\nB\r\n---\r\nC"), ["A", "***\r\nB", "---\r\nC"]);
+const statusPanel = "Cyno waits.\n\n<details>\n<summary>Status</summary>\nHP 10\n\n---\n\nMood tense\n</details>";
+assert.deepEqual(splitAtSceneBreaks(statusPanel), [statusPanel], "a break inside an open HTML element is its content");
+assert.deepEqual(
+  splitAtSceneBreaks(`${statusPanel}\n\n***\n\n<div class="x"/>Mari runs.<br>\n---\nOn.`),
+  [statusPanel, '***\n\n<div class="x"/>Mari runs.<br>', "---\nOn."],
+  "a closed element, a self-closing tag or a void element doesn't stop a split",
+);
+assert.deepEqual(
+  splitAtSceneBreaks("Cyno, <b>alone\n***\nMari asks <name>.\n---\nMaukie <i>thinks"),
+  ["Cyno, <b>alone", "***\nMari asks <name>.", "---\nMaukie <i>thinks"],
+  "an unclosed inline tag or an angle-bracket placeholder doesn't stop later splits",
+);
+
+// A command is placed after the text before it, even when cleanup stripped a "Name:" from the reply's start.
+assert.equal(placeAfterPrefix("Maukie reads alone.\n\n***\n\nOn.", "Maukie reads alone."), 19);
+assert.equal(placeAfterPrefix("Maukie reads alone.\n\n***\n\nOn.", "Maukie Whiskers: Maukie reads alone."), 19);
+assert.equal(placeAfterPrefix("Maukie reads.\nMaukie reads.", "Maukie Whiskers: Maukie reads."), null, "never a guess");
+
+// Each command stays with the part its text was in, so it keeps that part's audience.
+{
+  const parts = [
+    { content: "CYNO alone.", start: 0 },
+    { content: "***\nMARI arrives.", start: 13 },
+  ];
+  const document = { command: { type: "document", title: "Map", content: "x" }, raw: "[document]" };
+  const lateWhisper = { command: { type: "whisper", character: "Mari", text: "here" }, raw: "[w1]", contentOffset: 30 };
+  const gapWhisper = { command: { type: "whisper", character: "Cyno", text: "wait" }, raw: "[w2]", contentOffset: 12 };
+  const interruption = { command: { type: "interrupt", part: "no" }, raw: "[interrupt]" };
+  const unplaced = { command: { type: "combat" }, raw: "[combat]" };
+  const placed = placeRoleplayActivityInParts(
+    parts,
+    [document, lateWhisper, gapWhisper, interruption, unplaced] as never,
+    (item: { contentOffset?: number }) => (item === document ? 4 : (item.contentOffset ?? null)),
+  );
+  assert.deepEqual(placed[0], [document, { ...gapWhisper, contentOffset: 11, contentAnchor: "CYNO alone." }]);
+  assert.deepEqual(placed[1], [
+    { ...lateWhisper, contentOffset: 17, contentAnchor: "***\nMARI arrives." },
+    interruption,
+    unplaced,
+  ]);
+}
+// HTML artifacts: a command result of their own, never message text (#8586).
+assert.deepEqual(parseRoleplayCommands('[html: prompt="SVG: a magic book"]').commands, [
+  { type: "html", prompt: "SVG: a magic book" },
+]);
+assert.doesNotMatch(parseRoleplayCommands('Open [html: prompt="a sign"] now').content, /\[html:/u);
+assert.equal(parseRoleplayCommands('[html: prompt=""]').invalid, 1);
+assert.equal(parseRoleplayCommands('[html: prompt="' + "x".repeat(2_001) + '"]').invalid, 1);
+const htmlCommandMetadata = {
+  ...metadata,
+  roleplayCommandsEnabled: true,
+  activeAgentIds: [],
+  roleplayCommandToggles: { ...metadata.roleplayCommandToggles, html: true },
+};
+assert.equal(isRoleplayCommandAllowed(htmlCommandMetadata, "html", "alice"), true, "no agent is needed");
+assert.equal(
+  isRoleplayCommandAllowed({ ...metadata, roleplayCommandsEnabled: true, roleplayCommandToggles: {} }, "html", "alice"),
+  false,
+  "the command starts off",
+);
+for (const format of ["xml", "markdown", "none"] as const) {
+  assert.match(
+    buildRoleplayCommandsReminder({
+      metadata: htmlCommandMetadata,
+      characterId: "alice",
+      privateAvailable: true,
+      availableAgentIds: new Set(),
+      format,
+      characterNames: ["Alice", "Narrator"],
+    }),
+    /\[html: prompt=/u,
+  );
+}
+// The model's two blocks.
+assert.deepEqual(
+  parseHtmlArtifactOutput("<artifact><b>Hi</b></artifact>\n<memory>Reads: Hi. Bold.</memory>", "a sign"),
+  {
+    html: "<b>Hi</b>",
+    memory: "Reads: Hi. Bold.",
+  },
+);
+assert.equal(parseHtmlArtifactOutput("<artifact>```html\n<b>Hi</b>\n```</artifact>", "a sign")?.html, "<b>Hi</b>");
+assert.equal(
+  parseHtmlArtifactOutput("<artifact><b>Hi</b></artifact>", "a sign")?.memory,
+  "a sign",
+  "the request stands in",
+);
+assert.equal(parseHtmlArtifactOutput("<artifact><b>Cut off", "a sign"), null, "a cut-off artifact is a failed run");
+assert.equal(
+  parseHtmlArtifactOutput("İİİ<artifact>x</artifact></ARTIFACT>", "a sign")?.html,
+  "x</artifact>",
+  "the last closing tag, whatever its case, at its place in the raw text",
+);
+assert.equal(parseHtmlArtifactOutput("<artifact>  </artifact>", "a sign"), null);
+assert.equal(parseHtmlArtifactOutput("no blocks", "a sign"), null);
+assert.equal(
+  parseHtmlArtifactOutput(`<artifact>x</artifact><memory>${"m".repeat(1_500)}</memory>`, "a sign")?.memory.length,
+  1_000,
+);
+// Models copy the narrator's label; the prompt adds its own, so it must not appear twice.
+assert.equal(
+  parseHtmlArtifactOutput("<artifact>x</artifact><memory>Artifact: a worn book</memory>", "a sign")?.memory,
+  "a worn book",
+);
+assert.equal(parseHtmlArtifactOutput("<artifact>x</artifact><memory>Artifact:</memory>", "a sign")?.memory, "a sign");
+// The drawing subset of SVG: what can load or run stays out, and references stay inside the artifact.
+for (const tag of ["use", "image", "foreignObject", "filter", "feImage", "animate", "set", "script", "style", "a"]) {
+  assert.ok(!(ARTIFACT_SVG_TAGS as readonly string[]).includes(tag), tag);
+}
+for (const attribute of ["href", "xlink:href", "src", "onload", "begin", "filter", "mask", "cursor"]) {
+  assert.ok(!(ARTIFACT_SVG_ATTR as readonly string[]).includes(attribute), attribute);
+}
+assert.equal(scopeArtifactSvgAttribute("id", "table", "a1-"), "a1-table");
+assert.equal(scopeArtifactSvgAttribute("fill", "url(#table)", "a1-"), "url(#a1-table)");
+assert.equal(scopeArtifactSvgAttribute("clip-path", ' URL( "#clip" ) ', "a1-"), "url(#a1-clip)");
+assert.equal(scopeArtifactSvgAttribute("href", "#table", "a1-"), "#a1-table");
+assert.equal(scopeArtifactSvgAttribute("fill", "#112233", "a1-"), "#112233");
+assert.equal(scopeArtifactSvgAttribute("d", "M0 0 L1 1", "a1-"), "M0 0 L1 1");
+assert.equal(scopeArtifactSvgAttribute("fill", "url(https://example.com/x.svg#g)", "a1-"), null);
+assert.equal(scopeArtifactSvgAttribute("fill", "\\75rl(https://example.com/x.svg)", "a1-"), null);
+assert.equal(scopeArtifactSvgAttribute("href", "https://example.com/x.svg", "a1-"), null);
+const artifactChatHtml = readFileSync(new URL("../../packages/client/src/lib/chat-html.ts", import.meta.url), "utf8");
+assert.match(artifactChatHtml, /concat\(\s*allowSvg \? \[\] : \["svg"\],?\s*\)/u, "messages keep the SVG ban");
+const artifactPrompt = buildHtmlArtifactMessages({ reply: "One. Two.", offset: 4, request: "a sign" });
+assert.ok(
+  (buildHtmlArtifactMessages({ reply: "One.", offset: 4, request: "a sign", scene: "<speaker>Raven</speaker>" }).at(-1)!
+    .content as string).startsWith("<speaker>Raven</speaker>\n\n<reply>"),
+  "the scene comes before the reply",
+);
+assert.match(artifactPrompt.at(-1)!.content as string, /One\.\n\[ARTIFACT GOES HERE\]\n Two\./u);
+assert.match(artifactPrompt.at(-1)!.content as string, /<request>\na sign\n<\/request>/u);
+// The narrator keeps the memory, never the markup; a deleted or failed artifact is gone from it.
+const artifactMessage = (patch: Record<string, unknown>) => ({
+  role: "assistant",
+  content: "Prose.",
+  extra: {
+    roleplayCommandActivity: [
+      {
+        command: { type: "html", prompt: "a sign" },
+        raw: '[html: prompt="a sign"]',
+        artifact: { html: "<b>OPEN</b>", memory: "Reads: OPEN." },
+        ...patch,
+      },
+    ],
+  },
+});
+const artifactHistory = (patch: Record<string, unknown>) =>
+  conversationPromptHistoryContent(artifactMessage(patch) as never, "roleplay");
+assert.equal(artifactHistory({}), "Prose.\n\nArtifact: Reads: OPEN.");
+assert.equal(artifactHistory({ deleted: true }), "Prose.");
+assert.equal(artifactHistory({ error: "failed" }), "Prose.");
+assert.equal(artifactHistory({ artifact: undefined }), "Prose.", "a run still going adds nothing");
+// A reply's limit, and a defined intro staying as the card set it.
+const htmlRouteSource = readFileSync(
+  new URL("../../packages/server/src/routes/generate.routes.ts", import.meta.url),
+  "utf8",
+);
+assert.match(htmlRouteSource, /command\.type === "html" && definedIntro\?\.mode === "defined"\) continue;/u);
+assert.match(htmlRouteSource, /\+\+replyHtmlArtifacts > HTML_ARTIFACT_LIMIT_PER_REPLY/u);
+assert.match(htmlRouteSource, /createAgentConcurrencyLimiter\(\s*await resolveHtmlArtifactMaxParallelJobs\(/u);
 process.stdout.write("Roleplay commands regression passed.\n");

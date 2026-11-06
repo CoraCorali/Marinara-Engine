@@ -373,10 +373,11 @@ export interface SplitResult {
  * No "drop trailing assistants" logic. Load-bearing upstream contract:
  * Marinara's regen flow (generate.routes.ts) removes the to-be-regenerated
  * assistant turn from `finalMessages` BEFORE calling provider.chat(). Any
- * trailing assistant reaching this function is therefore intentional —
- * specifically the `assistantPrefill` feature (see
- * packages/shared/src/types/prompt.ts and appendGenerationTailMessages(),
- * where the prefill is pushed as the final assistant message).
+ * trailing assistant reaching this function is therefore intentional: a
+ * request to continue that reply. Chat generation does not send its
+ * `assistantPrefill` this way here: this provider refuses a final assistant
+ * message (rejectsFinalAssistantMessage()), so endPromptOnAssistantPrefill()
+ * puts the prefill at the start of the last reply in the history instead.
  *
  * If that upstream contract ever changes — i.e. regen starts leaving the
  * to-be-regenerated assistant in the messages array — the
@@ -412,11 +413,30 @@ export function splitHistoryForResume(messages: readonly ChatMessage[]): SplitRe
     };
   }
 
+  const history = nonSystem.slice(0, nonSystem.length - 1);
   return {
-    history: nonSystem.slice(0, nonSystem.length - 1),
-    current: trailing,
+    history,
+    current: trailing.role === "user" ? moveHistoryCloseToCurrent(history, trailing) : trailing,
     shape: trailing.role === "tool" ? "trailing-tool" : "trailing-user",
   };
+}
+
+const XML_HISTORY_CLOSE = "\n</chat_history>";
+
+/**
+ * Claude Code puts its own cache marker on the last history entry, and the
+ * xml wrap appends `</chat_history>` to that entry. The tag moves to the next
+ * reply every turn, so the marked entry never matched the following request
+ * and the whole history was written to the cache again. Moving the tag to the
+ * start of the current turn keeps the text order and leaves the marked entry
+ * identical next turn. Claude Code can already use all four cache markers, so
+ * adding one of Marinara's own is rejected ("A maximum of 4 blocks").
+ */
+function moveHistoryCloseToCurrent(history: ChatMessage[], current: ChatMessage): ChatMessage {
+  const last = history.at(-1);
+  if (!last?.content?.endsWith(XML_HISTORY_CLOSE)) return current;
+  history[history.length - 1] = { ...last, content: last.content.slice(0, -XML_HISTORY_CLOSE.length) };
+  return { ...current, content: `${XML_HISTORY_CLOSE.trimStart()}\n${current.content ?? ""}` };
 }
 
 // ──────────────────────────────────────────────

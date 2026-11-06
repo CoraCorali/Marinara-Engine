@@ -196,6 +196,10 @@ type ContinuationStream = { messageId: string; content: string; addNewline: bool
 interface ChatState {
   activeChatId: string | null;
   activeChat: Chat | null;
+  /** Only a newly created untouched chat may be discarded by its setup wizard. */
+  pendingNewChatSetups: Record<string, Chat>;
+  setPendingNewChatSetup: (chat: Chat) => void;
+  clearPendingNewChatSetup: (chatId: string) => void;
   isStreaming: boolean;
   /** The chatId that the current streaming generation belongs to. */
   streamingChatId: string | null;
@@ -211,6 +215,8 @@ interface ChatState {
    * - absent — no Mari work in progress for that chat.
    */
   mariPhaseByChatId: Map<string, "thinking" | "updating">;
+  /** Professor Mari's provisional words for the round she is writing; never saved, cleared when it ends. */
+  mariDraftByChatId: Map<string, string>;
   streamBuffer: string;
   /** Per-chat stream text for active generations, so switching chats does not lose in-flight UI state. */
   streamBuffers: Map<string, string>;
@@ -257,6 +263,8 @@ interface ChatState {
   shouldOpenWizard: boolean;
   /** When true (and the wizard opens), it should land directly on the Quick Setup shortcut view. */
   shouldOpenWizardInShortcutMode: boolean;
+  /** Chat whose setup wizard is open; kept here so the wizard survives ChatArea unmounting behind an editor. */
+  setupWizardChatId: string | null;
   /** Pending new-chat mode for first-run connection setup gating. */
   pendingNewChatMode: ChatMode | null;
   /** Where the pending first-run chat was launched, for post-create navigation. */
@@ -280,8 +288,12 @@ interface ChatState {
   activeConversationCall: ActiveConversationCallSnapshot | null;
   /** When true, show the active Conversation call as the full call surface instead of the micro panel. */
   conversationCallExpanded: boolean;
+  /** F10: a Mari run failed before the server ever saw it (404/network error), so the server's
+   * in-memory workspace status has nothing to show — the top-bar edge needs its own signal. */
+  mariClientRunFailed: boolean;
 
   // Actions
+  setMariClientRunFailed: (failed: boolean) => void;
   setActiveChat: (chat: Chat | null) => void;
   setActiveChatId: (id: string | null) => void;
   setStreaming: (streaming: boolean, chatId?: string) => void;
@@ -289,6 +301,7 @@ interface ChatState {
   setContinuationStream: (chatId: string, continuation: ContinuationStream) => void;
   setPendingVnReply: (chatId: string, reply: Pick<Message, "id" | "activeSwipeIndex" | "content"> | null) => void;
   setMariPhase: (chatId: string, phase: "thinking" | "updating" | "idle") => void;
+  setMariDraft: (chatId: string, draft: string | null) => void;
   setAbortController: (chatId: string, controller: AbortController | null) => void;
   setBackgroundIllustration: (chatId: string, pending: boolean) => void;
   setNarrationSaved: (chatId: string, saved: boolean) => void;
@@ -313,6 +326,7 @@ interface ChatState {
   clearPerChatState: (chatId: string) => void;
   setShouldOpenSettings: (v: boolean) => void;
   setShouldOpenWizard: (v: boolean) => void;
+  setSetupWizardChatId: (chatId: string | null) => void;
   setShouldOpenWizardInShortcutMode: (v: boolean) => void;
   setPendingNewChatMode: (mode: ChatMode | null, origin?: "home" | "sidebar" | null) => void;
   setInputDraft: (chatId: string, text: string) => void;
@@ -371,9 +385,19 @@ export const useChatStore = create<ChatState>()(
       }
     })(),
     activeChat: null,
+    pendingNewChatSetups: {},
+    setPendingNewChatSetup: (chat) =>
+      set((state) => ({ pendingNewChatSetups: { ...state.pendingNewChatSetups, [chat.id]: chat } })),
+    clearPendingNewChatSetup: (chatId) =>
+      set((state) => {
+        const drafts = { ...state.pendingNewChatSetups };
+        delete drafts[chatId];
+        return { pendingNewChatSetups: drafts };
+      }),
     isStreaming: false,
     streamingChatId: null,
     mariPhaseByChatId: new Map(),
+    mariDraftByChatId: new Map(),
     streamBuffer: "",
     streamBuffers: new Map(),
     continuationStreams: new Map(),
@@ -395,6 +419,7 @@ export const useChatStore = create<ChatState>()(
     shouldOpenSettings: false,
     shouldOpenWizard: false,
     shouldOpenWizardInShortcutMode: false,
+    setupWizardChatId: null,
     pendingNewChatMode: null,
     pendingNewChatOrigin: null,
     inputDrafts: loadDrafts(),
@@ -407,7 +432,9 @@ export const useChatStore = create<ChatState>()(
     gotoRequest: null,
     activeConversationCall: null,
     conversationCallExpanded: false,
+    mariClientRunFailed: false,
 
+    setMariClientRunFailed: (failed) => set({ mariClientRunFailed: failed }),
     setActiveChat: (chat) => set({ activeChat: chat }),
     setActiveChatId: (id) => {
       const prev = get().activeChatId;
@@ -448,9 +475,7 @@ export const useChatStore = create<ChatState>()(
       // Only reset agent + game state when actually switching chats — re-selecting the
       // same chat should not blow away loaded tracker data.
       if (id !== prev) {
-        // Professor Mari suggestions and guided plans are already scoped to their chat IDs.
-        // Keep them through temporary editor navigation so reopening the chat does not flash
-        // or replace them with the starter suggestions (#4953).
+        // Clear chat-scoped agent state so suggestions and guided plans cannot leak into another chat.
         useAgentStore.getState().resetForChatChange();
         useGameStateStore.getState().setGameState(null);
         if (id) {
@@ -528,6 +553,14 @@ export const useChatStore = create<ChatState>()(
         const next = new Map(state.mariPhaseByChatId);
         next.set(chatId, phase);
         return { mariPhaseByChatId: next };
+      }),
+    setMariDraft: (chatId, draft) =>
+      set((state) => {
+        if ((state.mariDraftByChatId.get(chatId) ?? null) === (draft || null)) return state;
+        const next = new Map(state.mariDraftByChatId);
+        if (draft) next.set(chatId, draft);
+        else next.delete(chatId);
+        return { mariDraftByChatId: next };
       }),
     setPendingVnReply: (chatId, reply) =>
       set((state) => {
@@ -762,6 +795,8 @@ export const useChatStore = create<ChatState>()(
     setShouldOpenSettings: (v) => set({ shouldOpenSettings: v }),
 
     setShouldOpenWizard: (v) => set({ shouldOpenWizard: v }),
+
+    setSetupWizardChatId: (chatId) => set({ setupWizardChatId: chatId }),
 
     setShouldOpenWizardInShortcutMode: (v) => set({ shouldOpenWizardInShortcutMode: v }),
 
@@ -1052,8 +1087,11 @@ export const useChatStore = create<ChatState>()(
       currentInputSnapshot = "";
       clearCurrentInputPresenceTimer();
       set({
+        mariDraftByChatId: new Map(),
         activeChatId: null,
+        setupWizardChatId: null,
         activeChat: null,
+        pendingNewChatSetups: {},
         isStreaming: false,
         streamingChatId: null,
         mariPhaseByChatId: new Map(),
@@ -1087,6 +1125,7 @@ export const useChatStore = create<ChatState>()(
         gotoRequest: null,
         activeConversationCall: null,
         conversationCallExpanded: false,
+        mariClientRunFailed: false,
       });
       try {
         localStorage.removeItem(STORAGE_KEY);

@@ -6,13 +6,28 @@
 // for smooth transitions.
 // ──────────────────────────────────────────────
 
+import { worldFamilySound } from "@marinara-engine/shared";
 import { gameAssetFileUrl } from "./game-asset-urls";
 import { SILENT_AUDIO_DATA_URI } from "./silent-audio";
 
 const CROSSFADE_MS = 2000;
 const SFX_POOL_SIZE = 8;
+const GESTURE_EVENTS = ["click", "touchstart", "keydown", "pointerdown"] as const;
+let pageHasUserInteraction = typeof navigator !== "undefined" && navigator.userActivation?.hasBeenActive === true;
 
-type AssetMap = Record<string, { path: string }>;
+export type AudioAssetMap = Record<string, { path: string; url?: string }>;
+type AssetMap = AudioAssetMap;
+
+/** An independently owned player. Dispose it when its package surface unmounts. */
+export interface AudioPlayer {
+  unlock(): void;
+  playMusic(tag: string, assets?: AudioAssetMap | null): void;
+  stopMusic(immediate?: boolean): void;
+  playSfx(tag: string, assets?: AudioAssetMap | null, loopCount?: number): void;
+  setVolumes(volumes: { music: number; sfx: number }): void;
+  setMuted(muted: boolean): void;
+  dispose(): void;
+}
 type AudioSessionType = "auto" | "ambient" | "playback" | "transient" | "transient-solo" | "play-and-record";
 type NavigatorWithAudioSession = Navigator & {
   audioSession?: {
@@ -77,7 +92,7 @@ function setAmbientAudioSession(): void {
   }
 }
 
-/** Singleton audio manager for game mode. */
+/** Playback implementation shared by Game and independently owned package players. */
 class GameAudioManager {
   private musicElement: LoopingAudioLayer | null = null;
   private nextMusicElement: LoopingAudioLayer | null = null;
@@ -97,15 +112,24 @@ class GameAudioManager {
   private ambientVolume = 0.35;
   private isMuted = false;
   private currentMusicTag: string | null = null;
+  /** An Experience's own track in force (Capability API 1.345): while it is, the Engine's own choices
+   *  are kept aside and come back when it ends. */
+  private experienceMusic: { tag: string; url: string } | null = null;
+  private asideMusic: { tag: string; manifest?: AssetMap | null } | null = null;
   private currentAmbientTag: string | null = null;
+  /** The open game's art family (worldgen W6f), so its sounds are its setting's. */
+  private artFamily: string | undefined;
   private fadeInterval: ReturnType<typeof setInterval> | null = null;
   /** Tracks tags whose play() was rejected by autoplay policy. */
-  private pendingMusic: { tag: string; manifest?: Record<string, { path: string }> | null } | null = null;
+  private pendingMusic: { tag: string; manifest?: AssetMap | null } | null = null;
   private pendingAmbient: { tag: string; manifest?: Record<string, { path: string }> | null } | null = null;
   private gestureListenerAttached = false;
   /** True after the user has interacted with the page (click/touch/key). */
-  private userHasInteracted = false;
+  private userHasInteracted = pageHasUserInteraction;
   private interactionListenerAttached = false;
+  private interactionHandler: (() => void) | null = null;
+  private gestureHandler: (() => void) | null = null;
+  private destroyed = false;
 
   constructor() {
     setAmbientAudioSession();
@@ -120,44 +144,48 @@ class GameAudioManager {
 
   /** Track user interaction so we know autoplay is allowed. */
   private attachInteractionListener(): void {
-    if (this.interactionListenerAttached) return;
+    if (this.interactionListenerAttached || this.userHasInteracted || this.destroyed) return;
     this.interactionListenerAttached = true;
-    const handler = () => {
+    this.interactionHandler = () => {
       this.unlock();
-      document.removeEventListener("click", handler, true);
-      document.removeEventListener("touchstart", handler, true);
-      document.removeEventListener("keydown", handler, true);
-      document.removeEventListener("pointerdown", handler, true);
+      this.removeInteractionListener();
       // Retry any pending audio now that the user has interacted
       this.retryPending();
     };
-    document.addEventListener("click", handler, true);
-    document.addEventListener("touchstart", handler, true);
-    document.addEventListener("keydown", handler, true);
-    document.addEventListener("pointerdown", handler, true);
+    for (const event of GESTURE_EVENTS) document.addEventListener(event, this.interactionHandler, true);
+  }
+
+  private removeInteractionListener(): void {
+    if (this.interactionHandler) {
+      for (const event of GESTURE_EVENTS) document.removeEventListener(event, this.interactionHandler, true);
+    }
+    this.interactionHandler = null;
+    this.interactionListenerAttached = false;
+  }
+
+  private removeGestureListener(): void {
+    if (this.gestureHandler) {
+      for (const event of GESTURE_EVENTS) document.removeEventListener(event, this.gestureHandler, true);
+    }
+    this.gestureHandler = null;
+    this.gestureListenerAttached = false;
   }
 
   /** Attach a one-time user gesture listener to retry blocked audio. */
   private ensureGestureListener(): void {
-    if (this.gestureListenerAttached) return;
+    if (this.gestureListenerAttached || this.destroyed) return;
     this.gestureListenerAttached = true;
-    const handler = () => {
-      document.removeEventListener("click", handler, true);
-      document.removeEventListener("touchstart", handler, true);
-      document.removeEventListener("keydown", handler, true);
-      document.removeEventListener("pointerdown", handler, true);
-      this.gestureListenerAttached = false;
+    this.gestureHandler = () => {
+      this.removeGestureListener();
       this.unlock();
       this.retryPending();
     };
-    document.addEventListener("click", handler, true);
-    document.addEventListener("touchstart", handler, true);
-    document.addEventListener("keydown", handler, true);
-    document.addEventListener("pointerdown", handler, true);
+    for (const event of GESTURE_EVENTS) document.addEventListener(event, this.gestureHandler, true);
   }
 
   /** Retry any autoplay-blocked audio. Call from a user gesture for best results. */
   retryPending(): void {
+    if (this.destroyed) return;
     if (this.pendingMusic) {
       const { tag, manifest } = this.pendingMusic;
       this.pendingMusic = null;
@@ -184,6 +212,8 @@ class GameAudioManager {
   resolveAssetUrl(tag: string, manifest?: AssetMap | null): string {
     const normalizedTag = normalizeAssetTag(tag);
     const manifestEntry = manifest?.[tag] ?? manifest?.[normalizedTag];
+    // A file served from elsewhere (an Experience's own track) carries its own address.
+    if (manifestEntry?.url) return manifestEntry.url;
     if (manifestEntry) {
       return gameAssetFileUrl(manifestEntry.path) ?? "";
     }
@@ -191,12 +221,16 @@ class GameAudioManager {
   }
 
   private getSfxAudioContext(): AudioContext | null {
-    if (typeof window === "undefined") return null;
+    if (this.destroyed || typeof window === "undefined") return null;
     if (!this.sfxAudioContext) {
       const AudioContextCtor =
         window.AudioContext ?? (window as Window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
       if (!AudioContextCtor) return null;
-      this.sfxAudioContext = new AudioContextCtor();
+      try {
+        this.sfxAudioContext = new AudioContextCtor();
+      } catch {
+        return null;
+      }
     }
     if (this.sfxAudioContext.state === "suspended") {
       void this.sfxAudioContext.resume().catch(() => {});
@@ -246,6 +280,8 @@ class GameAudioManager {
 
   /** Unlock Web Audio from a user gesture, especially for mobile Safari. */
   unlock(): void {
+    if (this.destroyed) return;
+    pageHasUserInteraction = true;
     this.userHasInteracted = true;
     setAmbientAudioSession();
     this.primeMediaElement();
@@ -647,8 +683,30 @@ class GameAudioManager {
     return false;
   }
 
+  /**
+   * Play an Experience's own track over the Engine's music (Capability API 1.345), or end it (null) and
+   * go back to what the Engine last chose. The player's volumes and mute apply to it as to any music.
+   * `resume: false` ends it without going back, for when another source takes over or the game closes.
+   */
+  setExperienceMusic(track: { tag: string; url: string } | null, options: { resume?: boolean } = {}): void {
+    if (track?.tag === this.experienceMusic?.tag && track?.url === this.experienceMusic?.url) return;
+    this.experienceMusic = track;
+    if (track) {
+      this.playMusic(track.tag, { [track.tag]: { path: "", url: track.url } });
+      return;
+    }
+    const aside = options.resume === false ? null : this.asideMusic;
+    this.asideMusic = null;
+    if (aside) this.playMusic(aside.tag, aside.manifest);
+    else this.stopMusic();
+  }
+
   /** Play background music with crossfade. */
-  playMusic(tag: string, manifest?: Record<string, { path: string }> | null): void {
+  playMusic(tag: string, manifest?: AssetMap | null): void {
+    if (this.experienceMusic && tag !== this.experienceMusic.tag) {
+      this.asideMusic = { tag, manifest };
+      return;
+    }
     if (tag === this.currentMusicTag) {
       if (this.pendingMusic?.tag === tag) this.pendingMusic = null;
       return;
@@ -751,6 +809,9 @@ class GameAudioManager {
   stopMusic(immediate = false): void {
     this.currentMusicTag = null;
     this.pendingMusic = null;
+    // Stopping ends an Experience's track too, and drops the Engine cue it held aside, so neither comes back.
+    this.experienceMusic = null;
+    this.asideMusic = null;
 
     // Cancel any running crossfade so the next-element doesn't keep playing
     if (this.fadeInterval) {
@@ -792,9 +853,17 @@ class GameAudioManager {
     this.fadeInterval = interval;
   }
 
+  /** The open game's art family: its own sound for an event when it has one, and none from another
+   *  family (no swords in a shoot-out). Undefined for a game without a setting kit. */
+  setArtFamily(family: string | undefined): void {
+    this.artFamily = family;
+  }
+
   /** Play a sound effect once or repeat it sequentially for a scene beat. */
-  playSfx(tag: string, manifest?: AssetMap | null, loopCount = 1): void {
+  playSfx(requested: string, manifest?: AssetMap | null, loopCount = 1): void {
     if (this.isMuted || this.sfxVolume <= 0 || !this.userHasInteracted) return;
+    const tag = worldFamilySound(requested, this.artFamily, manifest);
+    if (!tag) return;
     const generation = this.sfxGeneration;
     const url = this.resolveAssetUrl(tag, manifest);
     const audio = this.sfxPool[this.sfxIndex % SFX_POOL_SIZE]!;
@@ -969,6 +1038,19 @@ class GameAudioManager {
     }
   }
 
+  /** Permanent teardown for a package-owned player; Game's reusable dispose() stays unchanged. */
+  destroy(): void {
+    if (this.destroyed) return;
+    this.destroyed = true;
+    this.dispose();
+    this.removeInteractionListener();
+    this.removeGestureListener();
+    if (this.mediaUnlockElement) releaseAudio(this.mediaUnlockElement);
+    this.mediaUnlockElement = null;
+    if (this.sfxAudioContext) void this.sfxAudioContext.close().catch(() => {});
+    this.sfxAudioContext = null;
+  }
+
   /** Get current playback state. */
   getState() {
     return {
@@ -984,3 +1066,34 @@ class GameAudioManager {
 
 /** Global singleton instance. */
 export const audioManager = new GameAudioManager();
+
+/** Capability API 1.381: independent music/SFX ownership without touching Game's singleton. */
+export function createAudioPlayer(): AudioPlayer {
+  const manager = new GameAudioManager();
+  let disposed = false;
+  return Object.freeze({
+    unlock: () => {
+      if (!disposed) manager.unlock();
+    },
+    playMusic: (tag: string, assets?: AudioAssetMap | null) => {
+      if (!disposed) manager.playMusic(tag, assets);
+    },
+    stopMusic: (immediate?: boolean) => {
+      if (!disposed) manager.stopMusic(immediate);
+    },
+    playSfx: (tag: string, assets?: AudioAssetMap | null, loopCount?: number) => {
+      if (!disposed) manager.playSfx(tag, assets, loopCount);
+    },
+    setVolumes: ({ music, sfx }: { music: number; sfx: number }) => {
+      if (!disposed) manager.setVolumes(music, sfx, 0.35);
+    },
+    setMuted: (muted: boolean) => {
+      if (!disposed) manager.setMuted(muted);
+    },
+    dispose: () => {
+      if (disposed) return;
+      disposed = true;
+      manager.destroy();
+    },
+  });
+}

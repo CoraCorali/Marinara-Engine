@@ -14,7 +14,12 @@ import {
 import { DraftNumberInput } from "../../../components/ui/DraftNumberInput";
 import { DraftTextarea } from "../../../components/ui/DraftTextarea";
 import { SettingsSwitch } from "../../../components/panels/settings/SettingControls";
-import { useModelParameterCapabilities, useSaveConnectionDefaults } from "../../../hooks/use-connections";
+import {
+  useMayReadImages,
+  useModelParameterCapabilities,
+  useSaveConnectionDefaults,
+} from "../../../hooks/use-connections";
+import { ConnectionSelect } from "../../../components/connections/ConnectionSelect";
 import { isLanguageGenerationConnection, type ConnectionProviderLike } from "../../../lib/connection-filters";
 import { cn } from "../../../lib/utils";
 import { useTranslation as useUiTranslation } from "react-i18next";
@@ -43,11 +48,15 @@ const EDITABLE_PARAMETER_KEYS: Array<keyof EditableGenerationParameters> = [
 type AdvancedConnection = ConnectionProviderLike & Record<string, unknown>;
 
 interface AdvancedParametersSectionProps {
+  /** Open on arrival (the reply checkup's "Max output tokens" link). */
+  forceOpen?: boolean;
   metadata: Record<string, unknown>;
   isConversation: boolean;
   connectionId: string | null;
   connections: AdvancedConnection[];
   contextMessageLimit: number | null | undefined;
+  /** Roleplay Advanced Memory sizes the history by its token cap and does not use the message limit. */
+  advancedMemoryManagesHistory: boolean;
   excludePastReasoning: boolean | undefined;
   imageCaptioningEnabled: boolean | undefined;
   imageCaptioningConnectionId: string | null | undefined;
@@ -62,12 +71,18 @@ interface AdvancedParametersSectionProps {
   }) => void;
 }
 
+/** The on-device model cannot read images, so it never captions. */
+const canCaption = (connection: AdvancedConnection) =>
+  isLanguageGenerationConnection(connection) && connection.isLocalSidecar !== true;
+
 export function AdvancedParametersSection({
+  forceOpen,
   metadata,
   isConversation,
   connectionId,
   connections,
   contextMessageLimit,
+  advancedMemoryManagesHistory,
   excludePastReasoning,
   imageCaptioningEnabled,
   imageCaptioningConnectionId,
@@ -89,6 +104,10 @@ export function AdvancedParametersSection({
   const imageCaptioningDefaults = parseConnectionImageCaptioningDefaults(conn?.defaultParameters);
   const saveDefaults = useSaveConnectionDefaults();
   const [expanded, setExpanded] = useState(false);
+  // Explicit navigation opens once; a later user collapse still wins.
+  useEffect(() => {
+    if (forceOpen) setExpanded(true);
+  }, [forceOpen]);
   const contentVisible = useDrawerContentVisible("advanced-parameters", expanded);
   const preview = useEffectiveGenerationParameters(connectionId, contentVisible);
   const awaitingDefaults = preview.canPreview && !preview.data;
@@ -107,11 +126,12 @@ export function AdvancedParametersSection({
     typeof metadata.imageCaptioningPrompt === "string" && metadata.imageCaptioningPrompt.trim()
       ? metadata.imageCaptioningPrompt
       : "";
-  const chatConnectionCanCaption = !!conn && isLanguageGenerationConnection(conn);
+  const mayReadImages = useMayReadImages();
+  const chatConnectionCanCaption = !!conn && canCaption(conn);
   const connectionOptions = useMemo(
     () =>
       connections.flatMap((connection) => {
-        if (!isLanguageGenerationConnection(connection)) return [];
+        if (!canCaption(connection)) return [];
         const id = typeof connection.id === "string" ? connection.id : "";
         if (!id) return [];
         const name = typeof connection.name === "string" && connection.name.trim() ? connection.name.trim() : id;
@@ -164,10 +184,17 @@ export function AdvancedParametersSection({
         sparse[key] = next[key];
       }
     }
-    // Send toggles are behavior, not merely editable values. Keep the explicit
-    // map even when it matches the editor fallback so an inherited preset value
-    // cannot make a disabled parameter reappear in the provider request.
-    sparse.enabledParameters = next.enabledParameters ?? STRICT_CONNECTION_PARAMETER_SEND_DEFAULTS;
+    // Preserve explicit Send choices without freezing inherited connection switches
+    // when the user edits an unrelated value.
+    const previousSend = (params.enabledParameters ?? {}) as Record<string, unknown>;
+    const sendOverrides = Object.fromEntries(
+      Object.entries(next.enabledParameters ?? {}).filter(
+        ([key, value]) =>
+          typeof previousSend[key] === "boolean" ||
+          value !== effectiveParams.enabledParameters?.[key as keyof typeof effectiveParams.enabledParameters],
+      ),
+    );
+    if (Object.keys(sendOverrides).length > 0) sparse.enabledParameters = sendOverrides;
     if (
       next.strictRoleFormatting !== effectiveParams.strictRoleFormatting ||
       next.singleUserMessage !== effectiveParams.singleUserMessage ||
@@ -253,6 +280,11 @@ export function AdvancedParametersSection({
             </span>
           </div>
         )}
+        {contextMessageLimit && advancedMemoryManagesHistory && (
+          <p className="px-1 text-[0.625rem] text-[var(--muted-foreground)]">
+            {localizeUi("ui.chatSettings.advancedparameterssection.contextMessageLimitAdvancedMemory")}
+          </p>
+        )}
         <SettingsSwitch
           label={localizeUi("ui.chatSettings.advancedparameterssection.excludePastReasoning")}
           description={localizeUi(
@@ -321,31 +353,17 @@ export function AdvancedParametersSection({
             <span className="text-[0.6875rem] font-medium text-[var(--muted-foreground)]">
               {localizeUi("ui.chatSettings.advancedparameterssection.captioningConnection")}
             </span>
-            <select
-              value={selectedCaptioningConnectionId ?? ""}
-              onChange={(event) =>
-                onImageCaptioningChange({
-                  imageCaptioningConnectionId: event.target.value || null,
-                })
+            <ConnectionSelect
+              job={localizeUi("connections.picker.job.imageReading")}
+              value={selectedCaptioningConnectionId || null}
+              onChange={(connectionId) => onImageCaptioningChange({ imageCaptioningConnectionId: connectionId })}
+              defaultLabel={
+                chatConnectionCanCaption
+                  ? localizeUi("ui.agents.agenteditor.useChatConnection")
+                  : localizeUi("ui.chatSettings.advancedparameterssection.selectACaptioningConnection")
               }
-              className="w-full rounded-lg bg-[var(--secondary)] px-3 py-2 text-xs outline-none ring-1 ring-transparent transition-shadow focus:ring-[var(--primary)]/40"
-            >
-              {chatConnectionCanCaption ? (
-                <option value="">{localizeUi("ui.agents.agenteditor.useChatConnection")}</option>
-              ) : (
-                <option value="" disabled>
-                  {localizeUi("ui.chatSettings.advancedparameterssection.selectACaptioningConnection")}
-                </option>
-              )}
-              {connectionOptions.map((connection) => (
-                <option key={connection.id} value={connection.id}>
-                  {connection.name}
-                  {connection.model
-                    ? localizeUi("ui.chatSettings.advancedparameterssection.value1", { value1: connection.model })
-                    : ""}
-                </option>
-              ))}
-            </select>
+              rowFilter={mayReadImages}
+            />
           </label>
         )}
         {captioningEnabled && (

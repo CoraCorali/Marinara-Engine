@@ -16,6 +16,7 @@ import type {
   CharacterCardFieldUpdate,
   MariGuidedPlanStep,
   MariSuggestionChip,
+  MariTodoItem,
 } from "@marinara-engine/shared";
 import type { AgentFailure } from "../lib/agent-failures";
 
@@ -134,6 +135,8 @@ interface AgentState {
   failedAgentChatId: string | null;
   /** Rich failure details for the retry UI and troubleshooting copy */
   failedAgentFailures: AgentFailure[];
+  /** Agent activity was on screen since the last failure, so its icon drops the failure dot (#7322). */
+  failedAgentsSeen: boolean;
   thoughtBubbles: Array<{
     agentId: string;
     agentName: string;
@@ -154,6 +157,9 @@ interface AgentState {
   cyoaChoicesChatId: string | null;
   mariChips: MariSuggestionChip[];
   mariChipsChatId: string | null;
+  /** Her to-do list while a run is going; null when no run has sent one, [] when she cleared it. */
+  mariTodos: MariTodoItem[] | null;
+  mariTodosChatId: string | null;
   /**
    * A guided-creation plan Mari returned in one call: an ordered list of question+chip
    * steps. The client walks these locally (see recordMariPlanAnswer) with zero further
@@ -183,6 +189,7 @@ interface AgentState {
   setFailedAgentTypes: (types: string[], chatId?: string | null) => void;
   setFailedAgentFailures: (failures: AgentFailure[], chatId?: string | null) => void;
   clearFailedAgentTypes: (chatId?: string | null) => void;
+  markFailedAgentsSeen: (chatId: string) => void;
   addThoughtBubble: (agentId: string, agentName: string, content: string) => void;
   dismissThoughtBubble: (index: number) => void;
   clearThoughtBubbles: () => void;
@@ -198,6 +205,7 @@ interface AgentState {
   clearCyoaChoices: () => void;
   setMariChips: (chatId: string | null, chips: MariSuggestionChip[]) => void;
   clearMariChips: () => void;
+  setMariTodos: (chatId: string | null, todos: MariTodoItem[] | null) => void;
   setMariPlan: (chatId: string | null, steps: MariGuidedPlanStep[]) => void;
   /** Records the answer for the current step and advances the cursor. Returns "complete" once past the last step. */
   recordMariPlanAnswer: (fieldKey: string, value: string) => "advanced" | "complete";
@@ -214,7 +222,7 @@ interface AgentState {
   enqueuePendingAgentWriteApproval: (entry: PendingAgentWriteApproval) => void;
   dismissPendingAgentWriteApproval: (id: string) => void;
   clearPendingAgentWriteApprovals: () => void;
-  /** Clear chat-runtime Agent state while retaining Professor Mari's chat-scoped continuation UI. */
+  /** Clear chat-scoped Agent state, including Professor Mari's suggestions and guided plan, so they cannot leak into another chat. */
   resetForChatChange: () => void;
   reset: () => void;
 }
@@ -232,6 +240,7 @@ type AgentDataState = Pick<
   | "failedAgentTypes"
   | "failedAgentChatId"
   | "failedAgentFailures"
+  | "failedAgentsSeen"
   | "thoughtBubbles"
   | "echoMessages"
   | "echoVisibleCount"
@@ -241,6 +250,8 @@ type AgentDataState = Pick<
   | "cyoaChoicesChatId"
   | "mariChips"
   | "mariChipsChatId"
+  | "mariTodos"
+  | "mariTodosChatId"
   | "mariPlan"
   | "mariPlanChatId"
   | "mariPlanCursor"
@@ -266,6 +277,7 @@ function createInitialAgentDataState(): AgentDataState {
     failedAgentTypes: [],
     failedAgentChatId: null,
     failedAgentFailures: [],
+    failedAgentsSeen: false,
     thoughtBubbles: [],
     echoMessages: [],
     echoVisibleCount: 0,
@@ -275,6 +287,8 @@ function createInitialAgentDataState(): AgentDataState {
     cyoaChoicesChatId: null,
     mariChips: [],
     mariChipsChatId: null,
+    mariTodos: null,
+    mariTodosChatId: null,
     mariPlan: null,
     mariPlanChatId: null,
     mariPlanCursor: 0,
@@ -407,18 +421,24 @@ export const useAgentStore = create<AgentState>((set, get) => ({
         reasonLabel: null,
         retryTarget: null,
       })),
+      failedAgentsSeen: false,
     }),
   setFailedAgentFailures: (failures, chatId = null) =>
     set({
       failedAgentTypes: Array.from(new Set(failures.map((failure) => failure.agentType))),
       failedAgentChatId: chatId,
       failedAgentFailures: failures,
+      failedAgentsSeen: false,
     }),
   clearFailedAgentTypes: (chatId = null) =>
     set((s) => {
       if (chatId && s.failedAgentChatId && s.failedAgentChatId !== chatId) return {};
       return { failedAgentTypes: [], failedAgentChatId: null, failedAgentFailures: [] };
     }),
+  markFailedAgentsSeen: (chatId) =>
+    set((s) =>
+      s.failedAgentsSeen || (s.failedAgentChatId && s.failedAgentChatId !== chatId) ? s : { failedAgentsSeen: true },
+    ),
 
   addThoughtBubble: (agentId, agentName, content) =>
     set((s) => ({
@@ -490,6 +510,7 @@ export const useAgentStore = create<AgentState>((set, get) => ({
   clearCyoaChoices: () => set({ cyoaChoices: [], cyoaChoicesChatId: null }),
   setMariChips: (chatId, chips) => set({ mariChips: chips, mariChipsChatId: chatId }),
   clearMariChips: () => set({ mariChips: [], mariChipsChatId: null }),
+  setMariTodos: (chatId, todos) => set({ mariTodos: todos, mariTodosChatId: chatId }),
   setMariPlan: (chatId, steps) =>
     set({ mariPlan: steps, mariPlanChatId: chatId, mariPlanCursor: 0, mariPlanAnswers: {} }),
   recordMariPlanAnswer: (fieldKey, value) => {
@@ -527,15 +548,12 @@ export const useAgentStore = create<AgentState>((set, get) => ({
     })),
   clearPendingAgentWriteApprovals: () => set({ pendingAgentWriteApprovals: [] }),
 
-  resetForChatChange: () =>
-    set((state) => ({
-      ...createInitialAgentDataState(),
-      mariChips: state.mariChips,
-      mariChipsChatId: state.mariChipsChatId,
-      mariPlan: state.mariPlan,
-      mariPlanChatId: state.mariPlanChatId,
-      mariPlanCursor: state.mariPlanCursor,
-      mariPlanAnswers: state.mariPlanAnswers,
-    })),
+  resetForChatChange: () => set(createInitialAgentDataState()),
   reset: () => set(createInitialAgentDataState()),
 }));
+
+/** How many of the chat's failed agents Agent activity has not shown yet: its icon's failure dot (#7322). */
+export function selectUnseenAgentFailureCount(state: AgentState, chatId: string): number {
+  if (state.failedAgentsSeen || (state.failedAgentChatId && state.failedAgentChatId !== chatId)) return 0;
+  return state.failedAgentTypes.length;
+}

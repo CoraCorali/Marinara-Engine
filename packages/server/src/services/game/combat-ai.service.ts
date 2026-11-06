@@ -5,8 +5,15 @@ import {
   classicHitProbability,
   type CombatSkill,
   type CombatWeather,
+  type WorldElementSet,
 } from "@marinara-engine/shared";
-import { chooseCombatCandidate, combatAiHash, type CombatAiCandidate } from "@marinara-engine/shared";
+import {
+  chooseCombatCandidate,
+  combatAiHash,
+  rankCombatCandidates,
+  type CombatAiCandidate,
+  type RankedCombatCandidate,
+} from "@marinara-engine/shared";
 import type { CombatantStats, PlayerAction } from "./combat.service.js";
 
 export function chooseClassicAction(
@@ -16,6 +23,10 @@ export function chooseClassicAction(
   round: number,
   difficulty: string = "normal",
   weather?: CombatWeather,
+  elements?: WorldElementSet,
+  /** Handed every candidate scored, best first, instead of the unit taking the pick: what a Game
+   *  Master deciding for it is shown. Nothing on the unit changes then. */
+  ranked?: (ranking: Array<RankedCombatCandidate<PlayerAction>>) => void,
 ): PlayerAction {
   if (!enemies.length) return { type: "defend" };
   if (!unit.tactics) return { type: "attack", targetId: enemies[0]!.id };
@@ -42,7 +53,7 @@ export function chooseClassicAction(
           (unit.skillCooldowns?.[s.id] ?? 0) <= 0,
       ),
     ]) {
-      const estimate = (foe: CombatantStats) => estimateClassicAttack(unit, foe, skill, difficulty, weather);
+      const estimate = (foe: CombatantStats) => estimateClassicAttack(unit, foe, skill, difficulty, weather, elements);
       const { damage, hitProbability } = estimate(target);
       candidates.push({
         action: skill
@@ -100,6 +111,16 @@ export function chooseClassicAction(
     (unit.tactics!.adjective !== "patient" || Object.values(unit.skillCooldowns ?? {}).some((cd) => cd === 1))
   )
     candidates.push({ action: { type: "defend" }, hold: true });
+  if (ranked) {
+    const ranking = rankCombatCandidates(
+      unit,
+      candidates,
+      round,
+      unit.side === "enemy" ? normalizeGameDifficulty(difficulty) : "normal",
+    );
+    ranked(ranking);
+    return ranking[0]!.candidate.action;
+  }
   return chooseCombatCandidate(
     unit,
     candidates,
@@ -115,6 +136,7 @@ export function estimateClassicAttack(
   skill?: CombatSkill,
   difficulty = "normal",
   weather?: CombatWeather,
+  elements?: WorldElementSet,
 ) {
   const attack = skill ? Math.max(1, Math.floor(unit.attack * Math.max(1, skill.power))) : unit.attack;
   const base = Math.max(
@@ -126,7 +148,7 @@ export function estimateClassicAttack(
   const scaled =
     unit.side === "enemy" ? Math.floor(base * ENEMY_DAMAGE_MULTIPLIERS[normalizeGameDifficulty(difficulty)]) : base;
   return {
-    damage: Math.floor(scaled * weatherDamageMultiplier(weather, skill?.element ?? unit.element)),
+    damage: Math.floor(scaled * weatherDamageMultiplier(weather, skill?.element ?? unit.element, elements)),
     hitProbability: classicHitProbability(attack, target.defense, weather, skill ?? unit),
   };
 }

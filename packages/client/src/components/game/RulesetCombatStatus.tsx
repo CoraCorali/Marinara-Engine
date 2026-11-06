@@ -3,12 +3,23 @@
 // Turn order, the round, every combatant's conditions in the ruleset's own words, what is left of
 // each budget for the actor on turn, and the log with the real arithmetic in it. Every number here
 // was sent by the server; this file reads the view and prints it.
-import type { DirectedRulesetView, RulesetDefinition } from "@marinara-engine/shared";
+import { useRulesetText } from "../../lib/ruleset-text";
+import {
+  rulesetConditionIcons,
+  rulesetHideLines,
+  type DirectedRulesetView,
+  type RulesetDefinition,
+} from "@marinara-engine/shared";
+import { ArtIcon } from "./ArtIcon";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { rulesetCombatLogLines, rulesetCombatNames } from "../../lib/ruleset-combat-log";
+import type { TFunction } from "i18next";
+import { rulesetCombatLogLines, rulesetCombatNames, rulesetFightNoteText } from "../../lib/ruleset-combat-log";
 import { rulesetDistanceText } from "../../lib/ruleset-combat-board";
+import { rulesetEffectPhrase } from "./RulesetItemPicker";
 import { cn } from "../../lib/utils";
+import { useUIStore } from "../../stores/ui.store";
+import { rulesetKindLine } from "./RulesetTurnOrder";
 
 export function RulesetCombatStatus({
   definition,
@@ -18,11 +29,23 @@ export function RulesetCombatStatus({
   view: DirectedRulesetView;
 }) {
   const { t } = useTranslation();
-  const names = useMemo(() => rulesetCombatNames(definition, view, t), [definition, view, t]);
+  const text = useRulesetText();
+  const names = useMemo(() => rulesetCombatNames(definition, view, t, text), [definition, view, t, text]);
   // Built fresh on every render rather than accumulated, so a saved fight read back, or a language
   // changed mid-battle, prints in the language on screen now. The running number is the key, so a
   // re-render adds only the lines that are new and a reader is told only about those.
-  const lines = rulesetCombatLogLines(view.events, names, t);
+  const debugMode = useUIStore((state) => state.debugMode);
+  // With Debug on, how the opponents were built goes first: a number held to its tier is why a save
+  // in play is not the one its proposed sheet says (laptop party A 2026-10-25: DC 11, not 15).
+  const lines = [
+    ...(debugMode
+      ? view.adjustments.map((line, index) => ({
+          seq: index - view.adjustments.length - 1,
+          text: rulesetFightNoteText(line, t, text),
+        }))
+      : []),
+    ...rulesetCombatLogLines(view.events, names, t, -1, debugMode),
+  ];
   const [orderOpen, setOrderOpen] = useState(
     () => typeof window === "undefined" || window.matchMedia("(min-width: 640px)").matches,
   );
@@ -46,7 +69,8 @@ export function RulesetCombatStatus({
     if (box) box.scrollTop = box.scrollHeight;
   }, [newest]);
   const byId = new Map(view.combatants.map((combatant) => [combatant.id, combatant]));
-  const order = view.order.flatMap((id) => {
+  // One who takes two turns this round (1.238) is listed once.
+  const order = [...new Set(view.order)].flatMap((id) => {
     const combatant = byId.get(id);
     return combatant ? [combatant] : [];
   });
@@ -67,14 +91,17 @@ export function RulesetCombatStatus({
             {t("game.combat.ruleset.status.round", { round: view.round })}
           </span>
           {actor &&
-            budgets.map((budget) => (
-              <span key={budget.id}>
-                {t("game.combat.ruleset.status.budget", {
-                  label: budget.label,
-                  left: actor.budgets[budget.id] ?? 0,
-                })}
-              </span>
-            ))}
+            budgets
+              // A budget of no count (combat C6d) is shown only while a condition gives the actor some.
+              .filter((budget) => budget.count > 0 || (actor.budgets[budget.id] ?? 0) > 0)
+              .map((budget) => (
+                <span key={budget.id}>
+                  {t("game.combat.ruleset.status.budget", {
+                    label: names.budget(budget.id),
+                    left: actor.budgets[budget.id] ?? 0,
+                  })}
+                </span>
+              ))}
           {/* What is left of this turn's walking, in the ruleset's own unit. Only a fight on a
               board has any, and then everybody on it does. */}
           {actor && typeof actor.movementLeft === "number" && (
@@ -84,6 +111,13 @@ export function RulesetCombatStatus({
               })}
             </span>
           )}
+          {/* What the actor's actions spend and has left of it (spell slots, ki), so nobody opens
+              the sheet mid-fight to count. */}
+          {actor?.pools?.map((pool) => (
+            <span key={pool.id} data-pool={pool.id} className={cn(pool.value === 0 && "opacity-50")}>
+              {t("game.combat.ruleset.status.pool", { label: pool.label, value: pool.value, max: pool.max })}
+            </span>
+          ))}
         </div>
 
         {/* Folded away on a phone, where the stage already shows both sides and every row this strip
@@ -103,23 +137,37 @@ export function RulesetCombatStatus({
             {order.map((combatant) => {
               const onTurn = combatant.id === view.actorId;
               const deathTrack = combatant.deathTrack;
-              const conditions = combatant.conditions.map((condition) =>
-                typeof condition.rounds === "number"
-                  ? t("game.combat.ruleset.status.conditionRounds", {
-                      label: condition.label,
-                      rounds: condition.rounds,
-                    })
-                  : condition.label,
-              );
-              const state = combatant.defeated
-                ? t("game.combat.ruleset.status.defeated")
-                : combatant.stable
-                  ? t("game.combat.ruleset.status.stable")
-                  : combatant.dying
-                    ? t("game.combat.ruleset.status.dying")
-                    : combatant.down
-                      ? t("game.combat.ruleset.status.down")
-                      : "";
+              const traits = combatant.conditions.filter((condition) => condition.trait);
+              const conditions = [
+                ...(combatant.stances ?? []).map((stance) => t(`game.combat.ruleset.stance.${stance}`)),
+                ...combatant.conditions
+                  .filter((condition) => !condition.trait)
+                  .map((condition) =>
+                    typeof condition.rounds === "number"
+                      ? t("game.combat.ruleset.status.conditionRounds", {
+                          label: condition.label,
+                          rounds: condition.rounds,
+                        })
+                      : condition.label,
+                  ),
+              ];
+              const state = combatant.left
+                ? t("game.combat.ruleset.status.left")
+                : combatant.surrendered
+                  ? t("game.combat.ruleset.status.surrendered")
+                  : combatant.away
+                    ? t("game.combat.ruleset.status.away")
+                    : combatant.defeated
+                      ? t("game.combat.ruleset.status.defeated")
+                      : combatant.stable
+                        ? t("game.combat.ruleset.status.stable")
+                        : combatant.dying
+                          ? t("game.combat.ruleset.status.dying")
+                          : combatant.down
+                            ? t("game.combat.ruleset.status.down")
+                            : combatant.surprised
+                              ? t("game.combat.ruleset.status.surprised")
+                              : "";
               return (
                 <li
                   key={combatant.id}
@@ -157,6 +205,25 @@ export function RulesetCombatStatus({
                     )}
                     {onTurn && <span className="text-[var(--primary)]">{t("game.combat.ruleset.status.turn")}</span>}
                   </span>
+                  {combatant.damageModifiers?.map((source, index) => (
+                    <span
+                      key={`damage-${index}`}
+                      className="mt-0.5 block text-[0.65rem] text-[var(--muted-foreground)]"
+                    >
+                      {source.name}: {source.facts.map((fact) => rulesetEffectPhrase(fact, t)).join("; ")}
+                    </span>
+                  ))}
+                  {combatant.conditions.length > 0 && (
+                    <span className="mt-0.5 flex flex-wrap gap-0.5" aria-hidden="true">
+                      {combatant.conditions.map((condition) => (
+                        <ArtIcon
+                          key={condition.id}
+                          ids={rulesetConditionIcons(definition, condition.id)}
+                          className="h-4 w-4"
+                        />
+                      ))}
+                    </span>
+                  )}
                   {(state || conditions.length > 0 || combatant.concentrating) && (
                     <span className="mt-0.5 block text-[0.65rem] text-[var(--muted-foreground)]">
                       {[
@@ -170,6 +237,27 @@ export function RulesetCombatStatus({
                         .join(" · ")}
                     </span>
                   )}
+                  {traits.length > 0 && (
+                    <span className="mt-0.5 block text-[0.65rem] italic text-[var(--muted-foreground)]">
+                      {t("game.combat.ruleset.status.traits", {
+                        list: traits.map((condition) => condition.label).join(", "),
+                      })}
+                    </span>
+                  )}
+                  {combatant.kind && (
+                    <span className="mt-0.5 block break-words text-[0.65rem] text-[var(--muted-foreground)]">
+                      {rulesetKindLine(combatant.kind, text, true)}
+                    </span>
+                  )}
+                  {combatant.hides &&
+                    rulesetHideLines(definition, [combatant.hides], t).map((line) => (
+                      <span
+                        key={line}
+                        className="mt-0.5 block break-words text-[0.65rem] text-[var(--muted-foreground)]"
+                      >
+                        {line}
+                      </span>
+                    ))}
                   {deathTrack && (
                     <span className="mt-0.5 block text-[0.65rem] tabular-nums text-[var(--muted-foreground)]">
                       {t("game.combat.ruleset.status.deathTrack", {
@@ -182,7 +270,17 @@ export function RulesetCombatStatus({
                       })}
                     </span>
                   )}
-                  {(!!combatant.tier || (combatant.traits?.length ?? 0) > 0) && (
+                  {combatant.legendary && (
+                    <span className="mt-0.5 block text-[0.65rem] tabular-nums text-[var(--muted-foreground)]">
+                      {t("game.combat.ruleset.status.legendary", {
+                        points: combatant.legendary.points,
+                        max: combatant.legendary.max,
+                      })}
+                    </span>
+                  )}
+                  {(!!combatant.tier ||
+                    (combatant.traits?.length ?? 0) > 0 ||
+                    (combatant.saveModifiers?.length ?? 0) > 0) && (
                     <details className="mt-0.5">
                       <summary className="cursor-pointer text-[0.65rem] text-[var(--muted-foreground)]">
                         {t("game.combat.ruleset.status.details")}
@@ -191,6 +289,9 @@ export function RulesetCombatStatus({
                         {combatant.tier && (
                           <p>{t("game.combat.ruleset.status.tier", { label: names.tier(combatant.tier) })}</p>
                         )}
+                        {(combatant.saveModifiers ?? []).map((fact, index) => (
+                          <p key={index}>{rulesetEffectPhrase(fact, t)}</p>
+                        ))}
                         {(combatant.traits ?? []).map((trait) => (
                           <p key={trait.name}>
                             <span className="font-medium text-[var(--foreground)]">{trait.name}</span> {trait.text}
@@ -205,12 +306,23 @@ export function RulesetCombatStatus({
           </ol>
         </details>
 
+        {/* The areas spells left standing (1.172), each with whose it is and how long it has. */}
+        {view.zones && view.zones.length > 0 && (
+          <ul aria-label={t("game.combat.ruleset.status.zones")} className="space-y-0.5 text-xs">
+            {view.zones.map((zone) => (
+              <li key={`${zone.casterId}:${zone.label}`} className="text-fuchsia-200/90">
+                {zoneLine(zone, view, t)}
+              </li>
+            ))}
+          </ul>
+        )}
+
         {view.adjustments.length > 0 && (
           <details>
             <summary className="cursor-pointer py-1 text-xs">{t("game.combat.ruleset.status.adjustments")}</summary>
             <ul className="mt-1 space-y-0.5 text-xs text-[var(--muted-foreground)]">
               {view.adjustments.map((line) => (
-                <li key={line}>{line}</li>
+                <li key={line}>{rulesetFightNoteText(line, t, text)}</li>
               ))}
             </ul>
           </details>
@@ -237,4 +349,17 @@ export function RulesetCombatStatus({
       </section>
     </div>
   );
+}
+
+/** One standing zone, in words: whose it is and how many of its caster's turns are left. */
+export function zoneLine(
+  zone: NonNullable<DirectedRulesetView["zones"]>[number],
+  view: DirectedRulesetView,
+  t: TFunction,
+): string {
+  const caster = view.combatants.find((one) => one.id === zone.casterId)?.name ?? zone.casterId;
+  // More turns than a fight runs (Spirit Guardians' ten minutes, ball bearings left for a day) is no
+  // count anybody reads: it lasts the fight.
+  if (zone.rounds > 20) return t("game.combat.ruleset.status.zoneLasting", { caster, label: zone.label });
+  return t("game.combat.ruleset.status.zone", { caster, label: zone.label, count: zone.rounds });
 }

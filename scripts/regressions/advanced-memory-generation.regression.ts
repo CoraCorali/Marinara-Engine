@@ -99,6 +99,7 @@ try {
     maxTokensOverride: 512,
     embeddingModel: "fixture-embedding",
   });
+  await createConnectionsStorage(db).updateDefaultParameters(connection.id, { maxContext: 8192, maxTokens: 512 });
   const characters = createCharactersStorage(db);
   const first = await characters.create(characterDataSchema.parse({ name: "Powers That Be" }));
   const second = await characters.create(characterDataSchema.parse({ name: "Maukie" }));
@@ -106,7 +107,6 @@ try {
   const presets = createPromptsStorage(db);
   const preset = await presets.create({
     name: "Advanced fixture",
-    parameters: { maxTokens: 512, maxContext: 8192 },
     wrapFormat: "xml",
   });
   assert.ok(preset);
@@ -315,6 +315,8 @@ try {
   });
   assert.equal(cachedPeek.statusCode, 200, cachedPeek.body);
   assert.equal(cachedPeek.json().source, "cached");
+  // #7264: Decision diagnostics follow whose saved prompt is shown, not the chat's first character.
+  assert.equal(cachedPeek.json().characterId, second.id, "Peek Prompt names Maukie as the prompt's character");
   assert.ok(!cachedPeek.body.includes("PRIVATE_SCENE_SECRET"));
   const savedRequest = cachedPeek.json().messages;
   await chats.updateMessageExtra(summarySource[0]!.id, {

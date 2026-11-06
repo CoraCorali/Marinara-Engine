@@ -12,7 +12,12 @@ import { createCharactersStorage } from "../services/storage/characters.storage.
 import { createConnectionsStorage } from "../services/storage/connections.storage.js";
 import { createLLMProvider } from "../services/llm/provider-registry.js";
 import { withConnectionFallbackProvider } from "../services/llm/connection-fallback-provider.js";
-import { CONVERSATION_SCHEDULE_DAYS, PROVIDERS, localAuthProviderBaseUrl } from "@marinara-engine/shared";
+import {
+  CONVERSATION_SCHEDULE_DAYS,
+  PROVIDERS,
+  isChatProvider,
+  localAuthProviderBaseUrl,
+} from "@marinara-engine/shared";
 import type { CharacterData, ConversationStatusOverride } from "@marinara-engine/shared";
 import {
   generateCharacterSchedule,
@@ -279,7 +284,7 @@ async function resolveConversationScheduleConnection(connections: ConnectionsSto
   }
 
   const conn = await connections.getWithKey(connId);
-  if (conn && ["image_generation", "video_generation", "audio", "decision"].includes(conn.provider)) {
+  if (conn && !isChatProvider(conn.provider)) {
     return { conn: null, error: "Choose a language connection for schedule generation" };
   }
   return { conn, error: conn ? null : "The selected connection is unavailable. Choose another connection." };
@@ -492,7 +497,7 @@ export async function conversationRoutes(app: FastifyInstance) {
     const baseUrl = resolveBaseUrl(conn);
     if (!baseUrl) return { errorStatus: 400 as const, error: "No base URL" };
 
-    const charRow = await chars.getById(characterId);
+    const charRow = await chars.getById(characterId, chatId);
     if (!charRow) return { errorStatus: 404 as const, error: "Character not found" };
     const charData = JSON.parse(charRow.data as string) as CharacterData;
     const provider = await createConversationAgentProvider(conn, baseUrl);
@@ -746,7 +751,7 @@ export async function conversationRoutes(app: FastifyInstance) {
     for (const charId of characterIds) {
       if (signal.aborted) return;
       // Load character data
-      const charRow = await chars.getById(charId);
+      const charRow = await chars.getById(charId, chatId);
       if (!charRow) {
         results[charId] = { status: "not_found" };
         continue;
@@ -814,8 +819,9 @@ export async function conversationRoutes(app: FastifyInstance) {
           "free time",
           scheduleNow,
         );
+        // The card used above is a chat projection. Persist runtime state only,
+        // so scoped appearance/backstory never replace the authored base card.
         const extensions = {
-          ...(charData.extensions ?? {}),
           conversationStatus: status,
           conversationSchedule: fullSchedule,
         };

@@ -30,6 +30,8 @@ import {
   KeyRound,
 } from "lucide-react";
 import { cn } from "../../lib/utils";
+import { formatFirstApiValidationIssue } from "../../lib/api-client";
+import { buildCustomToolPatch } from "../../lib/custom-tool-transfer";
 import { downloadJsonFile, sanitizeExportFilenamePart } from "../../lib/download-json";
 import { HelpTooltip } from "../ui/HelpTooltip";
 import { SettingsSwitch } from "../panels/settings/SettingControls";
@@ -167,31 +169,6 @@ export function ToolEditor() {
     if (!toolDetailId) return false;
     setSaveError(null);
 
-    if (!localName.trim()) {
-      setSaveError("Tool name is required.");
-      return false;
-    }
-    if (!/^[a-z][a-z0-9_]*$/.test(localName)) {
-      setSaveError("Tool name must be lowercase snake_case (e.g. my_tool).");
-      return false;
-    }
-    if (!localDesc.trim()) {
-      setSaveError("Description is required.");
-      return false;
-    }
-    if (localExecType === "script" && !scriptToolsEnabled) {
-      setSaveError(scriptToolsDisabledMessage);
-      return false;
-    }
-    if (localExecType === "webhook" && !localWebhookUrl.trim()) {
-      setSaveError("Webhook URL is required.");
-      return false;
-    }
-    if (localExecType === "script" && !localScriptBody.trim()) {
-      setSaveError("Script body is required.");
-      return false;
-    }
-
     const payload = {
       name: localName,
       description: localDesc,
@@ -203,10 +180,39 @@ export function ToolEditor() {
       includeHiddenContext: localIncludeHiddenContext,
       enabled: currentEnabled,
     };
+    // An existing tool saves only what changed, and only that is checked: a value stored by an import or by Professor
+    // Mari that the editor would reject never blocks an unrelated edit, such as a toggle.
+    const body = dbTool ? buildCustomToolPatch(dbTool, payload) : payload;
+    const sends = (field: keyof typeof payload) => field in body;
+
+    if (sends("name") && !localName.trim()) {
+      setSaveError("Tool name is required.");
+      return false;
+    }
+    if (sends("name") && !/^[a-z][a-z0-9_]*$/.test(localName)) {
+      setSaveError("Tool name must be lowercase snake_case (e.g. my_tool).");
+      return false;
+    }
+    if (sends("description") && !localDesc.trim()) {
+      setSaveError("Description is required.");
+      return false;
+    }
+    if (localExecType === "script" && !scriptToolsEnabled) {
+      setSaveError(scriptToolsDisabledMessage);
+      return false;
+    }
+    if (localExecType === "webhook" && (sends("webhookUrl") || sends("executionType")) && !localWebhookUrl.trim()) {
+      setSaveError("Webhook URL is required.");
+      return false;
+    }
+    if (localExecType === "script" && (sends("scriptBody") || sends("executionType")) && !localScriptBody.trim()) {
+      setSaveError("Script body is required.");
+      return false;
+    }
 
     try {
       if (dbTool) {
-        await updateTool.mutateAsync({ id: dbTool.id, ...payload });
+        await updateTool.mutateAsync({ id: dbTool.id, ...body });
       } else {
         const created = (await createTool.mutateAsync(payload)) as { id?: string } | undefined;
         if (created?.id) openToolDetail(created.id);
@@ -216,7 +222,7 @@ export function ToolEditor() {
       setTimeout(() => setSavedFlash(false), 1500);
       return true;
     } catch (err) {
-      setSaveError(err instanceof Error ? err.message : "Failed to save tool");
+      setSaveError(formatFirstApiValidationIssue(err, "Failed to save tool"));
       return false;
     }
   }, [
@@ -417,7 +423,7 @@ export function ToolEditor() {
               onClick={async () => {
                 if (await handleSave()) closeToolDetail();
               }}
-              className="rounded-lg bg-amber-500/20 px-3 py-1 hover:bg-amber-500/30"
+              className="rounded-lg bg-[var(--marinara-app-accent-static)]/20 px-3 py-1 text-[var(--marinara-app-accent-static)] hover:bg-[var(--marinara-app-accent-static)]/30"
             >
               {localizeUi("ui.agents.agenteditor.saveClose")}
             </button>
@@ -430,7 +436,11 @@ export function ToolEditor() {
         <div className="flex items-center gap-2 bg-red-500/10 px-4 py-2 text-xs text-red-400">
           <AlertCircle size="0.8125rem" />
           <span className="flex-1">{saveError}</span>
-          <button onClick={() => setSaveError(null)} className="rounded-lg px-2 py-0.5 hover:bg-red-500/20">
+          <button
+            onClick={() => setSaveError(null)}
+            aria-label={localizeUi("editor.save.dismissError")}
+            className="rounded-lg px-2 py-0.5 text-[var(--marinara-app-accent-static)] hover:bg-[var(--marinara-app-accent-static)]/20"
+          >
             <X size="0.75rem" />
           </button>
         </div>

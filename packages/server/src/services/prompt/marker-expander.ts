@@ -35,6 +35,7 @@ import { cardPromptText } from "./card-text.js";
 import { wrapContent } from "./format-engine.js";
 import { advancedMemoryMarkerContent, type AdvancedMemoryPromptParts } from "./advanced-memory-prompt.js";
 import { sanitizeExampleDialoguePromptLeaf, sanitizePromptLeaf } from "./prompt-escaping.js";
+import { resolveChatSummaryMacros } from "./macro-context.js";
 
 /** World-info positions a lorebook marker can place: position 0 (before) and position 1 (after). */
 export type LorebookMarkerPosition = "before" | "after";
@@ -51,6 +52,7 @@ export interface MarkerContext {
   personaName: string;
   personaDescription: string;
   personaFields?: {
+    example?: string;
     personality?: string;
     scenario?: string;
     backstory?: string;
@@ -62,6 +64,8 @@ export interface MarkerContext {
   /** Optional scan-only messages for lorebook matching. */
   lorebookScanMessages?: ChatMLMessage[];
   chatSummary: string | null;
+  /** Characters a merged group reply may voice; the Chat Summary marks who knows what (#7252). */
+  chatSummaryReaders?: readonly CharacterMacroProfile[];
   advancedMemory?: AdvancedMemoryPromptParts;
   wrapFormat: WrapFormat;
   /** When false, agent_data markers expand to empty strings */
@@ -189,9 +193,9 @@ export async function expandMarker(
 ): Promise<ExpandedMarker> {
   switch (config.type) {
     case "character":
-      return expandCharacter(config, ctx);
+      return expandCharacter(config, ctx, macroOptions);
     case "persona":
-      return expandPersona(config, ctx);
+      return expandPersona(config, ctx, macroOptions);
     case "lorebook":
     case "world_info_before":
     case "world_info_after":
@@ -216,11 +220,15 @@ export async function expandMarker(
 
 // ── Character ──────────────────────────────────
 
-async function expandCharacter(config: MarkerConfig, ctx: MarkerContext): Promise<ExpandedMarker> {
+async function expandCharacter(
+  config: MarkerConfig,
+  ctx: MarkerContext,
+  macroOptions?: ResolveMacroOptions,
+): Promise<ExpandedMarker> {
   const charStorage = createCharactersStorage(ctx.db);
   const parts: string[] = [];
   for (const charId of ctx.characterIds) {
-    const row = await charStorage.getById(charId);
+    const row = await charStorage.getById(charId, ctx.chatId);
     if (!row) continue;
     const data = JSON.parse(row.data) as CharacterData;
     const profile = characterMacroProfileFromData(data);
@@ -244,7 +252,13 @@ async function expandCharacter(config: MarkerConfig, ctx: MarkerContext): Promis
       if (field === "scenario" && ctx.groupScenarioOverrideText) continue;
       const value = cardPromptText(getCharacterField(data, field));
       if (value) {
-        const resolved = resolveMacros(value, characterMacroContext);
+        const resolved = resolveMacros(
+          value,
+          characterMacroContext,
+          macroOptions?.onPersonaExampleResolved
+            ? { onPersonaExampleResolved: macroOptions.onPersonaExampleResolved }
+            : undefined,
+        );
         charParts.push(
           wrapContent(
             field === "mes_example" || field === "example_dialogue"
@@ -329,8 +343,6 @@ function getCharacterField(data: CharacterData, field: string): string {
       return data.system_prompt;
     case "post_history_instructions":
       return data.post_history_instructions;
-    case "creator_notes":
-      return data.creator_notes;
     case "mes_example":
     case "example_dialogue":
       return data.mes_example;
@@ -347,7 +359,11 @@ function getCharacterField(data: CharacterData, field: string): string {
 
 // ── Persona ────────────────────────────────────
 
-async function expandPersona(_config: MarkerConfig, ctx: MarkerContext): Promise<ExpandedMarker> {
+async function expandPersona(
+  _config: MarkerConfig,
+  ctx: MarkerContext,
+  macroOptions?: ResolveMacroOptions,
+): Promise<ExpandedMarker> {
   const parts: string[] = [];
   const pName = ctx.personaName || "User";
 
@@ -371,6 +387,16 @@ async function expandPersona(_config: MarkerConfig, ctx: MarkerContext): Promise
   }
   if (personaScenario) {
     parts.push(wrapContent(resolveSanitizedPromptLeaf(personaScenario, ctx), "scenario", ctx.wrapFormat, 2));
+  }
+
+  const personaExample = cardPromptText(ctx.personaFields?.example);
+  if (personaExample) {
+    const resolvedExample = sanitizeExampleDialoguePromptLeaf(
+      resolveMacros(personaExample, ctx.macroCtx),
+      ctx.wrapFormat,
+    );
+    macroOptions?.onPersonaExampleResolved?.(resolvedExample);
+    parts.push(wrapContent(resolvedExample, "example_dialogue", ctx.wrapFormat, 2));
   }
 
   // Include RPG attributes if enabled
@@ -562,7 +588,7 @@ async function expandDialogueExamples(_config: MarkerConfig, ctx: MarkerContext)
   const parts: string[] = [];
 
   for (const charId of ctx.characterIds) {
-    const row = await charStorage.getById(charId);
+    const row = await charStorage.getById(charId, ctx.chatId);
     if (!row) continue;
     const data = JSON.parse(row.data) as CharacterData;
 
@@ -582,7 +608,8 @@ async function expandDialogueExamples(_config: MarkerConfig, ctx: MarkerContext)
 // ── Chat Summary ───────────────────────────────
 
 function expandChatSummary(ctx: MarkerContext, macroOptions?: ResolveMacroOptions): ExpandedMarker {
-  return { content: resolveSanitizedPromptLeaf(ctx.chatSummary ?? "", ctx, ctx.macroCtx, macroOptions) };
+  const summary = resolveChatSummaryMacros(ctx.chatSummary ?? "", ctx.macroCtx, macroOptions, ctx.chatSummaryReaders);
+  return { content: sanitizePromptLeaf(summary, ctx.wrapFormat) };
 }
 
 // ── Agent Data ─────────────────────────────────

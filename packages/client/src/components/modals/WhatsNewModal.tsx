@@ -49,6 +49,280 @@ function localizedCopy(key: string): ReleaseCopy {
 // Add each release here before its version ships. Versions without a tailored
 // entry still get a one-time update notice and a link to their full release.
 const RELEASE_ANNOUNCEMENTS: Record<string, ReleaseAnnouncement> = {
+  "2.5.2": {
+    headline: localizedCopy("ui.modals.whatsnewmodal.release252.headline"),
+    intro: localizedCopy("ui.modals.whatsnewmodal.release252.intro"),
+    highlights: [],
+    story: [
+      {
+        id: "otomeHearth",
+        copyKey: "ui.modals.whatsnewmodal.release252.paragraphs.otomeHearth",
+        media: [
+          {
+            url: "/releases/2.5.2/otome-home.jpg",
+            altKey: "ui.modals.whatsnewmodal.release252.media.otomeHearth",
+          },
+        ],
+      },
+      {
+        id: "otomeStory",
+        copyKey: "ui.modals.whatsnewmodal.release252.paragraphs.otomeStory",
+        media: [
+          {
+            url: "/releases/2.5.2/otome-reader.jpg",
+            altKey: "ui.modals.whatsnewmodal.release252.media.otomeStory",
+          },
+          {
+            url: "/releases/2.5.2/otome-reader.mp4",
+            altKey: "ui.modals.whatsnewmodal.release252.media.otomeStory2",
+            kind: "video",
+          },
+        ],
+      },
+      {
+        id: "otomeDates",
+        copyKey: "ui.modals.whatsnewmodal.release252.paragraphs.otomeDates",
+        media: [
+          {
+            url: "/releases/2.5.2/otome-claw.jpg",
+            altKey: "ui.modals.whatsnewmodal.release252.media.otomeDates",
+          },
+        ],
+      },
+      {
+        id: "connections",
+        copyKey: "ui.modals.whatsnewmodal.release252.paragraphs.connections",
+        media: [
+          {
+            url: "/releases/2.5.2/connections-add.mp4",
+            altKey: "ui.modals.whatsnewmodal.release252.media.connections",
+            kind: "video",
+          },
+          {
+            url: "/releases/2.5.2/connections-account.jpg",
+            altKey: "ui.modals.whatsnewmodal.release252.media.connections2",
+          },
+        ],
+      },
+      {
+        id: "connectionsPicker",
+        copyKey: "ui.modals.whatsnewmodal.release252.paragraphs.connectionsPicker",
+        media: [
+          {
+            url: "/releases/2.5.2/connections-model-picker.jpg",
+            altKey: "ui.modals.whatsnewmodal.release252.media.connectionsPicker",
+          },
+        ],
+      },
+      {
+        id: "saucelings",
+        copyKey: "ui.modals.whatsnewmodal.release252.paragraphs.saucelings",
+        media: [
+          {
+            url: "/releases/2.5.2/saucelings-nook.jpg",
+            altKey: "ui.modals.whatsnewmodal.release252.media.saucelings",
+          },
+        ],
+      },
+      {
+        id: "saucelingsCare",
+        copyKey: "ui.modals.whatsnewmodal.release252.paragraphs.saucelingsCare",
+        media: [
+          {
+            url: "/releases/2.5.2/saucelings-care.mp4",
+            altKey: "ui.modals.whatsnewmodal.release252.media.saucelingsCare",
+            kind: "video",
+          },
+        ],
+      },
+      {
+        id: "storyWriter",
+        copyKey: "ui.modals.whatsnewmodal.release252.paragraphs.storyWriter",
+        media: [
+          {
+            url: "/releases/2.5.2/story-writer.jpg",
+            altKey: "ui.modals.whatsnewmodal.release252.media.storyWriter",
+          },
+        ],
+      },
+      {
+        id: "agentOrganizer",
+        copyKey: "ui.modals.whatsnewmodal.release252.paragraphs.agentOrganizer",
+      },
+      {
+        id: "mari",
+        copyKey: "ui.modals.whatsnewmodal.release252.paragraphs.mari",
+      },
+      {
+        id: "signIn",
+        copyKey: "ui.modals.whatsnewmodal.release252.paragraphs.signIn",
+      },
+      {
+        id: "gachaForge",
+        copyKey: "ui.modals.whatsnewmodal.release252.paragraphs.gachaForge",
+      },
+      {
+        id: "memory",
+        copyKey: "ui.modals.whatsnewmodal.release252.paragraphs.memory",
+      },
+      {
+        id: "videoAndSound",
+        copyKey: "ui.modals.whatsnewmodal.release252.paragraphs.videoAndSound",
+      },
+      {
+        id: "avatars3d",
+        copyKey: "ui.modals.whatsnewmodal.release252.paragraphs.avatars3d",
+      },
+      {
+        id: "smallerThings",
+        copyKey: "ui.modals.whatsnewmodal.release252.paragraphs.smallerThings",
+      },
+      {
+        id: "headsUp",
+        copyKey: "ui.modals.whatsnewmodal.release252.paragraphs.headsUp",
+      },
+      {
+        id: "thanks",
+        copyKey: "ui.modals.whatsnewmodal.release252.paragraphs.thanks",
+      },
+    ],
+    outro: localizedCopy("ui.modals.whatsnewmodal.release252.outro"),
+  },
+  "2.5.1": {
+    headline: localizedCopy("ui.modals.whatsnewmodal.release251.headline"),
+    intro: localizedCopy("ui.modals.whatsnewmodal.release251.intro"),
+    highlights: [],
+    story: [
+      {
+        id: "avatars2d",
+        copyKey: "ui.modals.whatsnewmodal.release251.paragraphs.avatars2d",
+        media: [
+          {
+            url: "/releases/2.5.1/avatar-2d.mp4",
+            altKey: "ui.modals.whatsnewmodal.release251.media.avatars2d",
+            kind: "video",
+          },
+          {
+            url: "/releases/2.5.1/avatar-mesh.mp4",
+            altKey: "ui.modals.whatsnewmodal.release251.media.avatarsMesh",
+            kind: "video",
+          },
+        ],
+      },
+      {
+        id: "avatars2dSetup",
+        copyKey: "ui.modals.whatsnewmodal.release251.paragraphs.avatars2dSetup",
+        media: [
+          {
+            url: "/releases/2.5.1/avatar-2d-setup.jpg",
+            altKey: "ui.modals.whatsnewmodal.release251.media.avatars2dSetup",
+          },
+        ],
+      },
+      {
+        id: "avatars3d",
+        copyKey: "ui.modals.whatsnewmodal.release251.paragraphs.avatars3d",
+        media: [
+          {
+            url: "/releases/2.5.1/avatar-3d.mp4",
+            altKey: "ui.modals.whatsnewmodal.release251.media.avatars3d",
+            kind: "video",
+          },
+        ],
+      },
+      {
+        id: "avatars3dSetup",
+        copyKey: "ui.modals.whatsnewmodal.release251.paragraphs.avatars3dSetup",
+      },
+      {
+        id: "video",
+        copyKey: "ui.modals.whatsnewmodal.release251.paragraphs.video",
+        media: [
+          {
+            url: "/releases/2.5.1/video-message.jpg",
+            altKey: "ui.modals.whatsnewmodal.release251.media.video",
+          },
+        ],
+      },
+      {
+        id: "search",
+        copyKey: "ui.modals.whatsnewmodal.release251.paragraphs.search",
+        media: [
+          {
+            url: "/releases/2.5.1/search.mp4",
+            altKey: "ui.modals.whatsnewmodal.release251.media.search",
+            kind: "video",
+          },
+        ],
+      },
+      {
+        id: "mari",
+        copyKey: "ui.modals.whatsnewmodal.release251.paragraphs.mari",
+        media: [
+          {
+            url: "/releases/2.5.1/professor-mari.mp4",
+            altKey: "ui.modals.whatsnewmodal.release251.media.mari",
+            kind: "video",
+          },
+        ],
+      },
+      {
+        id: "mariMore",
+        copyKey: "ui.modals.whatsnewmodal.release251.paragraphs.mariMore",
+      },
+      {
+        id: "onboarding",
+        copyKey: "ui.modals.whatsnewmodal.release251.paragraphs.onboarding",
+        media: [
+          {
+            url: "/releases/2.5.1/onboarding.jpg",
+            altKey: "ui.modals.whatsnewmodal.release251.media.onboarding",
+          },
+        ],
+      },
+      {
+        id: "onboardingPlayers",
+        copyKey: "ui.modals.whatsnewmodal.release251.paragraphs.onboardingPlayers",
+      },
+      {
+        id: "stateEditor",
+        copyKey: "ui.modals.whatsnewmodal.release251.paragraphs.stateEditor",
+        media: [
+          {
+            url: "/releases/2.5.1/state-editor.jpg",
+            altKey: "ui.modals.whatsnewmodal.release251.media.stateEditor",
+          },
+        ],
+      },
+      {
+        id: "memory",
+        copyKey: "ui.modals.whatsnewmodal.release251.paragraphs.memory",
+        media: [
+          {
+            url: "/releases/2.5.1/recollections.jpg",
+            altKey: "ui.modals.whatsnewmodal.release251.media.memory",
+          },
+        ],
+      },
+      {
+        id: "memoryMore",
+        copyKey: "ui.modals.whatsnewmodal.release251.paragraphs.memoryMore",
+      },
+      {
+        id: "connections",
+        copyKey: "ui.modals.whatsnewmodal.release251.paragraphs.connections",
+      },
+      {
+        id: "smallerImprovements",
+        copyKey: "ui.modals.whatsnewmodal.release251.paragraphs.smallerImprovements",
+      },
+      {
+        id: "thanks",
+        copyKey: "ui.modals.whatsnewmodal.release251.paragraphs.thanks",
+      },
+    ],
+    outro: localizedCopy("ui.modals.whatsnewmodal.release251.outro"),
+  },
   "2.5.0": {
     headline: localizedCopy("ui.modals.whatsnewmodal.release250.headline"),
     intro: localizedCopy("ui.modals.whatsnewmodal.release250.intro"),
@@ -681,6 +955,7 @@ export function WhatsNewModal({
 }) {
   const { t: localizeUi } = useUiTranslation();
   const hasCompletedOnboarding = useUIStore((state) => state.hasCompletedOnboarding);
+  const whatsNewRequested = useUIStore((state) => state.whatsNewRequested);
   const [open, setOpen] = useState(false);
   const announcement = RELEASE_ANNOUNCEMENTS[APP_VERSION] ?? FALLBACK_ANNOUNCEMENT;
   const releaseUrl = `${RELEASES_URL}/tag/v${encodeURIComponent(APP_VERSION)}`;
@@ -696,6 +971,13 @@ export function WhatsNewModal({
     }
     onResolved?.();
   }, [hasCompletedOnboarding, presentationAllowed, onResolved]);
+
+  // Reopened on request (the Home widget): the same window, and the seen marker stays as it is.
+  useEffect(() => {
+    if (!whatsNewRequested) return;
+    useUIStore.getState().consumeWhatsNewRequest();
+    setOpen(true);
+  }, [whatsNewRequested]);
 
   useEffect(() => {
     onOpenChange?.(open);

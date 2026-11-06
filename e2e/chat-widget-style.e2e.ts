@@ -304,6 +304,17 @@ async function expectGradientWidgets(page: Page, settings: Locator, bubble: Loca
   await expect(title).toHaveCSS("-webkit-text-fill-color", "rgba(0, 0, 0, 0)");
 }
 
+// Custom border paint keeps a preset's thin inner button ring (#7244): a gap in the
+// background's first colour, then a ring in the border's first colour. Default has none.
+async function expectButtonRing(page: Page, bubble: Locator, preset: Preset) {
+  const ring = () =>
+    bubble.locator(".mari-window-bubble__paint").evaluate((element) => getComputedStyle(element, "::after").boxShadow);
+  if (preset === "default") return expect.poll(ring).toBe("none");
+  const gap = await resolvedStyle(page, "color", "#667eea");
+  const line = await resolvedStyle(page, "color", "#ff6b6b");
+  await expect.poll(ring).toBe(`${gap} 0px 0px 0px 2px inset, ${line} 0px 0px 0px 3px inset`);
+}
+
 async function exerciseColorControls(page: Page, preset: Preset, theme: "dark" | "light") {
   let controls = await openAppearance(page);
   const untouched = [];
@@ -329,6 +340,7 @@ async function exerciseColorControls(page: Page, preset: Preset, theme: "dark" |
       .toEqual(appearance);
   }
   await expectGradientWidgets(page, selected.locator(".mari-window"), selected.locator(".mari-window-bubble"));
+  await expectButtonRing(page, selected.locator(".mari-window-bubble"), preset);
   expect(
     await selected
       .locator(".mari-window__header")
@@ -337,6 +349,7 @@ async function exerciseColorControls(page: Page, preset: Preset, theme: "dark" |
   await clickTopbarPanel(page, "settings");
   const settings = await openChatSettings(page);
   await expectGradientWidgets(page, settings, page.locator("[data-chat-settings-button]"));
+  await expectButtonRing(page, page.locator("[data-chat-settings-button]"), preset);
   // A custom foreground/background pair must remain paired on native fields in either app theme.
   const profile = settings.getByRole("combobox", { name: "Profile", exact: true });
   await expect(profile).toHaveCSS(
@@ -586,7 +599,9 @@ for (const theme of ["dark", "light"] as const) {
     page,
     request,
   }, testInfo) => {
-    test.setTimeout(120_000);
+    // Two presets, each with its window, colour and drawer checks: about a minute on Chromium, and WebKit
+    // runs this file 2-2.5x slower, which is past 120 s every time (#8843).
+    test.setTimeout(testInfo.project.name.includes("webkit") ? 240_000 : 120_000);
     const chat = await createChat(request);
     try {
       await page.route("**/api/app-settings/ui", (route) => route.fulfill({ json: { value: "" } }));
@@ -948,6 +963,7 @@ for (const [preset, theme] of [
       await page.goto("/");
       await page.evaluate(async () => {
         const { useUIStore } = await import("/src/stores/ui.store.ts" as string);
+        useUIStore.getState().setChatFontOpacity(100);
         useUIStore.getState().setGameTextSpeed(100);
         useUIStore.getState().setGameDialogueDisplayMode("stacked");
         useUIStore.getState().setConversationMessageStyle("bubble");
@@ -1099,8 +1115,9 @@ for (const [preset, theme] of [
       const colored = await surfaceAppearance(scope.surface);
       expect(colored.radius).toBe(original.surface.radius);
       expect(colored.clip).toBe(original.surface.clip);
+      const presetBackground = await resolvedStyle(page, "background-color", PALETTES[theme][preset].background);
       expect(colored.background).toBe(
-        await resolvedStyle(page, "background-color", PALETTES[theme][preset].background),
+        await resolvedStyle(page, "background-color", `rgb(from ${PALETTES[theme][preset].background} r g b / 1)`),
       );
       await expect(scope.text).toHaveCSS("font-family", original.font);
 
@@ -1111,7 +1128,7 @@ for (const [preset, theme] of [
         const painted = await surfaceAppearance(target);
         expect(painted.radius).toBe(old.radius);
         expect(painted.clip).toBe(old.clip);
-        expect(painted.background).toBe(colored.background);
+        expect(painted.background).toBe(presetBackground);
       }
 
       controls = await openAppearance(page);
@@ -1131,7 +1148,7 @@ for (const [preset, theme] of [
           await expect(control).toHaveCount(1);
           await expect(control).toHaveCSS("font-family", selectedFont);
           const painted = await surfaceAppearance(control);
-          expect(painted.background).toBe(colored.background);
+          expect(painted.background).toBe(presetBackground);
           if (preset === "dottore") expect(painted.clip).toContain("polygon");
         }
         const path = info.outputPath(`chat-style-${preset}-${chat.view}.png`);
@@ -1142,8 +1159,20 @@ for (const [preset, theme] of [
       await controls.locator("#chat-widget-font").selectOption("@serif");
       await controls.locator("#chat-widget-shape").selectOption("cut-corner");
       await setGradientColors(controls);
+      // Cut corners keeps the preset's inner button ring under custom colors too (#7244).
+      await expectButtonRing(
+        page,
+        controls.locator(`[data-chat-widget-preview][data-chat-widget-preset="${preset}"] .mari-window-bubble`),
+        preset,
+      );
       await clickTopbarPanel(page, "settings");
+      await expectButtonRing(page, page.locator("[data-chat-settings-button]"), preset);
       const background = await resolvedStyle(page, "background-image", GRADIENT_COLORS.background);
+      const roleplayBackground = await resolvedStyle(
+        page,
+        "background-image",
+        "linear-gradient(135deg, rgb(from #667eea r g b / 1), rgb(from #764ba2 r g b / 1))",
+      );
       const border = await resolvedStyle(page, "background-image", GRADIENT_COLORS.border);
       const textGradient = await resolvedStyle(page, "background-image", GRADIENT_COLORS.text);
       for (const chat of fixture.chats) {
@@ -1154,7 +1183,9 @@ for (const [preset, theme] of [
           await expect(scope.input).toHaveCSS("-webkit-text-fill-color", "rgb(108, 92, 231)");
           for (const target of [scope.surface, scope.composer]) {
             const painted = await surfaceAppearance(target);
-            expect(painted.image).toBe(background);
+            expect(painted.image).toBe(
+              chat.view === "classic" && target === scope.surface ? roleplayBackground : background,
+            );
             expect(painted.borderImage).toBe(border);
             if (chat.mode === "conversation" && target === scope.surface) {
               expect(painted.radius).toBe(baseline.get(chat.view)!.surface.radius);

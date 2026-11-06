@@ -1,12 +1,20 @@
-import type { LLMUsage } from "../llm/base-provider.js";
+// The reason text is shared so the client-side reply checkup (diagnoseReply) can reuse it.
+export {
+  GENERIC_EMPTY_RESPONSE_MESSAGE,
+  describeEmptyModelResponse,
+  type EmptyResponseContext,
+} from "@marinara-engine/shared";
 
-export const GENERIC_EMPTY_RESPONSE_MESSAGE = "The AI returned an empty response. Try sending your message again.";
+/** Endings that mean a reply was cut off, stopped, blocked or handed to a tool before it was finished. */
+const UNFINISHED_FINISH_REASONS = new Set(["length", "abort", "error", "content_filter", "refusal", "tool_calls"]);
 
-export interface EmptyResponseContext {
-  finishReason?: string | null;
-  usage?: Pick<LLMUsage, "completionTokens" | "completionReasoningTokens"> | null;
-  maxTokens?: number | null;
-  hadThinking: boolean;
+/**
+ * Whether a reply ended before it was finished. Any other ending counts as finished: OpenAI's "stop",
+ * Anthropic's own "end_turn" or "stop_sequence" (passed through as is), or none at all. Callers that asked for a
+ * format judge the reply by whether it has that format, not by how the provider named its ending.
+ */
+export function replyUnfinished(finishReason: string | null | undefined): boolean {
+  return !!finishReason && UNFINISHED_FINISH_REASONS.has(finishReason);
 }
 
 /**
@@ -27,49 +35,22 @@ export function sentOutputBudget(
 }
 
 /**
- * Turn an empty model reply into a sentence that says what the provider
- * reported, so the user can act on it instead of retrying blind.
+ * Whether a reply with no visible text should show its provider thinking as the reply instead.
  *
- * Reasoning models spend one output budget on thinking and on text. When the
- * budget runs out mid-thought the reply is empty, and the provider says so:
- * finish_reason "length", completion tokens at the cap, nearly all of them
- * reasoning. Z.AI also reports "sensitive" (content policy) and
- * "model_context_window_exceeded" (docs.z.ai chat-completion reference); any
- * other reason is quoted verbatim rather than hidden.
+ * Some OpenAI-compatible providers put the assistant's answer in the reasoning field. Conversation
+ * mode recovers that only when reasoning was not requested. Game Mode requests reasoning by
+ * default, so it recovers too, but only from a reply that finished: one cut off mid-thought (most
+ * often a reasoning model that spent its whole output budget thinking) holds real thinking, and
+ * showing it would put the Game Master's plan in the narration box. Thinking the model tagged
+ * inline is never an answer, so Game Mode recovers only from the provider's reasoning field.
  */
-export function describeEmptyModelResponse(context: EmptyResponseContext): string {
-  const finish = typeof context.finishReason === "string" ? context.finishReason.trim().toLowerCase() : "";
-  const completion = context.usage?.completionTokens;
-  const reasoning = context.usage?.completionReasoningTokens;
-  const max = typeof context.maxTokens === "number" && context.maxTokens > 0 ? context.maxTokens : undefined;
-  const budgetSpent =
-    finish === "length" ||
-    (context.hadThinking && typeof completion === "number" && typeof max === "number" && completion >= max);
-
-  if (finish === "sensitive") {
-    return 'The provider stopped the reply for content policy (finish reason "sensitive") and returned no text.';
-  }
-  if (finish === "model_context_window_exceeded") {
-    return 'The prompt exceeded the model\'s context window (finish reason "model_context_window_exceeded"). Lower Max Context or shorten the prompt.';
-  }
-  if (budgetSpent) {
-    let spent = "";
-    if (typeof completion === "number" && typeof max === "number") {
-      spent = ` (${completion} of ${max} output tokens`;
-      spent += typeof reasoning === "number" ? `, ${reasoning} of them reasoning)` : ")";
-    }
-    return `The model used its whole output budget${spent} before writing any visible text. Raise Max Tokens or lower Reasoning Effort, then try again.`;
-  }
-  if (context.hadThinking) {
-    const details = [
-      typeof reasoning === "number" ? `${reasoning} reasoning tokens` : null,
-      finish ? `finish reason "${finish}"` : null,
-    ].filter((part): part is string => part !== null);
-    const detail = details.length ? ` (${details.join(", ")})` : "";
-    return `The model finished reasoning${detail} but returned no visible text. No output-limit exhaustion was reported. Retry, and inspect the debug response if this repeats; changing the thinking display does not change the model request.`;
-  }
-  if (finish) {
-    return `The AI returned an empty response (finish reason "${finish}"). Try sending your message again.`;
-  }
-  return GENERIC_EMPTY_RESPONSE_MESSAGE;
+export function thinkingOnlyReplyPromotable(args: {
+  chatMode: string;
+  reasoningRequested: boolean;
+  finishReason: string | null | undefined;
+  providerThinking: string;
+}): boolean {
+  if (args.chatMode === "conversation") return !args.reasoningRequested;
+  if (args.chatMode !== "game") return false;
+  return !replyUnfinished(args.finishReason) && args.providerThinking.trim().length > 0;
 }

@@ -15,8 +15,9 @@ export interface RulesetLootDrop {
   count: number;
 }
 
-/** A number written down, or dice rolled; never less than none. */
-function rolledAmount(value: number | string, roll: (sides: number) => number): number {
+/** A number written down, or dice rolled; never less than none. A market day's limits roll the same
+ *  way (#6934). */
+export function rulesetRolledAmount(value: number | string, roll: (sides: number) => number): number {
   if (typeof value === "number") return value;
   const dice = parseRulesetCombatDice(value);
   if (!dice) return 0;
@@ -40,7 +41,7 @@ export function rollRulesetLootTable(
   if (!table) return null;
   const total = table.entries.reduce((sum, entry) => sum + entry.weight, 0);
   const drops = new Map<string, RulesetLootDrop>();
-  const picks = rolledAmount(table.rolls, roll);
+  const picks = rulesetRolledAmount(table.rolls, roll);
   for (let pick = 0; pick < picks; pick++) {
     let face = roll(total);
     const line = table.entries.find((entry) => (face -= entry.weight) <= 0) ?? table.entries.at(-1)!;
@@ -61,7 +62,7 @@ export function rollRulesetLootTable(
       });
       if (matching.length > 0) found = matching[roll(matching.length) - 1];
     }
-    const count = rolledAmount(line.count, roll);
+    const count = rulesetRolledAmount(line.count, roll);
     if (!found || count < 1) continue;
     const before = drops.get(found.item)?.count ?? 0;
     drops.set(found.item, {
@@ -71,4 +72,35 @@ export function rollRulesetLootTable(
     });
   }
   return [...drops.values()];
+}
+
+/**
+ * What a creature has on it as a fight begins (1.795): each line of its `inventory` rolled for once,
+ * `chance` in a hundred, then its `count` of its item or its loot table's picks. Picks of one item
+ * are added together; an item a layer took out is not had.
+ */
+export function rollRulesetCreatureInventory(
+  definition: RulesetDefinition,
+  book: Pick<RulesetItemBook, "entries" | "coins">,
+  lines: ReadonlyArray<{ item?: string; table?: string; chance?: number; count?: number | string }>,
+  roll: (sides: number) => number,
+): RulesetLootDrop[] {
+  const had = new Map<string, RulesetLootDrop>();
+  const add = (drop: RulesetLootDrop) => {
+    const before = had.get(drop.item)?.count ?? 0;
+    had.set(drop.item, { ...drop, count: Math.min(GAME_INVENTORY_MAX_QUANTITY, before + drop.count) });
+  };
+  for (const line of lines) {
+    if (roll(100) > (line.chance ?? 100)) continue;
+    const count = rulesetRolledAmount(line.count ?? 1, roll);
+    if (line.table) {
+      // The table rolled `count` times over.
+      for (let time = 0; time < count; time++)
+        for (const drop of rollRulesetLootTable(definition, book, line.table, roll) ?? []) add(drop);
+      continue;
+    }
+    const found = line.item ? book.entries.find((entry) => entry.item === line.item) : undefined;
+    if (found && count >= 1) add({ item: found.item, name: found.name, count });
+  }
+  return [...had.values()];
 }

@@ -36,7 +36,7 @@ test("Codex connections set their thinking level in connection settings", async 
       const { useUIStore } = await import("/src/stores/ui.store.ts" as string);
       useUIStore.getState().openConnectionDetail(id);
     }, id);
-    await expect(page.getByPlaceholder("Connection name")).toHaveValue("Codex effort fixture");
+    await expect(page.getByPlaceholder("Model name", { exact: true })).toHaveValue("Codex effort fixture");
   };
 
   try {
@@ -45,7 +45,7 @@ test("Codex connections set their thinking level in connection settings", async 
 
     await page.goto("/");
     await open();
-    const defaults = page.getByRole("checkbox", { name: "Use custom defaults for this connection", exact: true });
+    const defaults = page.getByRole("checkbox", { name: "Use custom defaults for this model", exact: true });
     await defaults.scrollIntoViewIfNeeded();
     await defaults.press("Space");
     await expect(defaults).toBeChecked();
@@ -53,11 +53,11 @@ test("Codex connections set their thinking level in connection settings", async 
     const reasoning = page.getByText("Reasoning Effort", { exact: true }).locator("../../..");
     await expect(reasoning.locator("button[aria-pressed]")).toHaveText([
       "Default",
-      "low",
-      "medium",
-      "high",
-      "xhigh",
-      "max",
+      "Low",
+      "Medium",
+      "High",
+      "Extra high",
+      "Max",
     ]);
     await expect(reasoning.getByRole("button", { name: "Off", exact: true })).toHaveCount(0);
     // Turning on custom defaults starts at Default, so it does not pick a level by itself.
@@ -73,7 +73,7 @@ test("Codex connections set their thinking level in connection settings", async 
     ).toBeVisible();
     await page.keyboard.press("Escape");
 
-    const medium = reasoning.getByRole("button", { name: "medium", exact: true });
+    const medium = reasoning.getByRole("button", { name: "Medium", exact: true });
     await medium.click();
     await expect(medium).toHaveAttribute("aria-pressed", "true");
     await reasoning.scrollIntoViewIfNeeded();

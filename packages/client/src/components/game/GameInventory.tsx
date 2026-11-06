@@ -11,6 +11,7 @@ import {
   useSensors,
 } from "@dnd-kit/core";
 import {
+  Backpack,
   BookOpen,
   Check,
   ChevronLeft,
@@ -20,26 +21,46 @@ import {
   Minus,
   Package,
   Plus,
+  Power,
   Scissors,
+  Search,
   Shirt,
   Wand2,
   X,
 } from "lucide-react";
 import {
+  artIconFor,
   gameInventoryBagKey,
+  rulesetStartingGearKind,
+  rulesetStartingGearTakenBy,
   gameInventoryBearerStatus,
+  gameInventoryOverLimit,
+  gameInventoryWeightText,
   gameInventoryItemId,
   gameInventoryStackLabel,
+  rulesetMoreUsesOf,
+  rulesetOwnUsesMax,
+  rulesetChargesStart,
+  rulesetFoundStored,
   type GameInventoryBearerStatus,
   type GameInventoryWear,
   type RulesetDefinition,
   type RulesetItemBook,
   type RulesetItemBookEntry,
+  type RulesetItemBookSheets,
+  type RulesetLayerOptions,
+  type RulesetStartingGearSelection,
 } from "@marinara-engine/shared";
 import { cn } from "../../lib/utils";
+import { isModalOverlayOpen } from "../../lib/modal-overlay-registry";
+import { GAME_SECTION_CLASS } from "../../lib/chat-widget-colors";
 import { defaultInventorySplitSize, parseInventoryAmount, parseInventoryCount } from "../../lib/game-inventory-amount";
 import { useTranslation as useUiTranslation } from "react-i18next";
 import { RulesetItemPicker, rulesetItemEffectLines, rulesetItemStatsLine } from "./RulesetItemPicker";
+import { useRulesetDefinitionText } from "../../hooks/use-ruleset-text";
+import type { RulesetText } from "../../lib/ruleset-text";
+import { StartingGearPicker, type StartingGearTaken } from "./StartingGearPicker";
+import { ArtIcon } from "./ArtIcon";
 
 /** One stack. Two stacks may hold the same item, so a stack is told apart by its id, never its name. */
 export interface InventoryItem {
@@ -61,6 +82,16 @@ export interface InventoryItem {
   loaded?: number;
   /** What an item that holds charges has left, as a fight left it. Absent reads as full. */
   charges?: number;
+  /** What is left of its further uses that count their own (1.519), by place. Absent reads as full. */
+  usesLeft?: Record<string, number>;
+  /** What it stores to be cast later (1.524), as a fight left it. */
+  storedEntries?: Array<{ entry: string; label?: string; level: number }>;
+  /** An item with a switch turned on, as the player or a fight left it (1.170). Only ever one item. */
+  on?: true;
+  /** The form an item with forms is in (1.575), from 1; absent as it was made. Only ever one item. */
+  form?: number;
+  /** Who looked it over and thinks it is a fake (1.802), while it is still called what it passes for. */
+  suspect?: string;
 }
 
 /** One party member's bag: `holder` as a stack has it (absent for the player), and the name shown. */
@@ -101,8 +132,16 @@ interface GameInventoryProps {
   /** Called when the user puts an item on or takes it off, binds or unbinds it. Resolves to the stack
    *  it is in afterwards (one item of a larger stack is taken into its own). */
   onWearItem?: (stackId: string, wear: GameInventoryWear) => Promise<string | null> | string | null;
+  /** Called when the user turns an item with a switch on or off (1.170). Resolves to the stack's id. */
+  onSwitchItem?: (stackId: string, on: boolean) => Promise<string | null> | string | null;
+  /** Called when the user turns an item into another of its forms (1.575), 0 as it was made. Resolves
+   *  to the stack's id. */
+  onFormItem?: (stackId: string, form: number) => Promise<string | null> | string | null;
   /** Called when the user wants to use an item during input phase */
-  onUseItem?: (stackId: string, itemName: string) => void;
+  onUseItem?: (stackId: string, itemName: string, more?: number, lasts?: number) => void;
+  /** Called when the user wants a ruleset item looked over before trusting it (1.802), during input
+   *  phase; offered only by a ruleset whose fakes can be spotted. */
+  onInspectItem?: (stackId: string, itemName: string) => void;
   /** Called when the user gives a stack a nickname, or its own name back. Resolves to the stack's id. */
   onRenameItem?: (stackId: string, nextName: string) => Promise<string | null> | string | null;
   /** Called when the user sets a stack's count: the +1 and -1 buttons, or a typed amount. 0 removes it. */
@@ -118,12 +157,40 @@ interface GameInventoryProps {
   onSwapItems?: (firstId: string, secondId: string) => void | Promise<void>;
   /** Whether the player can interact (input phase) */
   canInteract?: boolean;
+  /** The ruleset's starting gear (Capability API 1.78): what each bag has taken, each character's
+   *  sheet, the game's layers, whose bags it may go into (by bag key: the party members with a card),
+   *  and how to take some. With it, a row offers the gear while a bag has some kind left. */
+  startingGear?: {
+    taken: StartingGearTaken;
+    sheets?: RulesetItemBookSheets;
+    layerOptions?: RulesetLayerOptions | null;
+    holders: ReadonlySet<string>;
+    onTake: (
+      holder: string | undefined,
+      selection: RulesetStartingGearSelection,
+      again: boolean,
+      pastLimit?: boolean,
+    ) => Promise<boolean>;
+  };
 }
 
 const ITEMS_PER_PAGE = 20;
 
+/** Fields that keep Escape for themselves: in the window's own, it resets a name or drops a split or give. */
+const KEEPS_ESCAPE_SELECTOR =
+  "textarea, select, [contenteditable='true'], input:not([type='checkbox'], [type='radio'], [type='range'], [type='button'], [type='submit'], [type='reset'], [type='color'], [type='file'])";
+
 /** A drop's change is fire-and-forget: whoever handles it says what went wrong, and a rejection it
  *  did not catch is not left unhandled here. */
+/** How long what a use makes may last (Capability API 1.760), each a button of its own picked by its
+ *  place from 1, when there are several to pick from; one plain button otherwise. */
+function lastsPicks(
+  lasts: ReadonlyArray<{ label?: string; minutes: number }> | undefined,
+): Array<{ label: string; at: number } | undefined> {
+  if (!lasts || lasts.length < 2) return [undefined];
+  return lasts.map((one, n) => ({ label: one.label ?? String(n + 1), at: n + 1 }));
+}
+
 function settle(result: unknown): void {
   void Promise.resolve(result).catch(() => undefined);
 }
@@ -139,7 +206,10 @@ export function GameInventory({
   onAddRulesetItems,
   placeAmong,
   onWearItem,
+  onSwitchItem,
+  onFormItem,
   onUseItem,
+  onInspectItem,
   onRenameItem,
   onSetItemQuantity,
   onSplitItem,
@@ -147,8 +217,10 @@ export function GameInventory({
   onGiveItem,
   onSwapItems,
   canInteract,
+  startingGear,
 }: GameInventoryProps) {
   const { t: localizeUi } = useUiTranslation();
+  const rulesetText = useRulesetDefinitionText(rulesetDefinition ?? { id: "", version: 0 });
   const [selectedItem, setSelectedItem] = useState<string | null>(null);
   // What was typed as a new name, kept with the stack and name it was typed for.
   const [renameTyped, setRenameTyped] = useState<{ key: string; text: string } | null>(null);
@@ -163,6 +235,7 @@ export function GameInventory({
   const [giveDraft, setGiveDraft] = useState<{ to: string; count: string } | null>(null);
   const [givePending, setGivePending] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [gearOpen, setGearOpen] = useState(false);
   const [view, setView] = useState<InventoryView>({ kind: "all" });
   const [pageIndex, setPageIndex] = useState(0);
 
@@ -195,8 +268,8 @@ export function GameInventory({
   }, []);
 
   const handleUse = useCallback(
-    (stackId: string, itemName: string) => {
-      onUseItem?.(stackId, itemName);
+    (stackId: string, itemName: string, more?: number, lasts?: number) => {
+      onUseItem?.(stackId, itemName, more, lasts);
       setSelectedItem(null);
     },
     [onUseItem],
@@ -243,6 +316,26 @@ export function GameInventory({
     setPageIndex((current) => Math.min(current, pageCount - 1));
   }, [pageCount]);
 
+  // Escape closes the window, as its X does. Read in the capture phase, before a picker `Modal` above
+  // it takes the same press from its `document` listener and drops out of the overlay registry, so a
+  // press that closes the picker leaves the window open. Claimed, so a window the game sits in stays.
+  // The latest `onClose` is read at the press, so a new one each render does not re-add the listener.
+  const onCloseRef = useRef(onClose);
+  useEffect(() => {
+    onCloseRef.current = onClose;
+  }, [onClose]);
+  useEffect(() => {
+    if (!open) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.isComposing || event.defaultPrevented || isModalOverlayOpen()) return;
+      if (event.target instanceof Element && event.target.closest(KEEPS_ESCAPE_SELECTOR)) return;
+      event.preventDefault();
+      onCloseRef.current();
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [open]);
+
   useEffect(() => {
     if (!selectedItem) return;
     const selectedIndex = visibleItems.findIndex((item) => item.id === selectedItem);
@@ -272,6 +365,37 @@ export function GameInventory({
   );
 
   const activeHolder = activeBag?.holder;
+  // Starting gear: offered wherever the ruleset has some, and named as taken once every kind of it is
+  // in the bag in view (any bag, in the shared view), when it can still be taken again.
+  const gearKinds = useMemo(
+    () =>
+      rulesetDefinition
+        ? new Set(
+            (rulesetDefinition.items?.startingGear ?? []).map((each) =>
+              rulesetStartingGearKind(rulesetDefinition, each.id),
+            ),
+          )
+        : new Set<string>(),
+    [rulesetDefinition],
+  );
+  const gearOffered = Boolean(startingGear && itemBook && gearKinds.size > 0);
+  // Gear goes into the player's bag or a party member's with a card, which the server checks too.
+  const gearBags = useMemo(() => {
+    const allowed = bags.filter((bag) => !bag.holder || startingGear?.holders.has(gameInventoryBagKey(bag.holder)));
+    return allowed.length > 0 ? allowed : [{ name: "" }];
+  }, [bags, startingGear?.holders]);
+  const kindsTaken = (holder: string | undefined) =>
+    new Set(
+      rulesetStartingGearTakenBy(startingGear?.taken ?? {}, gameInventoryBagKey(holder)).map((id) =>
+        rulesetDefinition ? rulesetStartingGearKind(rulesetDefinition, id) : id,
+      ),
+    );
+  const gearBagInView =
+    activeBag && gearBags.find((bag) => gameInventoryBagKey(bag.holder) === gameInventoryBagKey(activeBag.holder));
+  const gearLeft = (activeBag ? (gearBagInView ? [gearBagInView] : []) : gearBags).some((bag) => {
+    const taken = kindsTaken(bag.holder);
+    return [...gearKinds].some((kind) => !taken.has(kind));
+  });
   // From the shared view, an addition is put wherever it can be carried; from a tab, into that bag.
   const addAmong = activeView.kind === "all" && itemBook?.bearer ? placeAmong : undefined;
   const handleAdd = useCallback(async () => {
@@ -316,6 +440,32 @@ export function GameInventory({
       }
     },
     [onWearItem],
+  );
+  const handleSwitch = useCallback(
+    async (item: InventoryItem) => {
+      if (!onSwitchItem) return;
+      setWearPending(true);
+      try {
+        const switchedId = await onSwitchItem(item.id, item.on !== true);
+        if (switchedId) setSelectedItem(switchedId);
+      } finally {
+        setWearPending(false);
+      }
+    },
+    [onSwitchItem],
+  );
+  const handleForm = useCallback(
+    async (item: InventoryItem, form: number) => {
+      if (!onFormItem) return;
+      setWearPending(true);
+      try {
+        const formedId = await onFormItem(item.id, form);
+        if (formedId) setSelectedItem(formedId);
+      } finally {
+        setWearPending(false);
+      }
+    },
+    [onFormItem],
   );
   // What the bag in view carries and wears against what its bearer can: the player's own in the
   // shared view when there are no other bags.
@@ -500,9 +650,18 @@ export function GameInventory({
         right: "var(--mari-chat-ui-inset-right, 0px)",
       }}
     >
-      <div className="relative flex max-h-[85vh] w-full max-w-md flex-col overflow-hidden rounded-lg border border-white/10 bg-black shadow-[0_0_40px_rgba(0,0,0,0.8)] supports-[height:100dvh]:max-h-[85dvh]">
+      <div
+        data-game-section="inventory"
+        className={cn(
+          GAME_SECTION_CLASS,
+          "relative flex max-h-[85vh] w-full max-w-md flex-col overflow-hidden rounded-lg border border-white/10 bg-black shadow-[0_0_40px_rgba(0,0,0,0.8)] supports-[height:100dvh]:max-h-[85dvh]",
+        )}
+      >
         {/* Header */}
-        <div className="flex items-center justify-between border-b border-white/8 bg-white/[0.02] px-4 py-3">
+        <div
+          data-phone-toast-header
+          className="flex items-center justify-between border-b border-white/8 bg-white/[0.02] px-4 py-3"
+        >
           <div className="flex items-center gap-2">
             <Package size={15} className="text-amber-400/80" />
             <h2 className="text-sm font-semibold tracking-wide text-white/90">
@@ -517,7 +676,8 @@ export function GameInventory({
           </div>
           <button
             onClick={onClose}
-            aria-label={localizeUi("navigation.common.close")}
+            aria-label={localizeUi("ui.game.gameinventory.closeInventory")}
+            title={localizeUi("ui.game.gameinventory.closeInventory")}
             className="rounded p-1 text-white/40 transition-colors hover:bg-white/10 hover:text-white/70"
           >
             <X size={14} />
@@ -561,7 +721,7 @@ export function GameInventory({
 
           {/* What the bag in view carries and wears against what its bearer can; in the shared view with
               several bags, each bag's load. */}
-          {bagStatus && <BearerStatusLine status={bagStatus} bindingLabel={bindingLabel} />}
+          {bagStatus && <BearerStatusLine status={bagStatus} bindingLabel={bindingLabel} unit={itemBook?.weightUnit} />}
           {!bagStatus && activeView.kind === "all" && showBags && itemBook?.bearer && (
             <div className="flex flex-wrap gap-1 border-b border-white/8 px-3 py-1.5">
               {bags.map((bag) => {
@@ -578,7 +738,7 @@ export function GameInventory({
                     {localizeUi("ui.game.gameinventory.bagLoad", {
                       who: bag.name,
                       load: roundLoad(status.load),
-                      max: roundLoad(status.encumberedAbove),
+                      max: gameInventoryWeightText(status.encumberedAbove, itemBook?.weightUnit),
                     })}
                   </span>
                 );
@@ -645,6 +805,7 @@ export function GameInventory({
                         globalIndex={globalIndex}
                         holderName={showBags && activeView.kind === "all" && item ? bagName(item.holder) : undefined}
                         bindingLabel={bindingLabel}
+                        icons={item ? stackIcons(item, itemBook) : undefined}
                         selected={Boolean(item && selectedItem === item.id)}
                         reorderEnabled={Boolean(onSwapItems || onMergeItems || onGiveItem)}
                         onClick={() => item && handleItemClick(item)}
@@ -690,14 +851,23 @@ export function GameInventory({
                     {localizeUi("ui.game.gameinventory.carriedBy", { value1: bagName(selectedInventoryItem.holder) })}
                   </span>
                 )}
+                {selectedInventoryItem.suspect && (
+                  <span className="ml-1.5 rounded border border-red-500/25 bg-red-500/10 px-1 font-normal text-red-300">
+                    {localizeUi("ui.game.gameinventory.suspectValue1", { value1: selectedInventoryItem.suspect })}
+                  </span>
+                )}
               </div>
             )}
             {selectedRulesetItem && (
               <RulesetItemDetails
                 details={selectedRulesetItem}
+                rt={rulesetText}
                 bound={selectedInventoryItem?.bound === true}
                 loaded={selectedInventoryItem?.loaded}
                 charges={selectedInventoryItem?.charges}
+                usesLeft={selectedInventoryItem?.usesLeft}
+                stackId={selectedInventoryItem?.id}
+                storedEntries={selectedInventoryItem?.storedEntries}
               />
             )}
             {onRenameItem && selectedInventoryItem && (
@@ -992,24 +1162,128 @@ export function GameInventory({
                   {bindingLabel ?? localizeUi("ui.game.gameinventory.bound")}
                 </button>
               )}
-              {selectedInventoryItem && canInteract && onUseItem && (
+              {selectedInventoryItem &&
+                selectedRulesetItem?.toggle &&
+                selectedInventoryItem.quantity === 1 &&
+                onSwitchItem && (
+                  <button
+                    type="button"
+                    aria-pressed={selectedInventoryItem.on === true}
+                    disabled={wearPending}
+                    onClick={() => void handleSwitch(selectedInventoryItem)}
+                    className={cn(
+                      "flex h-7 shrink-0 items-center justify-center gap-1 rounded border px-2 text-[0.7rem] transition-colors disabled:cursor-not-allowed disabled:opacity-40",
+                      selectedInventoryItem.on
+                        ? "border-amber-500/20 bg-amber-500/10 font-semibold text-amber-300 hover:bg-amber-500/15"
+                        : "border-white/8 bg-white/[0.03] text-white/70 hover:bg-white/[0.06]",
+                    )}
+                    title={localizeUi("ui.game.gameinventory.switchHint")}
+                  >
+                    <Power size={12} />
+                    {selectedRulesetItem.toggle.label}
+                  </button>
+                )}
+              {/* Its forms (1.575): what it is as made, then each other form. */}
+              {selectedInventoryItem &&
+                selectedRulesetItem?.forms &&
+                selectedInventoryItem.quantity === 1 &&
+                onFormItem &&
+                selectedRulesetItem.forms.map((label, form) => (
+                  <button
+                    key={label}
+                    type="button"
+                    aria-pressed={(selectedInventoryItem.form ?? 0) === form}
+                    disabled={wearPending || (selectedInventoryItem.form ?? 0) === form}
+                    onClick={() => void handleForm(selectedInventoryItem, form)}
+                    className={cn(
+                      "flex h-7 shrink-0 items-center justify-center gap-1 rounded border px-2 text-[0.7rem] transition-colors disabled:cursor-not-allowed",
+                      (selectedInventoryItem.form ?? 0) === form
+                        ? "border-amber-500/20 bg-amber-500/10 font-semibold text-amber-300"
+                        : "border-white/8 bg-white/[0.03] text-white/70 hover:bg-white/[0.06] disabled:opacity-40",
+                    )}
+                    title={localizeUi("ui.game.gameinventory.formHint")}
+                  >
+                    {label}
+                  </button>
+                ))}
+              {selectedInventoryItem &&
+                canInteract &&
+                onUseItem &&
+                // What it makes lasting as long as its user picks (1.760): one button for each.
+                lastsPicks(selectedRulesetItem?.entry.item?.use?.makesItems?.lasts).map((pick) => (
+                  <button
+                    key={pick?.label ?? "use"}
+                    onClick={() =>
+                      // A nickname is said with the item's own name, in the "Nickname (Name)" form the Game
+                      // Master's inventory block uses, so it knows what it is.
+                      handleUse(
+                        selectedInventoryItem.id,
+                        `${
+                          selectedInventoryItem.nickname
+                            ? `${selectedLabel} (${selectedInventoryItem.name})`
+                            : selectedLabel
+                        }${pick ? `: ${pick.label}` : ""}`,
+                        undefined,
+                        pick?.at,
+                      )
+                    }
+                    className="flex flex-1 items-center justify-center gap-1 rounded border border-amber-500/20 bg-amber-500/10 py-1.5 text-[0.7rem] font-semibold text-amber-400 transition-colors hover:bg-amber-500/15"
+                  >
+                    <Wand2 size={12} />
+                    {pick ? pick.label : localizeUi("ui.agents.agenteditor.use")}
+                  </button>
+                ))}
+              {selectedInventoryItem && selectedInventoryItem.item && canInteract && onInspectItem && (
                 <button
-                  onClick={() =>
-                    // A nickname is said with the item's own name, in the "Nickname (Name)" form the Game
-                    // Master's inventory block uses, so it knows what it is.
-                    handleUse(
+                  type="button"
+                  onClick={() => {
+                    onInspectItem(
                       selectedInventoryItem.id,
                       selectedInventoryItem.nickname
                         ? `${selectedLabel} (${selectedInventoryItem.name})`
                         : selectedLabel,
-                    )
-                  }
-                  className="flex flex-1 items-center justify-center gap-1 rounded border border-amber-500/20 bg-amber-500/10 py-1.5 text-[0.7rem] font-semibold text-amber-400 transition-colors hover:bg-amber-500/15"
+                    );
+                    setSelectedItem(null);
+                  }}
+                  className="flex h-7 shrink-0 items-center justify-center gap-1 rounded border border-white/8 bg-white/[0.03] px-2 text-[0.7rem] text-white/70 transition-colors hover:bg-white/[0.06]"
+                  title={localizeUi("ui.game.gameinventory.inspectHint")}
                 >
-                  <Wand2 size={12} />
-                  {localizeUi("ui.agents.agenteditor.use")}
+                  <Search size={12} />
+                  {localizeUi("ui.game.gameinventory.inspect")}
                 </button>
               )}
+              {/* Its further uses (Capability API 1.519), each its own button. */}
+              {selectedInventoryItem &&
+                canInteract &&
+                onUseItem &&
+                (selectedRulesetItem?.entry.item?.use || selectedRulesetItem?.entry.item?.moreUsesRolled) &&
+                selectedRulesetItem.entry.item.moreUses?.map((more, n) => {
+                  // A count rolled to none for this stack (1.746) is never offered.
+                  const item = selectedRulesetItem.entry.item!;
+                  const at = more.usesOf ? rulesetMoreUsesOf(item, more) : n;
+                  const counted = at >= 0 ? item.moreUses?.[at]?.uses : undefined;
+                  if (counted && rulesetOwnUsesMax(counted, selectedInventoryItem.id, at + 1, item.moreUsesRolled) < 1)
+                    return null;
+                  return lastsPicks(more.use?.makesItems?.lasts).map((pick) => (
+                    <button
+                      key={`${more.label}-${pick?.label ?? ""}`}
+                      onClick={() =>
+                        handleUse(
+                          selectedInventoryItem.id,
+                          `${selectedLabel}: ${more.label}${pick ? ` (${pick.label})` : ""}`,
+                          n + 1,
+                          pick?.at,
+                        )
+                      }
+                      className="flex flex-1 items-center justify-center gap-1 rounded border border-amber-500/20 bg-amber-500/10 py-1.5 text-[0.7rem] font-semibold text-amber-400 transition-colors hover:bg-amber-500/15"
+                    >
+                      <Wand2 size={12} />
+                      {pick
+                        ? localizeUi("game.inventory.actionWithPick", { label: more.label, pick: pick.label })
+                        : more.label}
+                    </button>
+                  ));
+                })}
             </div>
             {(typesItems || picksItems) && (
               <div className={cn("flex gap-1.5", selectedInventoryItem && "mt-2.5")}>
@@ -1057,9 +1331,38 @@ export function GameInventory({
                 )}
               </div>
             )}
+            {gearOffered && (
+              <button
+                type="button"
+                onClick={() => setGearOpen(true)}
+                disabled={addPending}
+                className="mt-1.5 flex w-full items-center justify-center gap-1 rounded border border-white/8 bg-white/[0.03] px-2 py-1.5 text-[0.7rem] text-white/70 transition-colors hover:bg-white/[0.06] disabled:cursor-not-allowed disabled:opacity-40"
+                title={localizeUi("game.ruleset.startingGear.buttonHint")}
+              >
+                <Backpack size={12} />
+                {gearLeft
+                  ? localizeUi("game.ruleset.startingGear.button")
+                  : localizeUi("game.ruleset.startingGear.buttonTaken")}
+              </button>
+            )}
           </div>
         )}
       </div>
+      {gearOpen && startingGear && rulesetDefinition && itemBook && (
+        <StartingGearPicker
+          open
+          onClose={() => setGearOpen(false)}
+          definition={rulesetDefinition}
+          layerOptions={startingGear.layerOptions}
+          book={itemBook}
+          bags={gearBags}
+          holder={gearBagInView ? activeHolder : undefined}
+          stacks={items}
+          sheets={startingGear.sheets}
+          taken={startingGear.taken}
+          onTake={startingGear.onTake}
+        />
+      )}
       {picksItems && pickerOpen && (
         <RulesetItemPicker
           open
@@ -1079,7 +1382,16 @@ function roundLoad(value: number): string {
 }
 
 /** One bag's load against what its bearer carries, its bound items and the slots its worn items take. */
-function BearerStatusLine({ status, bindingLabel }: { status: GameInventoryBearerStatus; bindingLabel?: string }) {
+function BearerStatusLine({
+  status,
+  bindingLabel,
+  unit,
+}: {
+  status: GameInventoryBearerStatus;
+  bindingLabel?: string;
+  /** What weights are counted in (1.791). */
+  unit?: string;
+}) {
   const { t: localizeUi } = useUiTranslation();
   const chip = "rounded bg-white/8 px-1.5 py-0.5 text-[0.6rem] tabular-nums text-white/70";
   return (
@@ -1089,14 +1401,16 @@ function BearerStatusLine({ status, bindingLabel }: { status: GameInventoryBeare
           {status.limit !== undefined
             ? localizeUi("ui.game.gameinventory.loadWithLimit", {
                 load: roundLoad(status.load),
-                max: roundLoad(status.encumberedAbove),
-                limit: roundLoad(status.limit),
+                max: gameInventoryWeightText(status.encumberedAbove, unit),
+                limit: gameInventoryWeightText(status.limit, unit),
               })
             : localizeUi("ui.game.gameinventory.load", {
                 load: roundLoad(status.load),
-                max: roundLoad(status.encumberedAbove),
+                max: gameInventoryWeightText(status.encumberedAbove, unit),
               })}
           {status.encumbered && ` · ${localizeUi("ui.game.gameinventory.encumbered")}`}
+          {/* Past what they can carry at all (Free edit's heavy starting gear). */}
+          {gameInventoryOverLimit(status) && ` · ${localizeUi("ui.game.gameinventory.overLimit")}`}
         </span>
       )}
       {status.bindingMax !== undefined && (
@@ -1124,30 +1438,43 @@ function RulesetItemDetails({
   bound,
   loaded,
   charges,
+  usesLeft,
+  stackId,
+  storedEntries,
+  rt,
 }: {
   details: RulesetItemBookEntry;
+  /** The ruleset's own words in the player's language. */
+  rt: RulesetText;
   bound: boolean;
   loaded?: number;
   charges?: number;
+  usesLeft?: Record<string, number>;
+  /** Its stack, whose own rolled counts it reads (1.536). */
+  stackId?: string;
+  storedEntries?: Array<{ entry: string; label?: string; level: number }>;
 }) {
   const { t: localizeUi } = useUiTranslation();
   const { facts } = details;
   const clip = facts.attack?.clip;
   const chargesMax = facts.use?.charges?.max;
+  const heldStored =
+    storedEntries ??
+    (details.entry.item?.stores?.found ? rulesetFoundStored(details.entry.item.stores, stackId) : undefined);
   const binds = details.entry.item?.binds;
   const kind = [facts.category, facts.rarity, ...facts.tags].filter((word): word is string => !!word);
-  const stats = rulesetItemStatsLine(facts);
+  const stats = rulesetItemStatsLine(facts, rt);
   return (
     <div className="mb-2.5 space-y-1">
       <div className="flex flex-wrap gap-1">
         {kind.map((word) => (
           <span key={word} className="rounded bg-white/8 px-1.5 py-0.5 text-[0.6rem] text-white/80">
-            {word}
+            {rt(word)}
           </span>
         ))}
       </div>
       {stats && <div className="text-[0.65rem] leading-tight text-white/70">{stats}</div>}
-      {rulesetItemEffectLines(facts, localizeUi).map((line) => (
+      {rulesetItemEffectLines(facts, localizeUi, rt).map((line) => (
         <div key={line} className="text-[0.65rem] leading-tight text-white/70">
           {line}
         </div>
@@ -1160,9 +1487,38 @@ function RulesetItemDetails({
       {chargesMax !== undefined && (
         <div className="text-[0.65rem] leading-tight text-white/70">
           {localizeUi("ui.game.gameinventory.chargesLeft", {
-            now: Math.min(charges ?? chargesMax, chargesMax),
+            // Found with rolled charges (1.573) until something changed them.
+            now: Math.min(charges ?? rulesetChargesStart(facts.use!.charges!, chargesMax, stackId), chargesMax),
             max: chargesMax,
           })}
+        </div>
+      )}
+      {details.entry.item?.moreUses?.map((more, n) => {
+        if (!more.uses) return null;
+        const most = rulesetOwnUsesMax(more.uses, stackId, n + 1, details.entry.item?.moreUsesRolled);
+        return (
+          <div key={more.label} className="text-[0.65rem] leading-tight text-white/70">
+            {localizeUi("ui.game.gameinventory.usesLeft", {
+              label: more.label,
+              now: Math.min(usesLeft?.[String(n + 1)] ?? most, most),
+              max: most,
+            })}
+          </div>
+        );
+      })}
+      {/* What it stores to be cast later (1.524): a Ring of Spell Storing's spells, or what it was found
+          holding (1.576) until a fight changed them. */}
+      {details.entry.item?.stores && (
+        <div className="text-[0.65rem] leading-tight text-white/70">
+          {heldStored?.length
+            ? localizeUi("ui.game.gameinventory.stored", {
+                entries: heldStored
+                  .map((one) => `${one.label ?? one.entry.slice(one.entry.indexOf("/") + 1)} (${one.level})`)
+                  .join(", "),
+                levels: heldStored.reduce((total, one) => total + one.level, 0),
+                max: details.entry.item.stores.levels,
+              })
+            : localizeUi("ui.game.gameinventory.storedNone", { max: details.entry.item.stores.levels })}
         </div>
       )}
       {details.summary && <div className="text-[0.65rem] leading-tight text-white/55">{details.summary}</div>}
@@ -1242,9 +1598,25 @@ interface InventorySlotProps {
   holderName?: string;
   /** The ruleset's word for bound, said of a bound stack. */
   bindingLabel?: string;
+  /** The icons it may be drawn with, best first (1.338); its first letter when the pack has none. */
+  icons?: ReadonlyArray<string | null>;
   selected: boolean;
   reorderEnabled: boolean;
   onClick: () => void;
+}
+
+/** The icons a stack may be drawn with, best first (1.338): its ruleset item's own, the one named by its
+ *  entry, then the one named by its own name. */
+function stackIcons(stack: InventoryItem, itemBook: RulesetItemBook | undefined): Array<string | null> {
+  const cut = stack.item?.indexOf("/") ?? -1;
+  const entry = stack.item ? itemBook?.itemOf(stack.item) : undefined;
+  return [
+    entry?.entry.icon ?? null,
+    stack.item && cut > 0
+      ? artIconFor({ catalog: stack.item.slice(0, cut), entry: stack.item.slice(cut + 1), item: true })
+      : null,
+    artIconFor({ item: stack.name }),
+  ];
 }
 
 function InventorySlot({
@@ -1252,6 +1624,7 @@ function InventorySlot({
   globalIndex,
   holderName,
   bindingLabel,
+  icons,
   selected,
   reorderEnabled,
   onClick,
@@ -1351,9 +1724,15 @@ function InventorySlot({
       )}
       {item && (
         <>
-          <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded bg-gradient-to-b from-white/8 to-white/[0.02] text-sm font-bold text-amber-400/80 ring-1 ring-white/8">
-            {label.charAt(0).toUpperCase()}
-          </div>
+          <ArtIcon
+            ids={icons ?? []}
+            className="h-8 w-8"
+            fallback={
+              <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded bg-gradient-to-b from-white/8 to-white/[0.02] text-sm font-bold text-amber-400/80 ring-1 ring-white/8">
+                {label.charAt(0).toUpperCase()}
+              </div>
+            }
+          />
           <div className="mt-1 flex min-h-0 w-full min-w-0 flex-1 flex-col items-center justify-center px-1">
             <div className="flex max-h-full min-h-0 w-full min-w-0 flex-col items-center gap-0.5 overflow-hidden max-md:overflow-y-auto max-md:overscroll-contain max-md:touch-pan-y">
               <span className="block w-full whitespace-normal break-words text-center text-[0.58rem] font-medium leading-tight text-white/80 [overflow-wrap:anywhere]">

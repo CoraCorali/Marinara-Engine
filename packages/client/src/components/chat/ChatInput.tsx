@@ -34,8 +34,9 @@ import { useCommitSpatialOwnerTurn } from "../../hooks/use-spatial-context";
 import { useApplyRegex } from "../../hooks/use-apply-regex";
 import { useInstalledCapabilityPackages } from "../../hooks/use-capability-packages";
 import { useCreateMessage, useDeleteMessage, useUpdateMessageExtra, chatKeys } from "../../hooks/use-chats";
+import { isConnectionFlagTrue } from "../../lib/connection-filters";
 import { useConnections } from "../../hooks/use-connections";
-import { characterKeys } from "../../hooks/use-characters";
+import { characterKeys, ensureCharacterAndPersonaLists } from "../../hooks/use-characters";
 import {
   buildGuidedGenerationInstructionMessage,
   formatTextQuotes,
@@ -50,10 +51,11 @@ import {
   shouldExecuteQuickPostAsCommand,
   getSlashCompletions,
   getSlashCommandUsage,
+  withComposerReplyAndAttachments,
   type SlashCommand,
   type SlashCommandContext,
 } from "../../lib/slash-commands";
-import { createInputMacroResolverForChat, isPromptPreviewMacro } from "../../lib/chat-macros";
+import { isPromptPreviewMacro, prepareUserInputMessage } from "../../lib/chat-macros";
 import { parseChatMetadata } from "../../lib/chat-display";
 import type { AvatarCrop } from "@marinara-engine/shared";
 import { cn, getAvatarCropStyle } from "../../lib/utils";
@@ -206,6 +208,8 @@ interface ChatInputProps {
   ) => void | Promise<void>;
   onPeekPrompt?: () => void;
   onIllustrate?: (prompt?: string, messageRange?: [string, string]) => void | Promise<void>;
+  onHtml?: (prompt?: string) => void | Promise<void>;
+  onRoleplayVideo?: (description?: string) => void | Promise<void>;
   combatAgentEnabled?: boolean;
   onStartEncounter?: () => void;
   /** Fork: opens the Director's chair. */
@@ -221,6 +225,8 @@ export const ChatInput = memo(function ChatInput({
   onExpressionChange,
   onPeekPrompt,
   onIllustrate,
+  onHtml,
+  onRoleplayVideo,
   combatAgentEnabled,
   onStartEncounter,
   onOpenForkDirector,
@@ -293,6 +299,7 @@ export const ChatInput = memo(function ChatInput({
   const activeChat = useChatStore((s) => s.activeChat);
   const { data: contextConnections = [] } = useConnections();
   const sidecarMaxContext = useSidecarStore((state) => state.config.contextSize);
+  const sidecarUseAsMainDefault = useSidecarStore((state) => state.config.useAsMainDefault && state.modelDownloaded);
   const showContextUsage = useUIStore((s) => s.showContextUsage);
   const chatMetadata = useMemo(() => parseChatMetadata(activeChat?.metadata), [activeChat?.metadata]);
   const { data: installedCapabilities = [] } = useInstalledCapabilityPackages();
@@ -816,6 +823,24 @@ export const ChatInput = memo(function ChatInput({
   // Get the current textarea value (always from the DOM directly)
   const getValue = () => textareaRef.current?.value ?? "";
 
+  const prepareUserMessage = useCallback(
+    async (text: string, onTranslationError: () => void) => {
+      const chat = useChatStore.getState().activeChat;
+      // Only typed macros wait for the lists, so a plain message never waits on a slow first load.
+      // ponytail: a macro that a regex script or translation adds still falls back to "User" on that
+      // first load; also check the chat's regex replacements here if that case ever matters.
+      if (text.includes("{{")) await ensureCharacterAndPersonaLists(qc);
+      return prepareUserInputMessage(text, {
+        chat,
+        characters: qc.getQueryData<Array<{ id: string; data: unknown }>>(characterKeys.list()),
+        personas: qc.getQueryData<Persona[]>(characterKeys.personas),
+        applyToUserInput,
+        onTranslationError,
+      });
+    },
+    [applyToUserInput, qc],
+  );
+
   const buildContext = useCallback((): SlashCommandContext | null => {
     if (!activeChatId) return null;
     return {
@@ -832,6 +857,10 @@ export const ChatInput = memo(function ChatInput({
         await createMessage.mutateAsync(data);
         requestChatScrollToBottom({ chatId: activeChatId, behavior: "auto" });
       },
+      prepareUserMessage: (text) =>
+        prepareUserMessage(text, () =>
+          toast.error(localizeUi("ui.chat.chatinput.failedToTranslateMessagePostingOriginal")),
+        ),
       invalidate: () => qc.invalidateQueries({ queryKey: chatKeys.all }),
       invalidateCharacter: (characterId) => qc.invalidateQueries({ queryKey: characterKeys.detail(characterId) }),
       characterNames: activeCharacterNames,
@@ -844,6 +873,8 @@ export const ChatInput = memo(function ChatInput({
         ? (characterId, expression) => onExpressionChange(characterId, expression, { immediate: true })
         : undefined,
       illustrate: onIllustrate,
+      html: onHtml,
+      roleplayVideo: onRoleplayVideo,
       availableCapabilityIds,
     };
   }, [
@@ -851,6 +882,8 @@ export const ChatInput = memo(function ChatInput({
     mode,
     generateWithNarrativeDirector,
     createMessage,
+    prepareUserMessage,
+    localizeUi,
     activeCharacterNames,
     activeChatCharacters,
     canSubmitSpatialMove,
@@ -860,6 +893,8 @@ export const ChatInput = memo(function ChatInput({
     lastMessageRole,
     onExpressionChange,
     onIllustrate,
+    onHtml,
+    onRoleplayVideo,
     availableCapabilityIds,
     pendingSpatialTransition,
     qc,
@@ -997,7 +1032,10 @@ export const ChatInput = memo(function ChatInput({
       clearInputDraft(activeChatId);
 
       try {
-        const result = await match.command.execute(match.args, ctx);
+        const result = await match.command.execute(
+          match.args,
+          withComposerReplyAndAttachments(ctx, { replyTo: replyDraft, attachments: submittedAttachments }),
+        );
         if (result.feedback) {
           setFeedback(result.feedback);
         }
@@ -1027,34 +1065,23 @@ export const ChatInput = memo(function ChatInput({
       return;
     }
 
-    // Check if the chat has a connection configured
+    // A chat without its own connection follows Main; only block when there is no Main either.
     const chat = useChatStore.getState().activeChat;
-    if (chat && !chat.connectionId) {
+    if (
+      chat &&
+      !chat.connectionId &&
+      !sidecarUseAsMainDefault &&
+      !(contextConnections as Array<{ isDefault?: unknown }>).some((connection) =>
+        isConnectionFlagTrue(connection.isDefault),
+      )
+    ) {
       toast.error(localizeUi("ui.chat.chatinput.itLooksLikeYouHavenTConnectedAnyModel"));
       return;
     }
 
-    const cachedCharacters = qc.getQueryData<Array<{ id: string; data: unknown }>>(characterKeys.list());
-    const cachedPersonas = qc.getQueryData<Persona[]>(characterKeys.personas);
-    const resolveInputMacros = createInputMacroResolverForChat(chat, cachedCharacters, cachedPersonas, normalized);
-    const chatMeta = parseChatMetadata(chat?.metadata);
-    let message = applyToUserInput(normalized, {
-      resolveMacros: resolveInputMacros,
-      scopedMode: chatMeta.scopedRegexMode,
-    });
-
-    // Input translation: translate user's message before sending
-    if (chatMeta.translateInput && message.trim()) {
-      try {
-        const { translateText } = await import("../../lib/translate-text");
-        const translated = await translateText(message, "input");
-        if (translated.trim()) message = translated;
-      } catch {
-        toast.error(localizeUi("ui.chat.chatinput.failedToTranslateMessageSendingOriginal"));
-      }
-    }
-
-    message = resolveInputMacros(message);
+    const message = await prepareUserMessage(normalized, () =>
+      toast.error(localizeUi("ui.chat.chatinput.failedToTranslateMessageSendingOriginal")),
+    );
 
     const submittingChatId = activeChatId;
     const submittedDraft = textareaRef.current?.value ?? "";
@@ -1154,11 +1181,13 @@ export const ChatInput = memo(function ChatInput({
       console.error("Send failed:", error);
     }
   }, [
+    contextConnections,
+    sidecarUseAsMainDefault,
     activeChatId,
     mode,
     isInputBusy,
     generateWithNarrativeDirector,
-    applyToUserInput,
+    prepareUserMessage,
     buildContext,
     qc,
     clearInputDraft,
@@ -1292,27 +1321,9 @@ export const ChatInput = memo(function ChatInput({
       draftTimerRef.current = null;
     }
 
-    const chat = useChatStore.getState().activeChat;
-    const cachedCharacters = qc.getQueryData<Array<{ id: string; data: unknown }>>(characterKeys.list());
-    const cachedPersonas = qc.getQueryData<Persona[]>(characterKeys.personas);
-    const resolveInputMacros = createInputMacroResolverForChat(chat, cachedCharacters, cachedPersonas, normalized);
-    const chatMeta = parseChatMetadata(chat?.metadata);
-    let message = applyToUserInput(normalized, {
-      resolveMacros: resolveInputMacros,
-      scopedMode: chatMeta.scopedRegexMode,
-    });
-
-    if (chatMeta.translateInput && message.trim()) {
-      try {
-        const { translateText } = await import("../../lib/translate-text");
-        const translated = await translateText(message, "input");
-        if (translated.trim()) message = translated;
-      } catch {
-        toast.error(localizeUi("ui.chat.chatinput.failedToTranslateMessagePostingOriginal"));
-      }
-    }
-
-    message = resolveInputMacros(message);
+    const message = await prepareUserMessage(normalized, () =>
+      toast.error(localizeUi("ui.chat.chatinput.failedToTranslateMessagePostingOriginal")),
+    );
     const submittedDraft = raw;
     const submittedHeight = textareaRef.current?.style.height ?? "auto";
     const submittedAttachments = attachments;
@@ -1393,8 +1404,7 @@ export const ChatInput = memo(function ChatInput({
     isReadingAttachments,
     attachments,
     completions,
-    applyToUserInput,
-    qc,
+    prepareUserMessage,
     syncInputState,
     clearInputDraft,
     setInputDraft,
@@ -2122,6 +2132,7 @@ export const ChatInput = memo(function ChatInput({
           dragging: isDragging,
           hasContent: hasInput || attachments.length > 0,
           layout: "roleplay",
+          className: isProfessorMariChat ? "mari-professor-composer" : undefined,
         })}
       >
         {/* Attachment button */}
@@ -2134,6 +2145,7 @@ export const ChatInput = memo(function ChatInput({
           onChange={handleFileUpload}
         />
         <button
+          type="button"
           onClick={() => fileInputRef.current?.click()}
           disabled={!activeChatId || isInputBusy}
           className={cn(
@@ -2143,6 +2155,7 @@ export const ChatInput = memo(function ChatInput({
               : "text-foreground/40 hover:bg-foreground/10 hover:text-foreground/70",
           )}
           title={t("chat.input.attachFiles")}
+          aria-label={t("chat.input.attachFiles")}
         >
           <Paperclip size="1rem" />
         </button>
@@ -2257,11 +2270,26 @@ export const ChatInput = memo(function ChatInput({
         {/* Send / Stop button */}
 
         <button
+          type="button"
           onClick={isStreaming ? () => useChatStore.getState().stopGeneration(activeChatId ?? undefined) : handleSend}
           disabled={
             (!isStreaming && (isInputBusy || isReadingAttachments)) ||
             (!hasInput && !attachments.length && !canSubmitSpatialMove && !isStreaming && !canRetry && !canContinue) ||
             !activeChatId
+          }
+          aria-label={
+            isStreaming
+              ? t("chat.input.stopGenerating")
+              : isInputBusy
+                ? t("chat.input.waitForAgents")
+                : t("chat.input.send")
+          }
+          title={
+            isStreaming
+              ? t("chat.input.stopGenerating")
+              : isInputBusy
+                ? t("chat.input.waitForAgents")
+                : t("chat.input.send")
           }
           className={cn(
             "mari-chat-send-btn flex h-9 w-9 shrink-0 items-center justify-center rounded-xl transition-all duration-200 sm:h-8 sm:w-8",

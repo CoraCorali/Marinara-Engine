@@ -7,12 +7,16 @@ import {
   createChatPresetSchema,
   updateChatPresetSchema,
   chatPresetSettingsSchema,
+  omitChatMetadataLocalDestinations,
   type ChatMode,
   type ChatPresetSettings,
   type ExportEnvelope,
 } from "@marinara-engine/shared";
+import { logger } from "../lib/logger.js";
 import { createChatPresetsStorage } from "../services/storage/chat-presets.storage.js";
+import { createCharactersStorage } from "../services/storage/characters.storage.js";
 import { createChatsStorage } from "../services/storage/chats.storage.js";
+import { prepareChatIdentityChange } from "./chats.routes.js";
 
 function toSafeExportName(name: string, fallback: string) {
   const sanitized = name
@@ -26,6 +30,13 @@ interface ChatSettingsProfileExportPayload {
   name: string;
   mode: ChatMode | "visual_novel";
   settings: ChatPresetSettings;
+}
+
+/** Outside addresses and keys in a profile stay on this install: shared files neither carry nor bring them.
+ * Persona and lorebook picks are ids from this install, so they stay too. */
+function withoutLocalDestinations(settings: ChatPresetSettings): ChatPresetSettings {
+  const { personaId: _personaId, lorebookIds: _lorebookIds, ...shared } = settings;
+  return shared.metadata ? { ...shared, metadata: omitChatMetadataLocalDestinations(shared.metadata) } : shared;
 }
 
 export async function chatPresetsRoutes(app: FastifyInstance) {
@@ -106,12 +117,35 @@ export async function chatPresetsRoutes(app: FastifyInstance) {
     if (preset.mode !== chat.mode) {
       return reply.status(409).send({ error: "Settings profile mode does not match chat mode" });
     }
-    const body = (req.body ?? {}) as { connectionId?: unknown };
+    const body = (req.body ?? {}) as { connectionId?: unknown; keepPersona?: unknown };
     const connectionId =
       typeof body.connectionId === "string" ? body.connectionId : body.connectionId === null ? null : undefined;
-    const updated = await storage.applyToChat(req.params.id, req.params.chatId, { connectionId });
+    const keepPersona = body.keepPersona === true;
+    // The profile's persona switches who the user plays the way Chat Settings does. applyToChat skips a persona
+    // that no longer exists, so only an existing one is a change.
+    const personaId = keepPersona ? null : preset.settings.personaId;
+    const announceIdentityChange =
+      personaId && (await createCharactersStorage(app.db).getPersona(personaId))
+        ? await prepareChatIdentityChange(app, chat, { personaId, personaCharacterId: null })
+        : null;
+    const updated = await storage.applyToChat(req.params.id, req.params.chatId, { connectionId, keepPersona });
     if (!updated) return reply.status(404).send({ error: "Settings profile or chat not found" });
+    await announceIdentityChange?.();
     return updated;
+  });
+
+  /** After saving a profile, update the chat settings of the other chats that use it. */
+  app.post<{ Params: { id: string } }>("/:id/apply-to-followers", async (req, reply) => {
+    const preset = await storage.getById(req.params.id);
+    if (!preset) return reply.status(404).send({ error: "Settings profile not found" });
+    if (preset.isDefault) return reply.status(400).send({ error: "Cannot save into the Default settings profile" });
+    const body = (req.body ?? {}) as { exceptChatId?: unknown };
+    const { chatIds, failed } = await storage.applyToFollowers(
+      preset.id,
+      typeof body.exceptChatId === "string" ? body.exceptChatId : null,
+    );
+    logger.info("Updated %d chats that use settings profile %s (%d failed)", chatIds.length, preset.id, failed);
+    return { updated: chatIds.length, chatIds, failed };
   });
 
   // ── Delete ──
@@ -134,7 +168,7 @@ export async function chatPresetsRoutes(app: FastifyInstance) {
     const payload: ChatSettingsProfileExportPayload = {
       name: preset.name,
       mode: preset.mode,
-      settings: preset.settings,
+      settings: withoutLocalDestinations(preset.settings),
     };
     const envelope: ExportEnvelope<ChatSettingsProfileExportPayload> = {
       type: "marinara_chat_settings_profile",
@@ -175,7 +209,7 @@ export async function chatPresetsRoutes(app: FastifyInstance) {
     const created = await storage.create({
       name: data.name.trim().slice(0, 120),
       mode: modeParsed.data,
-      settings: settingsParsed.data,
+      settings: withoutLocalDestinations(settingsParsed.data),
     });
     return created;
   });

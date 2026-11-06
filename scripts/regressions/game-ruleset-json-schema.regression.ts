@@ -11,6 +11,7 @@
  */
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { createRequire } from "node:module";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import {
@@ -50,7 +51,7 @@ assert.equal(
   // And the published schema offers a member for every kind the Engine knows, so an editor can
   // read a pool ruleset as well as it reads a summed one.
   const schema = read("../../docs/extending/ruleset.schema.json");
-  const members = (schema.properties?.resolution?.anyOf ?? []) as Array<{ properties?: { kind?: { const?: string } } }>;
+  const members = (schema.properties?.resolution?.oneOf ?? []) as Array<{ properties?: { kind?: { const?: string } } }>;
   assert.deepEqual(
     members.map((member) => member.properties?.kind?.const),
     [...RULESET_RESOLUTION_KINDS],
@@ -80,16 +81,25 @@ assert.equal(
   // `to` is a word only on a state.
   const enumTableNodes: Array<{ properties: Record<string, any> }> = [];
   const restStepNodes: Array<{ allOf?: Array<Record<string, any>> }> = [];
+  const wordsTableNodes: Array<{ properties: Record<string, any> }> = [];
+  const setColumnNodes: Array<{ properties: Record<string, any> }> = [];
+  const namedMaps: Array<Record<string, any>> = [];
+  let abilityLimits: Record<string, any> | undefined;
   const walk = (node: unknown): void => {
     if (Array.isArray(node)) return node.forEach(walk);
     if (!node || typeof node !== "object") return;
     const object = node as { properties?: Record<string, unknown> } & Constrained;
+    const map = node as Record<string, any>;
+    if (map.type === "object" && map.propertyNames && Object.hasOwn(map.properties ?? {}, "$comment")) {
+      namedMaps.push(map);
+    }
+    if (map.properties?.abilityAtMost?.propertyNames) abilityLimits = map.properties.abilityAtMost;
     const keys = Object.keys(object.properties ?? {}).filter((key) => key !== "$comment");
     // A blow and every clause beside it: the three an amount always carries, plus the two a blow or
     // a clause may carry and nothing else.
     const damageShaped =
       ["dice", "flat", "type"].every((key) => keys.includes(key)) &&
-      keys.every((key) => ["dice", "flat", "type", "plus", "save"].includes(key));
+      keys.every((key) => ["dice", "flat", "type", "plus", "save", "targetIs", "when"].includes(key));
     if (damageShaped) damageNodes.push(object);
     if (checkKeys.every((key) => keys.includes(key))) checkNodes.push(object);
     if (keys.length === 2 && keys.includes("from") && keys.includes("min")) faceNodes.push(object);
@@ -101,6 +111,12 @@ assert.equal(
       enumTableNodes.push(object as { properties: Record<string, any> });
     }
     if (["track", "state", "to", "by"].every((key) => keys.includes(key))) restStepNodes.push(object);
+    if ((object.properties?.op as { const?: string } | undefined)?.const === "wordsTable") {
+      wordsTableNodes.push(object as { properties: Record<string, any> });
+    }
+    if (["list", "where", "column", "to"].every((key) => keys.includes(key))) {
+      setColumnNodes.push(object as { properties: Record<string, any> });
+    }
     Object.values(node).forEach(walk);
   };
   // The same for what a combat block measures in cells: the Engine refuses any of it in a block
@@ -118,6 +134,25 @@ assert.equal(
   );
 
   walk(schema);
+  // Use the Engine's already installed validator, rather than reimplementing JSON Schema rules.
+  const serverRequire = createRequire(new URL("../../packages/server/package.json", import.meta.url));
+  const fastifyRequire = createRequire(serverRequire.resolve("fastify/package.json"));
+  const compilerRequire = createRequire(fastifyRequire.resolve("@fastify/ajv-compiler/package.json"));
+  const Ajv = compilerRequire("ajv");
+  const ajv = new Ajv({ strict: false });
+  assert.ok(namedMaps.length > 0, "the editor constrains map property names");
+  for (const map of namedMaps) {
+    const validNames = ajv.compile({ type: "object", propertyNames: map.propertyNames });
+    assert.ok(
+      validNames({ $comment: { note: "The Engine drops annotations of any value." } }),
+      JSON.stringify(validNames.errors),
+    );
+  }
+  assert.ok(abilityLimits, "the editor describes ability-limit maps");
+  const validLimits = ajv.compile(abilityLimits);
+  assert.equal(validLimits({ strength: 3, $comment: { note: "Annotated limit" } }), true);
+  assert.equal(validLimits({ "bad key!": 3 }), false, "other invalid identifier names stay rejected");
+  assert.equal(validLimits({ strength: 1001 }), false, "map values keep their original bounds");
   // Each of these is carried in `allOf` rather than merged into a node's own `anyOf`: a node that
   // already had one would be WIDENED by the extra branches instead of narrowed, and the editor
   // would call an empty object valid.
@@ -173,6 +208,13 @@ assert.equal(
     [enumTableNodes[0]!.properties.table.minProperties, enumTableNodes[0]!.properties.table.maxProperties],
     [1, 40],
   );
+  // A words table's words and a setColumn's match columns are bounded as the Engine bounds them.
+  assert.equal(wordsTableNodes.length, 1, "the schema describes a words table");
+  const words = wordsTableNodes[0]!.properties.table.propertyNames.anyOf[0];
+  assert.deepEqual([words.minLength, words.maxLength, words.pattern], [1, 40, "\\S"]);
+  assert.equal(setColumnNodes.length, 1, "the schema describes a setColumn step");
+  const where = setColumnNodes[0]!.properties.where;
+  assert.deepEqual([where.minProperties, where.maxProperties], [1, 8]);
   assert.equal(restStepNodes.length, 1, "the schema describes a rest step");
   assert.ok(
     restStepNodes[0]!.allOf?.some(
@@ -239,8 +281,8 @@ console.info("game ruleset JSON Schema regression passed.");
     not: { anyOf: RULESET_CREATURE_SHEET_REPLACES.map((key) => ({ required: [key] })) },
   });
   assert.deepEqual(rule.else, {
-    required: [...RULESET_CREATURE_PLAIN_NEEDS, "actions"],
-    properties: { actions: { minItems: 1 } },
+    required: [...RULESET_CREATURE_PLAIN_NEEDS],
+    anyOf: [{ required: ["actions"], properties: { actions: { minItems: 1 } } }, { required: ["spellcasting"] }],
   });
   // And the three numbers are not required outright, or a creature with a sheet could never be valid.
   assert.deepEqual(node.required, ["tier"]);
@@ -275,7 +317,7 @@ console.info("game ruleset JSON Schema regression passed.");
       node.allOf?.some(
         (rule: Record<string, any>) =>
           JSON.stringify(rule.anyOf) ===
-          JSON.stringify(["flat", "dice", "times", "mode"].map((key) => ({ required: [key] }))),
+          JSON.stringify(["flat", "dice", "times", "diceTimes", "mode"].map((key) => ({ required: [key] }))),
       ),
       "a mode alone is a change",
     );

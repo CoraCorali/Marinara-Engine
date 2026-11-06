@@ -6,6 +6,7 @@
  */
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { createServer } from "node:http";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -46,6 +47,12 @@ const installed: InstalledRuleset = { packageId: "ruleset-5e-2014", definition: 
   // No sheet, or something that is not one: a blank default, never invented numbers.
   assert.deepEqual(copyRulesetSheetForGame(fiveE, undefined), createRulesetSheetEnvelope(fiveE));
   assert.deepEqual(copyRulesetSheetForGame(fiveE, "garbage"), createRulesetSheetEnvelope(fiveE));
+  // The guided builder's picks go along with the build, so the game's copy opens as built.
+  const built = { ...stored, builder: { picks: { race: ["elf"] } } };
+  const builtCopy = copyRulesetSheetForGame(fiveE, built) as typeof built;
+  assert.deepEqual(builtCopy.builder, { picks: { race: ["elf"] } });
+  builtCopy.builder.picks.race.push("dwarf");
+  assert.deepEqual(built.builder.picks.race, ["elf"], "the copy's picks are its own");
   // A sheet saved under an older sheet version is carried forward to the current one.
   assert.equal(copyRulesetSheetForGame({ ...fiveE, sheet: { ...fiveE.sheet, version: 4 } }, stored).v, 4);
 }
@@ -163,7 +170,7 @@ writeFileSync(
 
 const { default: Fastify } = await import("../../packages/server/node_modules/fastify/fastify.js");
 const { getDB, closeDB } = await import("../../packages/server/src/db/connection.js");
-const { applyGeneratedGameCharacterCards, gameRoutes } =
+const { applyGeneratedGameCharacterCards, buildSessionConclusionMessages, gameRoutes } =
   await import("../../packages/server/src/routes/game.routes.js");
 const db = await getDB();
 const app = Fastify();
@@ -172,6 +179,11 @@ await app.register(gameRoutes, { prefix: "/api/game" });
 try {
   const create = (setupConfig: Record<string, unknown>) =>
     app.inject({ method: "POST", url: "/api/game/create", payload: { name: "Ruleset setup", setupConfig } });
+  const invalidParameters = await create({ ...baseConfig, generationParameters: { temperature: "hot" } });
+  assert.equal(invalidParameters.statusCode, 400, invalidParameters.body);
+  assert.deepEqual(invalidParameters.json(), {
+    error: "Invalid game setup: Invalid input: expected number, received string",
+  });
 
   // The client's version and package are not trusted: the pin is rebuilt from what is installed.
   const pinned = await create({ ...baseConfig, ruleset: { id: "5e-2014", version: 99, packageId: "someone-else" } });
@@ -266,6 +278,51 @@ try {
   const libraryData = typeof library!.data === "string" ? JSON.parse(library!.data) : library!.data;
   assert.deepEqual(libraryData.extensions.rulesetSheets["5e-2014"], starting);
 
+  // A member added to the chat before its world was created (the Characters panel's "Add to active
+  // chat") gets a card with their own sheet, though the setup's party never named them and the Game
+  // Master's cards leave them out (laptop playtest 2026-10-24: blank level-1 sheets).
+  {
+    const keshBuild = createRulesetSheetEnvelope(fiveE);
+    keshBuild.build.abilities.dex = 18;
+    const kesh = await characters.create({
+      ...blankCard,
+      name: "Kesh",
+      extensions: { rulesetSheets: { "5e-2014": keshBuild } },
+    } as never);
+    const late = await create({
+      ...baseConfig,
+      partyCharacterIds: [withSheet.id],
+      ruleset: { id: "5e-2014", version: 1 },
+    });
+    const lateId = late.json().sessionChat.id as string;
+    const lateChat = await createChatsStorage(db).getById(lateId);
+    const ids = JSON.parse(lateChat!.characterIds as unknown as string) as string[];
+    await createChatsStorage(db).update(lateId, { characterIds: [...ids, kesh!.id, withoutSheet.id] });
+    const lateApplied = await app.inject({
+      method: "POST",
+      url: "/api/game/setup/apply-json",
+      payload: {
+        chatId: lateId,
+        rawJson: JSON.stringify({
+          storyArc: "An arc.",
+          worldOverview: "A harbor town.",
+          plotTwists: ["A twist."],
+          startingNpcs: [{ name: "Harbormaster" }],
+          characterCards: [{ name: "Mira" }],
+        }),
+      },
+    });
+    assert.equal(lateApplied.statusCode, 200, lateApplied.body);
+    const lateCards = JSON.parse((await createChatsStorage(db).getById(lateId))!.metadata as string)
+      .gameCharacterCards as typeof cards;
+    assert.deepEqual(
+      lateCards.map((card) => card.name),
+      ["Mira", "Kesh", "Tam the Bold"],
+    );
+    assert.equal(lateCards[1]!.rulesetSheet?.build.abilities.dex, 18, "Kesh joins with his own sheet");
+    assert.deepEqual(lateCards[2]!.rulesetSheet, createRulesetSheetEnvelope(fiveE), "Tam, with none, on a blank one");
+  }
+
   // ── After setup, nothing that rewrites a card may cost it the game's sheet ──
   // A session conclusion rebuilds the cards it names from an allow-list.
   {
@@ -300,6 +357,154 @@ try {
     const bram = recruitedCards.find((card) => card.name === "Bram Ironhand");
     assert.equal(bram?.rulesetSheet?.build.abilities.str, 17, "a recruit gets a copy of the library build");
     assert.equal(recruitedCards[0]!.rulesetSheet?.build.abilities.dex, 16, "recruiting leaves the others alone");
+  }
+
+  // With a model to write the recruit's card, the prompt shows the party's cards without their sheets:
+  // a sheet is the game's own, and the Game Master reads sheets in their own block.
+  {
+    let prompt = "";
+    const provider = createServer(async (req, res) => {
+      let raw = "";
+      for await (const chunk of req) raw += chunk;
+      prompt = JSON.stringify(JSON.parse(raw).messages);
+      res.setHeader("Content-Type", "application/json");
+      res.end(
+        JSON.stringify({
+          id: "local-proof",
+          object: "chat.completion",
+          choices: [
+            {
+              index: 0,
+              message: {
+                role: "assistant",
+                content: JSON.stringify({ name: "Cora Vale", shortDescription: "A scout." }),
+              },
+              finish_reason: "stop",
+            },
+          ],
+          usage: { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15 },
+        }),
+      );
+    });
+    await new Promise<void>((resolve) => provider.listen(0, "127.0.0.1", resolve));
+    try {
+      const address = provider.address();
+      assert.ok(address && typeof address !== "string");
+      const { createConnectionsStorage } =
+        await import("../../packages/server/src/services/storage/connections.storage.js");
+      const connection = await createConnectionsStorage(db).create({
+        name: "Local recruit fixture",
+        provider: "custom",
+        baseUrl: `http://127.0.0.1:${address.port}/v1`,
+        model: "fixture-model",
+        treatAsLocalEndpoint: true,
+      } as never);
+      await characters.create({ ...blankCard, name: "Cora Vale", extensions: {} } as never);
+      const recruited = await app.inject({
+        method: "POST",
+        url: "/api/game/party/recruit",
+        payload: { chatId: partyChatId, characterName: "Cora Vale", connectionId: connection!.id },
+      });
+      assert.equal(recruited.statusCode, 200, recruited.body);
+      assert.match(prompt, /Mira/, "the party's cards are shown");
+      assert.doesNotMatch(prompt, /rulesetSheet/, `no sheet in the prompt: ${prompt.slice(0, 400)}`);
+      // Writing a member's card uses its selected chat alternative without changing the source.
+      await characters.update(withSheet.id, {
+        description: "BASE GAME SHEET DESCRIPTION",
+        extensions: {
+          cardFieldAlternatives: [
+            {
+              id: "sheet-description",
+              field: "description",
+              value: "ALTERNATIVE GAME SHEET DESCRIPTION",
+              chatIds: [partyChatId],
+            },
+          ],
+        },
+      } as never);
+      // Writing a member's card again shows their own card and the others', none with a sheet.
+      prompt = "";
+      const regenerated = await app.inject({
+        method: "POST",
+        url: "/api/game/character-sheet/regenerate",
+        payload: {
+          chatId: partyChatId,
+          characterId: withSheet.id,
+          characterName: "Mira",
+          connectionId: connection!.id,
+        },
+      });
+      assert.equal(regenerated.statusCode, 200, regenerated.body);
+      assert.match(prompt, /Tam the Bold/, "the rest of the party is shown");
+      assert.match(prompt, /existing_target_party_sheet/, "and Mira's own card");
+      assert.match(prompt, /ALTERNATIVE GAME SHEET DESCRIPTION/);
+      assert.doesNotMatch(prompt, /BASE GAME SHEET DESCRIPTION/);
+      assert.equal(
+        JSON.parse((await characters.getById(withSheet.id))!.data).description,
+        "BASE GAME SHEET DESCRIPTION",
+      );
+      assert.doesNotMatch(prompt, /rulesetSheet/, `no sheet in the prompt: ${prompt.slice(0, 400)}`);
+      const scopedPersona = await characters.createPersona(
+        "Scoped player",
+        "BASE PLAYER SHEET DESCRIPTION",
+        undefined,
+        {
+          cardFieldAlternatives: JSON.stringify([
+            {
+              id: "player-description",
+              field: "description",
+              value: "ALTERNATIVE PLAYER SHEET DESCRIPTION",
+              chatIds: [partyChatId],
+            },
+          ]),
+        },
+      );
+      assert.ok(scopedPersona);
+      await createChatsStorage(db).update(partyChatId, { personaId: scopedPersona.id });
+      prompt = "";
+      const regeneratedPersona = await app.inject({
+        method: "POST",
+        url: "/api/game/character-sheet/regenerate",
+        payload: {
+          chatId: partyChatId,
+          characterId: `persona:${scopedPersona.id}`,
+          characterName: "Scoped player",
+          connectionId: connection.id,
+        },
+      });
+      assert.equal(regeneratedPersona.statusCode, 200, regeneratedPersona.body);
+      assert.match(prompt, /ALTERNATIVE PLAYER SHEET DESCRIPTION/);
+      assert.doesNotMatch(prompt, /BASE PLAYER SHEET DESCRIPTION/);
+      assert.equal((await characters.getPersona(scopedPersona.id))!.description, "BASE PLAYER SHEET DESCRIPTION");
+      assert.doesNotMatch(prompt, /rulesetSheet/, `no sheet in the prompt: ${prompt.slice(0, 400)}`);
+    } finally {
+      provider.closeAllConnections();
+      await new Promise<void>((resolve) => provider.close(() => resolve()));
+    }
+  }
+
+  // The end of a session shows the cards it may rewrite, without their sheets.
+  {
+    const after = JSON.parse((await createChatsStorage(db).getById(partyChatId))!.metadata as string);
+    const messages = buildSessionConclusionMessages({
+      sessionNumber: 1,
+      journalRecap: "",
+      transcriptText: "",
+      transcriptMessageCount: 0,
+      transcriptTruncated: false,
+      latestState: null,
+      currentStoryArc: null,
+      currentPlotTwists: [],
+      currentPartyArcs: [],
+      currentMorale: 50,
+      currentCards: after.gameCharacterCards,
+      currentCampaignPlan: {} as never,
+      currentNpcs: [],
+    });
+    const text = JSON.stringify(messages);
+    assert.match(text, /Tam the Bold/);
+    assert.ok(after.gameCharacterCards.some((card: { rulesetSheet?: unknown }) => card.rulesetSheet));
+    assert.doesNotMatch(text, /rulesetSheet/);
   }
 
   // A game with no ruleset gets no sheets.

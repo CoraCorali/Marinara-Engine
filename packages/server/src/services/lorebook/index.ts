@@ -301,6 +301,7 @@ async function buildLorebookMatchingContext(
   characterIds: string[] | undefined,
   personaId: string | null | undefined,
   gameState: GameStateForScanning | null | undefined,
+  chatId?: string,
 ): Promise<LorebookMatchingContext> {
   const characters = createCharactersStorage(db);
   const activeCharacterIds = uniqueStrings([
@@ -311,7 +312,7 @@ async function buildLorebookMatchingContext(
   const activeCharacterTags: string[] = [];
 
   for (const characterId of activeCharacterIds) {
-    const row = await characters.getById(characterId);
+    const row = await characters.getById(characterId, chatId);
     if (!row) continue;
     const data = safeJsonParse<CharacterData | null>((row as { data?: unknown }).data, null);
     if (!data) continue;
@@ -325,7 +326,7 @@ async function buildLorebookMatchingContext(
   }
 
   if (personaId) {
-    const persona = await characters.getPersona(personaId);
+    const persona = await characters.getPersona(personaId, chatId);
     if (persona) {
       pushSourceText(sourceParts, "persona_description", (persona as { description?: unknown }).description);
       const tags = readStringArray((persona as { tags?: unknown }).tags);
@@ -646,6 +647,20 @@ function sameActivatedEntrySet(a: ActivatedEntry[], b: ActivatedEntry[]): boolea
   return a.every((entry) => bIds.has(entry.entry.id));
 }
 
+/**
+ * The selected entries plus the ones macros turned into nothing. Those add no text, but their
+ * macros ({{setvar}}) still apply, so entries that read those variables keep their text (#7325).
+ * ponytail: they are not activated, so their sticky/cooldown/ephemeral counters do not tick; return
+ * them from the batch to processLorebooks if a {{setvar}}-only entry ever needs a cooldown.
+ */
+function keptLorebookPassEntries(pass: LorebookResolutionPass, selected: ActivatedEntry[]): ActivatedEntry[] {
+  const selectedIds = new Set(selected.map((entry) => entry.entry.id));
+  const emptied = pass.entries.filter(
+    (entry) => !selectedIds.has(entry.entry.id) && !entry.entry.content.trim() && !entry.entry.images?.length,
+  );
+  return [...selected, ...emptied];
+}
+
 function getBudgetSkipReason(exceedsLorebookBudget: boolean, exceedsGlobalBudget: boolean): LorebookBudgetSkipReason {
   if (exceedsLorebookBudget && exceedsGlobalBudget) return "both";
   if (exceedsLorebookBudget) return "lorebook";
@@ -728,6 +743,8 @@ function applyCurrentLocationLoreBudget(
       (tokens) => tokenBudget <= 0 || usedTokens + tokens <= tokenBudget,
     );
     if (!fitted) {
+      // An entry with nothing to add was not skipped by the cap (#7325).
+      if (!candidate.entry.content.trim() && !candidate.entry.images?.length) continue;
       const estimatedTokens = estimateLorebookEntryTokens(candidate.entry);
       skipped.push({
         id: candidate.entry.id,
@@ -780,7 +797,13 @@ function trySelectBudgetedLorebookEntry(
   );
 
   if (!fitted) {
-    const entryTokens = estimateTextTokens(candidate.entry.content);
+    // Blank text, or text that macros resolved to nothing, has nothing to add, so no budget
+    // skipped it (#7325). An entry with only images is judged by the images pass.
+    const hasText = candidate.entry.content.trim().length > 0;
+    if (!hasText && (!includeImages || !candidate.entry.images?.length)) return { selected: false };
+    const entryTokens = hasText
+      ? estimateTextTokens(candidate.entry.content)
+      : estimateLorebookEntryTokens(candidate.entry);
     return {
       selected: false,
       skipped: {
@@ -924,11 +947,13 @@ function selectBudgetedLorebookEntryBatch(
         true,
       );
       if (selected.selected) selectedFromCandidates.push(selected.entry);
+      else if (selected.skipped) skippedFromCandidates.push(selected.skipped);
     }
 
     selectedFromCandidates.sort(lorebookInjectionOrder);
+    const kept = keptLorebookPassEntries(pass, selectedFromCandidates);
 
-    if (sameActivatedEntrySet(pool, selectedFromCandidates)) {
+    if (sameActivatedEntrySet(pool, kept)) {
       commitLorebookResolutionPass(pass);
       return {
         selectedFromCandidates: includeOptionalImages
@@ -941,7 +966,7 @@ function selectBudgetedLorebookEntryBatch(
 
     rollbackLorebookResolutionPass(pass);
     lastSkippedBudgetEntries = skippedFromCandidates;
-    pool = selectedFromCandidates;
+    pool = kept;
   }
 
   const pass = resolveLorebookResolutionPass(pool, resolveContent);
@@ -973,10 +998,11 @@ function selectBudgetedLorebookEntryBatch(
       true,
     );
     if (selected.selected) selectedFromCandidates.push(selected.entry);
+    else if (selected.skipped) skippedFromCandidates.push(selected.skipped);
   }
 
   selectedFromCandidates.sort(lorebookInjectionOrder);
-  if (sameActivatedEntrySet(pool, selectedFromCandidates)) {
+  if (sameActivatedEntrySet(pool, keptLorebookPassEntries(pass, selectedFromCandidates))) {
     commitLorebookResolutionPass(pass);
     return {
       selectedFromCandidates: includeOptionalImages
@@ -1404,6 +1430,7 @@ export async function processLorebooks(
     options?.characterIds,
     options?.personaId ?? null,
     gameState ?? null,
+    options?.chatId,
   );
 
   // Scan for activated entries.

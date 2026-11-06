@@ -1,4 +1,5 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
+import { toast } from "sonner";
 import {
   CSRF_HEADER,
   CSRF_HEADER_VALUE,
@@ -20,7 +21,15 @@ import {
   removePersonalExtensionContributions,
   setPersonalExtensionContributionDispatcher,
 } from "../../lib/personal-extension-contributions";
+import {
+  registerPersonalExtensionDiceFormat,
+  removePersonalExtensionDiceFormat,
+  removePersonalExtensionDiceFormats,
+  resolvePersonalExtensionDiceResponse,
+  setPersonalExtensionDiceDispatcher,
+} from "../../lib/personal-extension-dice-formats";
 import { fetchForPersonalExtension } from "../../lib/personal-extension-traffic";
+import { translate } from "../../localization/i18n";
 import { useChatStore } from "../../stores/chat.store";
 
 type ActiveClientExtension = {
@@ -81,16 +90,23 @@ type SandboxMessage = {
     | "ui-resize"
     | "ui-contribution-register"
     | "ui-contribution-update"
-    | "ui-contribution-remove";
+    | "ui-contribution-remove"
+    | "dice-format-register"
+    | "dice-format-remove"
+    | "dice-parse-result"
+    | "dice-read-result";
   contentHash?: string;
   requestId?: string;
   action?: "get" | "patch" | "delete";
   payload?: unknown;
   contribution?: unknown;
   contributionId?: unknown;
+  format?: unknown;
+  formatId?: unknown;
   level?: "debug" | "info" | "warn" | "error";
   args?: unknown[];
   message?: string;
+  stopped?: boolean;
   width?: number;
   height?: number;
 };
@@ -217,6 +233,16 @@ async function postSandboxContext(active: ActiveClientExtension, context = readP
 
 const activeExtensions = new Map<string, ActiveClientExtension>();
 const activeFullPageExtensions = new Map<string, ActiveFullPageExtension>();
+// Extensions whose worker the sandbox stopped (ID → content hash). They stay
+// stopped until the user restarts them, their code changes, or they leave the
+// runtime list.
+const stoppedExtensions = new Map<string, string>();
+const stoppedNoticeId = (id: string) => `personal-extension-stopped-${id}`;
+
+function forgetStoppedExtension(id: string) {
+  stoppedExtensions.delete(id);
+  toast.dismiss(stoppedNoticeId(id));
+}
 
 function extensionFetch(id: string, path: string, init: RequestInit = {}) {
   const method = (init.method ?? "GET").toUpperCase();
@@ -236,6 +262,7 @@ async function cleanupExtension(id: string) {
   const active = activeExtensions.get(id);
   activeExtensions.delete(id);
   removePersonalExtensionContributions(id);
+  removePersonalExtensionDiceFormats(id);
   if (active) {
     active.iframe.contentWindow?.postMessage({ channel: "marinara-personal-extension", type: "stop" }, "*");
     active.iframe.remove();
@@ -390,6 +417,7 @@ async function handleStorage(active: ActiveClientExtension, message: SandboxMess
 
 export function PersonalExtensionInjector() {
   const { data: extensions = [] } = usePersonalExtensionRuntime();
+  const [restartRequest, setRestartRequest] = useState(0);
 
   useEffect(() => {
     const host = window as FullPageExtensionHostWindow;
@@ -469,6 +497,21 @@ export function PersonalExtensionInjector() {
         removePersonalExtensionContribution(active.extension.id, active.contentHash, message.contributionId);
         return;
       }
+      if (message.type === "dice-format-register" && message.contentHash === active.contentHash) {
+        registerPersonalExtensionDiceFormat(active.extension, message.format);
+        return;
+      }
+      if (message.type === "dice-format-remove" && message.contentHash === active.contentHash) {
+        removePersonalExtensionDiceFormat(active.extension.id, active.contentHash, message.formatId);
+        return;
+      }
+      if (
+        (message.type === "dice-parse-result" || message.type === "dice-read-result") &&
+        message.contentHash === active.contentHash
+      ) {
+        resolvePersonalExtensionDiceResponse(active.extension, active.contentHash, message);
+        return;
+      }
       if (message.type === "storage") {
         void handleStorage(active, message);
         return;
@@ -513,6 +556,25 @@ export function PersonalExtensionInjector() {
             },
           }),
         );
+        // The sandbox stopped this worker, so its buttons and panels can no
+        // longer respond. Remove them and let the user restart the extension.
+        if (message.stopped === true && message.contentHash === active.contentHash) {
+          const { id } = active.extension;
+          stoppedExtensions.set(id, active.contentHash);
+          void cleanupExtension(id);
+          toast.error(translate("extensions.runtime.stopped", { name: active.extension.name }), {
+            id: stoppedNoticeId(id),
+            description: translate("extensions.runtime.stoppedDescription"),
+            duration: Infinity,
+            action: {
+              label: translate("extensions.runtime.restart"),
+              onClick: () => {
+                forgetStoppedExtension(id);
+                setRestartRequest((count) => count + 1);
+              },
+            },
+          });
+        }
       }
     };
     window.addEventListener("message", onMessage);
@@ -532,6 +594,9 @@ export function PersonalExtensionInjector() {
 
   useEffect(() => {
     const expected = new Map(extensions.map((extension) => [extension.id, extension]));
+    for (const [id, contentHash] of stoppedExtensions) {
+      if (expected.get(id)?.contentHash !== contentHash) forgetStoppedExtension(id);
+    }
     for (const [id, active] of activeExtensions) {
       const next = expected.get(id);
       if (!next || next.executionMode !== "sandboxed" || next.contentHash !== active.contentHash) {
@@ -589,6 +654,7 @@ export function PersonalExtensionInjector() {
       }
       const active = activeExtensions.get(extension.id);
       if (active?.contentHash === extension.contentHash) continue;
+      if (stoppedExtensions.has(extension.id)) continue;
       const iframe = document.createElement("iframe");
       iframe.setAttribute("sandbox", "allow-scripts");
       iframe.setAttribute("aria-hidden", "true");
@@ -608,13 +674,18 @@ export function PersonalExtensionInjector() {
       setPersonalExtensionContributionDispatcher(extension, (message) => {
         iframe.contentWindow?.postMessage({ channel: "marinara-personal-extension", ...message }, "*");
       });
+      setPersonalExtensionDiceDispatcher(extension, (message) => {
+        iframe.contentWindow?.postMessage({ channel: "marinara-personal-extension", ...message }, "*");
+      });
     }
-  }, [extensions]);
+  }, [extensions, restartRequest]);
 
   useEffect(
     () => () => {
       const ids = new Set([...activeExtensions.keys(), ...activeFullPageExtensions.keys()]);
       for (const id of ids) void cleanupExtension(id);
+      // A remount starts every extension fresh, including stopped ones.
+      for (const id of [...stoppedExtensions.keys()]) forgetStoppedExtension(id);
     },
     [],
   );

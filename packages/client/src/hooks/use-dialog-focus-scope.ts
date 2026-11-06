@@ -1,4 +1,4 @@
-import { useEffect, type RefObject } from "react";
+import { useEffect, useRef, type RefObject } from "react";
 
 const FOCUSABLE_SELECTOR = [
   "button:not([disabled])",
@@ -21,7 +21,10 @@ export function useDialogFocusScope(
   ownedPortalSelector?: string,
   /** Trap focus only while this scope owns the topmost overlay. */
   isActive?: () => boolean,
+  containFocus = true,
 ) {
+  const containFocusRef = useRef(containFocus);
+  containFocusRef.current = containFocus;
   useEffect(() => {
     if (!open) return;
 
@@ -44,10 +47,16 @@ export function useDialogFocusScope(
     });
 
     const trapFocus = (event: KeyboardEvent) => {
-      if (event.key !== "Tab") return;
+      if (!containFocusRef.current || event.key !== "Tab") return;
       if (isActive && !isActive()) return;
       const container = containerRef.current;
       if (!container) return;
+      // Focus in another modal (one stacked above this one) belongs to that modal. Compare with this
+      // dialog's own overlay: the panel is inside it, so the panel itself never matches.
+      const activeModal =
+        document.activeElement instanceof Element ? document.activeElement.closest('[aria-modal="true"]') : null;
+      const ownModal = container.closest('[aria-modal="true"]');
+      if (activeModal && activeModal !== ownModal && !container.contains(activeModal)) return;
       const roots = [
         container,
         ...(ownedPortalSelector ? Array.from(document.querySelectorAll<HTMLElement>(ownedPortalSelector)) : []),
@@ -58,14 +67,14 @@ export function useDialogFocusScope(
           (element) =>
             !element.hidden && element.getAttribute("aria-hidden") !== "true" && element.getClientRects().length > 0,
         );
-      if (focusable.length === 0) {
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (!first || !last) {
         event.preventDefault();
         container.focus();
         return;
       }
 
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
       const active = document.activeElement;
       if (!roots.some((root) => root.contains(active))) {
         event.preventDefault();

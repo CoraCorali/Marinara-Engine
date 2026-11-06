@@ -1,7 +1,7 @@
 import { pathToFileURL } from "node:url";
 import { existsSync } from "node:fs";
 import { randomUUID } from "node:crypto";
-import { mkdir, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, readdir, rm, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { FastifyInstance, InjectOptions, LightMyRequestResponse as InjectResponse } from "fastify";
@@ -14,23 +14,37 @@ import {
   parseAgentSettingsRecord,
   type PackagedAchievementDefinition,
   type SceneOriginProvider,
+  supportedCapabilityApi,
 } from "@marinara-engine/shared";
-import { isDebugAgentsEnabled } from "../../config/runtime-config.js";
+import { getEnvFilePath, isDebugAgentsEnabled } from "../../config/runtime-config.js";
 import { logger, logDebugOverride } from "../../lib/logger.js";
 import { DATA_DIR } from "../../utils/data-dir.js";
 import { parseGameJsonish } from "../game/jsonish.js";
 import { createAgentsStorage } from "../storage/agents.storage.js";
-import { capabilityPackageManager } from "./package-manager.service.js";
+import { capabilityPackageManager, normalizeArchivePath } from "./package-manager.service.js";
 import {
+  listCapabilityConversationCommandInstructions,
+  parseCapabilityConversationCommands,
   registerCapabilityConversationCommand,
+  stripCapabilityConversationCommands,
   type CapabilityConversationCommandRegistration,
 } from "./capability-command-registry.service.js";
-import { registerCapabilityService } from "./capability-service-registry.service.js";
+import {
+  getCapabilityService,
+  isHostOnlyCapabilityService,
+  registerCapabilityService,
+} from "./capability-service-registry.service.js";
 import { assertCapabilityAgentRuntimeServiceRegistration } from "./capability-agent-runtime.service.js";
 import { assertCapabilityMariActionsServiceRegistration } from "./capability-mari-actions.service.js";
+import { createCapabilityDecisionHost } from "./capability-decision.service.js";
 import { createCapabilityIntegrationHost } from "./capability-integrations.service.js";
 import { createCapabilityLanguageModelHost } from "./capability-language-model.service.js";
-import { linkCapabilityNativeDependencies } from "./capability-native-dependencies.service.js";
+import {
+  CapabilityHostDependencyError,
+  linkCapabilityNativeDependencies,
+  linkCapabilityPackageDependencies,
+  linkCapabilitySnapshotDependencies,
+} from "./capability-native-dependencies.service.js";
 import {
   createCapabilityEmbeddingHost,
   createConfiguredCapabilityEmbeddingHost,
@@ -39,6 +53,7 @@ import { createCapabilityAchievementHost } from "./capability-achievement-host.s
 import { registerCapabilityAchievements } from "./capability-achievement-registry.service.js";
 import { createCapabilityPersistenceHost } from "./capability-persistence.service.js";
 import { createCapabilityResourceHost } from "./capability-resources.service.js";
+import { resolvePackageAgentLorebookEntries } from "./capability-agent-lorebook.service.js";
 import {
   registerCapabilityPrivilegedRoutes,
   runCapabilityInternalRoute,
@@ -74,7 +89,8 @@ type CapabilityActivationContext = {
     runtime: CapabilityRuntimeHost;
     registerTurnGameEngine(engine: AnyTurnGameEngine): Cleanup;
     registerConversationCommand(registration: CapabilityConversationCommandRegistration): Cleanup;
-    registerService<T>(key: string, service: T): Cleanup;
+    /** `hostOnly` (Capability API 1.388) keeps the service from `runtime.services.get`; only the Engine reads it. */
+    registerService<T>(key: string, service: T, options?: { hostOnly?: boolean }): Cleanup;
     /** Contribute text to each turn's system prompt. Requires the `prompt-context` permission. */
     registerPromptContext(contributor: CapabilityPromptContextContributor): Cleanup;
     /** Offer the model a tool this package handles. Requires the `tools` permission. */
@@ -93,17 +109,21 @@ type CapabilityActivationContext = {
   };
 };
 
+const HOST_ONLY_SERVICE_PREFIXES = ["agent-runtime:", "mari-actions:"] as const;
+
 async function createCapabilityRuntimeHost(
   app: FastifyInstance,
   packageId: string,
   permissions: readonly string[],
 ): Promise<CapabilityRuntimeHost> {
+  const canReadAgentLorebooks = permissions.includes("agent-runtime") && permissions.includes("chat-read");
   const agents = app.db ? createAgentsStorage(app.db) : null;
   const config = await agents?.getByType(packageId);
   const embeddings = app.db
     ? await createConfiguredCapabilityEmbeddingHost(app.db, config?.connectionId)
     : createCapabilityEmbeddingHost();
   return Object.freeze({
+    capabilityApi: supportedCapabilityApi,
     embeddings,
     async resolveEmbeddings() {
       const config = await agents?.getByType(packageId);
@@ -115,10 +135,19 @@ async function createCapabilityRuntimeHost(
       const config = await agents?.getByType(packageId);
       return config ? { connectionId: config.connectionId, settings: parseAgentSettingsRecord(config.settings) } : null;
     },
+    async resolveAgentLorebookEntries(options: { chatId: string; signal?: AbortSignal }) {
+      if (!canReadAgentLorebooks) {
+        throw new Error("Resolving an agent reference lorebook requires agent-runtime and chat-read permissions.");
+      }
+      return resolvePackageAgentLorebookEntries(app.db, packageId, {
+        chatId: options.chatId,
+        signal: options.signal,
+      });
+    },
     isDebugAgentsEnabled,
     json: Object.freeze({ parseJsonish: parseGameJsonish }),
     languageModels: createCapabilityLanguageModelHost(app.db),
-    integrations: createCapabilityIntegrationHost(permissions),
+    integrations: createCapabilityIntegrationHost(permissions, app.db),
     logger: Object.freeze({
       debug: (message: string, ...args: CapabilityRuntimeLogArgument[]) =>
         Reflect.apply(logger.debug, logger, [message, ...args]),
@@ -130,10 +159,25 @@ async function createCapabilityRuntimeHost(
         Reflect.apply(logger.error, logger, [error, message, ...args]),
       debugOverride: (overrideEnabled: boolean, message: string, ...args: CapabilityRuntimeLogArgument[]) =>
         logDebugOverride(overrideEnabled, message, ...args),
+      isLevelEnabled: (level: "trace" | "debug" | "info" | "warn" | "error" | "fatal") => logger.isLevelEnabled(level),
     }),
     achievements: createCapabilityAchievementHost(app.db, packageId, permissions),
+    decisions: createCapabilityDecisionHost(app.db),
     persistence: createCapabilityPersistenceHost(app.db, permissions),
     resources: createCapabilityResourceHost(app.db),
+    services: Object.freeze({
+      // Agent runtime hooks, Mari actions and services registered with `hostOnly` are read only by the Engine
+      // itself, so a package can't call another package's hooks through this lookup.
+      get: <T>(key: string) =>
+        HOST_ONLY_SERVICE_PREFIXES.some((prefix) => key.startsWith(prefix)) || isHostOnlyCapabilityService(key)
+          ? null
+          : getCapabilityService<T>(key),
+    }),
+    commands: Object.freeze({
+      parse: (content: string) => parseCapabilityConversationCommands(content),
+      strip: (content: string) => stripCapabilityConversationCommands(content),
+      instructions: () => listCapabilityConversationCommandInstructions(),
+    }),
   });
 }
 type CapabilityModule = {
@@ -141,11 +185,14 @@ type CapabilityModule = {
   selfCheck?: (context: CapabilityActivationContext) => void | Promise<void>;
 };
 
-export function prepareCapabilityRuntimeEnvironment(dataDir = DATA_DIR): void {
+export function prepareCapabilityRuntimeEnvironment(dataDir = DATA_DIR, envFile = getEnvFilePath()): void {
   // Downloaded runtimes bundle Engine utilities and evaluate them before
-  // activate(context). Give those bundles the host's absolute resolved path;
-  // preserving a relative DATA_DIR would resolve beside the nested server.mjs.
+  // activate(context). Give those bundles the host's absolute resolved paths:
+  // a relative DATA_DIR would resolve beside the nested server.mjs, and without
+  // MARINARA_ENV_FILE their runtime-config looks for (and creates) .env two
+  // folders above the data folder, "/" for a short DATA_DIR (Pasta-Devs/Marinara-Agents#2036).
   process.env.DATA_DIR = dataDir;
+  process.env.MARINARA_ENV_FILE = envFile;
 }
 
 async function runCleanups(cleanups: Cleanup[]): Promise<void> {
@@ -166,6 +213,73 @@ export interface CapabilityActivationErrorRecord {
   at: string;
 }
 
+/** Bytes of the regular files under a path. Links are counted as nothing and never followed. */
+async function treeBytes(path: string): Promise<number> {
+  const stats = await lstat(path);
+  if (!stats.isDirectory()) return stats.isFile() ? stats.size : 0;
+  let total = 0;
+  for (const name of await readdir(path)) total += await treeBytes(join(path, name));
+  return total;
+}
+
+/** Runtime copies are written read-only (0400), which Windows refuses to delete. Links are skipped, so nothing
+ *  outside the copy changes. */
+async function makeTreeWritable(path: string): Promise<void> {
+  const stats = await lstat(path);
+  if (stats.isSymbolicLink()) return;
+  if (!stats.isDirectory()) return chmod(path, 0o600);
+  await chmod(path, 0o700);
+  for (const name of await readdir(path)) await makeTreeWritable(join(path, name));
+}
+
+async function removeRuntimeSnapshot(path: string): Promise<void> {
+  try {
+    await rm(path, { recursive: true, force: true });
+  } catch {
+    // EPERM or EACCES on Windows and for read-only folders; some Node versions report the latter as ENOTEMPTY.
+    await makeTreeWritable(path);
+    await rm(path, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Deletes every runtime copy in `snapshotsRoot` except the shared `node_modules` links. A copy lives only as long as
+ * the process that made it, and a crash or a kill skips its cleanup, so at startup none of them can be in use. Only
+ * `start()` calls this, and it runs after storage.open took the writer lease: a second Engine on the same data folder
+ * stops there and never reaches a running Engine's copies. Never throws.
+ */
+export async function sweepCapabilityRuntimeSnapshots(
+  snapshotsRoot: string,
+): Promise<{ removed: number; bytes: number }> {
+  let names: string[];
+  try {
+    names = await readdir(snapshotsRoot);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      logger.warn(error, "Could not read the package runtime copies in %s", snapshotsRoot);
+    }
+    return { removed: 0, bytes: 0 };
+  }
+  let removed = 0;
+  let bytes = 0;
+  for (const name of names) {
+    if (name === "node_modules") continue;
+    const path = join(snapshotsRoot, name);
+    try {
+      const size = await treeBytes(path).catch(() => 0);
+      await removeRuntimeSnapshot(path);
+      removed += 1;
+      bytes += size;
+    } catch (error) {
+      logger.warn(error, "Could not remove the old package runtime copy %s", path);
+    }
+  }
+  if (removed > 0) {
+    logger.info("Removed %d old package runtime copies (%s MB)", removed, (bytes / 1e6).toFixed(1));
+  }
+  return { removed, bytes };
+}
+
 class CapabilityModuleRuntime {
   private cleanups = new Map<string, Cleanup>();
   // Last activation failure per package in this process, cleared by the next
@@ -178,6 +292,7 @@ class CapabilityModuleRuntime {
   }
 
   async start(app: FastifyInstance): Promise<void> {
+    await sweepCapabilityRuntimeSnapshots(join(DATA_DIR, "capability-runtime-snapshots"));
     // Bundled package modules execute before activate(context), so give their
     // shared Engine utilities the host's already-resolved data root up front.
     // Without this, a package can derive DATA_DIR from its nested server.mjs
@@ -187,6 +302,7 @@ class CapabilityModuleRuntime {
     for (const runtimePackage of await capabilityPackageManager.runtimePackages()) {
       await this.activateOne(app, runtimePackage, true, false);
     }
+    await capabilityPackageManager.pruneVersions();
   }
 
   private async ensureModuleResolution(): Promise<void> {
@@ -195,17 +311,10 @@ class CapabilityModuleRuntime {
     } catch (error) {
       logger.warn(error, "Could not link native package runtime dependencies");
     }
-    const packageRoot = join(DATA_DIR, "capability-packages");
-    const link = join(packageRoot, "node_modules");
-    if (existsSync(link)) return;
-    const serverNodeModules = resolve(dirname(fileURLToPath(import.meta.url)), "../../../node_modules");
-    if (!existsSync(serverNodeModules)) return;
-    await mkdir(packageRoot, { recursive: true });
-    try {
-      await symlink(serverNodeModules, link, process.platform === "win32" ? "junction" : "dir");
-    } catch (error) {
-      if (!existsSync(link)) logger.warn(error, "Could not link package runtime dependencies");
-    }
+    await linkCapabilityPackageDependencies(
+      join(DATA_DIR, "capability-packages"),
+      resolve(dirname(fileURLToPath(import.meta.url)), "../../../node_modules"),
+    );
   }
 
   private async createVerifiedRuntimeSnapshot(
@@ -214,25 +323,37 @@ class CapabilityModuleRuntime {
   ) {
     const snapshotsRoot = join(DATA_DIR, "capability-runtime-snapshots");
     const root = join(snapshotsRoot, `${installed.id}-${installed.version}-${randomUUID()}`);
+    const clientEntrypoint = installed.manifest.entrypoints.client
+      ? normalizeArchivePath(installed.manifest.entrypoints.client)
+      : null;
     await mkdir(snapshotsRoot, { recursive: true, mode: 0o700 });
     await mkdir(root, { mode: 0o700 });
     try {
       for (const [relativePath, data] of verified.files) {
+        // The server never loads the browser bundle, about half of a copy's bytes. Every other file is copied:
+        // a package server may read its own assets (Quartermaster reads icons/ beside server.mjs).
+        if (relativePath === clientEntrypoint && relativePath !== verified.entrypoint) continue;
         const output = join(root, relativePath);
         await mkdir(dirname(output), { recursive: true, mode: 0o700 });
         await writeFile(output, data, { flag: "wx", mode: 0o400 });
       }
       await writeFile(join(root, "manifest.json"), JSON.stringify(installed.manifest), { flag: "wx", mode: 0o400 });
-      const nodeModules = join(DATA_DIR, "capability-packages", "node_modules");
-      if (existsSync(nodeModules) && !existsSync(join(root, "node_modules"))) {
-        await symlink(nodeModules, join(root, "node_modules"), process.platform === "win32" ? "junction" : "dir");
+      if (!existsSync(join(root, "node_modules"))) {
+        await linkCapabilitySnapshotDependencies(
+          root,
+          resolve(dirname(fileURLToPath(import.meta.url)), "../../../node_modules"),
+        );
       }
       return {
         entrypoint: join(root, verified.entrypoint),
-        cleanup: () => rm(root, { recursive: true, force: true }),
+        cleanup: () => removeRuntimeSnapshot(root),
       };
     } catch (error) {
-      await rm(root, { recursive: true, force: true });
+      try {
+        await removeRuntimeSnapshot(root);
+      } catch (cleanupError) {
+        logger.warn(cleanupError, "Could not remove failed package runtime snapshot %s", root);
+      }
       throw error;
     }
   }
@@ -287,10 +408,10 @@ class CapabilityModuleRuntime {
             }
             return trackCleanup(registerCapabilityConversationCommand(registration));
           },
-          registerService: (key, service) => {
+          registerService: (key, service, options) => {
             assertCapabilityAgentRuntimeServiceRegistration(installed.id, installed.manifest.permissions ?? [], key);
             assertCapabilityMariActionsServiceRegistration(installed.id, installed.manifest.permissions ?? [], key);
-            return trackCleanup(registerCapabilityService(key, service));
+            return trackCleanup(registerCapabilityService(key, service, options));
           },
           // Gated on the permission the manifest already declares, so a package can't reach the prompt
           // without asking for it up front. Contract in capability-prompt-context.service.ts.
@@ -377,7 +498,15 @@ class CapabilityModuleRuntime {
       logger.info("Activated and verified capability package %s@%s", installed.id, installed.version);
     } catch (error) {
       const hostLifecycleError = isHostLifecycleActivationError(error);
-      if (hostLifecycleError) {
+      const hostDependencyError = error instanceof CapabilityHostDependencyError;
+      if (hostDependencyError) {
+        logger.warn(
+          error,
+          "Capability package %s@%s could not load Engine dependencies; its version is unchanged and activation will be retried on the next start",
+          installed.id,
+          installed.version,
+        );
+      } else if (hostLifecycleError) {
         // Not the package's fault and retried on the next start: one warning instead of an error.
         logger.warn(
           error,
@@ -404,8 +533,8 @@ class CapabilityModuleRuntime {
       } catch (cleanupError) {
         logger.warn(cleanupError, "Capability package %s cleanup failed after activation error", installed.id);
       }
-      if (hostLifecycleError) {
-        // Keep the installed version and status so the next boot activates it normally.
+      if (hostLifecycleError || hostDependencyError) {
+        // A host failure cannot be repaired by changing package versions. Retry the requested version next start.
         if (throwOnFailure) throw error;
         return;
       }
@@ -444,6 +573,7 @@ class CapabilityModuleRuntime {
     if (!runtimePackage) throw new Error(`Installed capability package ${packageId} has no server runtime`);
     await this.deactivatePackage(packageId);
     await this.activateOne(app, runtimePackage, true, true);
+    await capabilityPackageManager.pruneVersions(packageId);
     const installed = (await capabilityPackageManager.installed()).find((item) => item.id === packageId);
     if (!installed) throw new Error(`Capability package ${packageId} disappeared during activation`);
     return installed;

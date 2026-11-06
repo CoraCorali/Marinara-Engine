@@ -1,5 +1,6 @@
 import {
   characterTrackerLockPrefix,
+  gameInventoryBagKey,
   normalizeCharacterLookupName,
   readGameInventoryTurn,
   type GameInventoryStack,
@@ -8,6 +9,7 @@ import {
 import type { DB } from "../../db/connection.js";
 import { parseGameStateRow } from "../../routes/generate/generate-route-utils.js";
 import { applyGameInventoryChangeHeld } from "../game/game-inventory.service.js";
+import { GAME_STARTING_GEAR_TAKEN_KEY, readGameStartingGearTaken } from "../game/game-starting-gear.service.js";
 import { createChatsStorage } from "../storage/chats.storage.js";
 import { createGameStateStorage } from "../storage/game-state.storage.js";
 import { record } from "./room-projection.js";
@@ -97,11 +99,27 @@ export async function validateRoomPersonaChange(db: DB, chatId: string, change: 
 }
 
 /** A newly admitted human must not take over a generated NPC's sheet, live state or possessions. */
+/** A human card whose player is no longer seated in the room (the host removed them). */
+function removedPlayerCard(card: Record<string, unknown>, participants: readonly Record<string, unknown>[]) {
+  const owner = card.multiplayerParticipantId;
+  return typeof owner === "string" && !!owner && !participants.some((participant) => participant.id === owner);
+}
+
 export async function validateNewRoomHumanGameName(db: DB, chatId: string, name: string): Promise<void> {
   const current = await readGamePersonaState(db, chatId);
   if (!current) return;
-  const { metadata, cards, state } = current;
+  const { metadata, cards, state, participants } = current;
   const key = nameKey(name);
+  const named = cards.filter((card) => nameKey(card.name) === key);
+  // A removed player's hero (laptop room playtest 2026-10-30: they could never rejoin): its card,
+  // sheet and bag stay theirs to take back, whenever the host approves the one asking for it.
+  if (
+    key &&
+    named.length === 1 &&
+    removedPlayerCard(named[0]!, participants) &&
+    ![...records(metadata.gameNpcs), ...records(metadata.gamePartyArcs)].some((row) => nameKey(row.name) === key)
+  )
+    return;
   if (
     !key ||
     Object.hasOwn(state?.rulesetLive ?? {}, key) ||
@@ -134,7 +152,9 @@ export async function ensureRoomHumanGameCards(
     );
     if (
       matches.length > 1 ||
-      (matches[0]?.multiplayerParticipantId && matches[0].multiplayerParticipantId !== participant.id)
+      (matches[0]?.multiplayerParticipantId &&
+        matches[0].multiplayerParticipantId !== participant.id &&
+        !removedPlayerCard(matches[0], room.participants as unknown as Record<string, unknown>[]))
     )
       throw new RoomPersonaConflictError();
     const existing = matches[0];
@@ -235,11 +255,21 @@ export async function applyRoomPersonaChanges(db: DB, chatId: string, changes: r
       }),
     );
   const turn = readGameInventoryTurn(metadata.gameInventoryTurn);
+  // The starting gear each bag has taken follows the bag to its new name, or the renamed member could
+  // take it again.
+  const gearTaken = readGameStartingGearTaken(metadata[GAME_STARTING_GEAR_TAKEN_KEY]);
+  const renamedGear = Object.fromEntries(
+    Object.entries(gearTaken).map(([key, ids]) => {
+      const change = key ? byName.get(key) : undefined;
+      return [change ? gameInventoryBagKey(change.name) : key, ids];
+    }),
+  );
   await applyGameInventoryChangeHeld(db, chatId, (stacks) => ({
     stacks: renameStacks(stacks),
     journal: [],
     metadata: {
       gameCharacterCards: nextCards,
+      ...(Object.keys(gearTaken).length > 0 ? { [GAME_STARTING_GEAR_TAKEN_KEY]: renamedGear } : {}),
       ...(Array.isArray(metadata.gamePartyArcs)
         ? {
             gamePartyArcs: metadata.gamePartyArcs.map((value) => {

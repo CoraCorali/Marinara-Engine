@@ -1,6 +1,14 @@
 import type { CapabilityAchievementHost } from "./achievement.js";
 import type { CapabilityIntegrationHost } from "./generation-integration.js";
-import type { ChatMode, MessageRole } from "./chat.js";
+import type {
+  ChatMode,
+  ChatSummaryEntry,
+  ConversationPresenceStatus,
+  DaySummaryEntry,
+  MessageRole,
+  WeekSummaryEntry,
+} from "./chat.js";
+import type { SessionSummary } from "./game.js";
 import type { SpatialContextSnapshot, SpatialSnapshotSource } from "./spatial-context.js";
 
 export type CapabilityRuntimeLogArgument = unknown;
@@ -11,6 +19,54 @@ export interface CapabilityRuntimeLogger {
   warn(message: string, ...args: CapabilityRuntimeLogArgument[]): void;
   error(error: unknown, message: string, ...args: CapabilityRuntimeLogArgument[]): void;
   debugOverride(overrideEnabled: boolean, message: string, ...args: CapabilityRuntimeLogArgument[]): void;
+  /** Capability API 1.341: whether the Engine logger writes this level now. */
+  isLevelEnabled?(level: "trace" | "debug" | "info" | "warn" | "error" | "fatal"): boolean;
+}
+
+/** Capability API 1.341: services other packages registered with `api.registerService`. */
+export interface CapabilityServiceLookupHost {
+  /**
+   * Another package's service registered with api.registerService. null while absent, during a shared-room
+   * generation, for an `agent-runtime:` or `mari-actions:` key, or for a service registered with `hostOnly`
+   * (only the Engine reads those).
+   */
+  get<T = unknown>(key: string): T | null;
+}
+
+/** Capability API 1.341: the conversation commands every package registered, read with the Engine's grammar. */
+export interface CapabilityConversationCommandHost {
+  /** Commands registered by every package, parsed with the host grammar. */
+  parse(content: string): Array<{ type: "capability"; commandType: string; payload: string | null }>;
+  /** Content with every registered command tag removed. */
+  strip(content: string): string;
+  /** Prompt lines for registered commands that have handlers. */
+  instructions(): string[];
+}
+
+/** One message for `persistence.appendMessages` (capability API 1.341). */
+export interface CapabilityAppendMessageInput {
+  role: MessageRole;
+  characterId: string | null;
+  content: string;
+  extra?: Record<string, unknown>;
+  createdAt?: string | null;
+}
+
+/** A `[schedule_update]` for one character, with the fields the command carries. Needs a status or an activity. */
+export interface CapabilityCharacterStatusUpdate {
+  status?: ConversationPresenceStatus;
+  /** What the character is doing now, at most 500 characters. */
+  activity?: string;
+  /** How long it lasts, as the command writes it ("2h", "30m", "1h30m"): 60 minutes when absent or unreadable, at most
+   *  a week. */
+  duration?: string;
+}
+
+/** The status the character card carries after the update, until `expiresAt`. */
+export interface CapabilityCharacterStatusResult {
+  status: ConversationPresenceStatus;
+  activity: string | null;
+  expiresAt: string;
 }
 
 export interface CapabilityChatRecord {
@@ -130,6 +186,16 @@ export interface CapabilityResourceHost {
 export interface CapabilityLanguageModelMessage {
   role: "system" | "user" | "assistant" | "tool";
   content: string;
+  /**
+   * Capability API 1.814: cache everything up to and including this message. Set it on the last message of the part
+   * of the prompt that stays the same from call to call. Providers that take cache breakpoints (Anthropic) cache it
+   * whatever the connection's prompt-caching switch says, for the connection's cache time (1 hour when it asks for
+   * that, else 5 minutes). OpenAI, Gemini, xAI and DeepSeek cache identical prefixes on their own and ignore it.
+   * OpenRouter and custom OpenAI-compatible endpoints do not take it yet, so Claude reached through them is not
+   * cached. At most four count: the last four. A marked message with no text marks the message before it. Older
+   * Engines ignore it.
+   */
+  cacheBreakpoint?: boolean;
 }
 
 export interface CapabilityLanguageModelCompletionOptions {
@@ -140,16 +206,31 @@ export interface CapabilityLanguageModelCompletionOptions {
   verbosity?: "low" | "medium" | "high";
   signal?: AbortSignal;
   responseFormat?: Readonly<{ type: string; [key: string]: unknown }>;
+  /**
+   * Capability API 1.815: how long the prompt up to the call's `cacheBreakpoint` messages stays cached on a provider
+   * with a cache time (Anthropic): "5m" or "1h". Left out, the connection's own cache time applies. A call with no
+   * marked message ignores it, and so does a provider that caches on its own.
+   */
+  cacheTtl?: "5m" | "1h";
 }
 
 export interface CapabilityLanguageModelCompletion {
   content: string | null;
   finishReason: string;
   usage?: {
+    /**
+     * Prompt tokens as the provider counts them. Anthropic and Claude (Subscription) count only the input neither read
+     * from nor written to the cache, so their whole prompt is promptTokens + cachedPromptTokens +
+     * cacheWritePromptTokens. OpenAI-compatible routes (OpenRouter included) and Gemini already include both.
+     */
     promptTokens?: number;
     completionTokens?: number;
     completionReasoningTokens?: number;
     totalTokens?: number;
+    /** Capability API 1.814: prompt tokens read from the provider's cache, when it reports them. */
+    cachedPromptTokens?: number;
+    /** Capability API 1.814: prompt tokens written to the provider's cache, when it reports them. */
+    cacheWritePromptTokens?: number;
   };
 }
 
@@ -201,6 +282,13 @@ export interface CapabilityMessageRecord {
   activeSwipeIndex: number;
   extra: string;
   createdAt: string;
+  /**
+   * The message as Engine agents read it (capability API 1.71): each live whisper at its saved place as
+   * `[Private whisper to <name>: …]`, a whisper-only message as its whispers alone, a reply's documents after it, and
+   * no leftover private notes. `listMessages` sets it in Roleplay chats outside hosted multiplayer rooms; it is absent
+   * elsewhere and on older Engines, so read `agentContent ?? content`. `extra` still holds every whisper in all modes.
+   */
+  agentContent?: string;
 }
 
 export interface CapabilitySpatialSnapshotWrite {
@@ -322,6 +410,43 @@ export interface CapabilityGameStateRecord {
   presentCharacterIds: string[];
 }
 
+/** Capability API 1.391: one enabled, completed Advanced Memory scene summary. Read-only copy. */
+export interface CapabilityAdvancedMemorySummary {
+  id: string;
+  /** Older chats can hold several copies of one scene; they share this id. */
+  sceneId: string;
+  kind: "scene";
+  title: string;
+  /** The recap as stored, hand edits included. */
+  content: string;
+  timeline: string | null;
+  startMessageId: string;
+  endMessageId: string;
+  /** Characters with access to the scene; the narrator is not listed. */
+  audienceCharacterIds: string[];
+  sourceFingerprint: string;
+  updatedAt: string;
+  /**
+   * The "memory" string the summary reply returned for `long-term-memory:runtime.summaryMemoryInstruction()`,
+   * untouched; the Engine never parses it. Null without a block, after a hand edit, and on older records.
+   */
+  memory: string | null;
+}
+
+/** Capability API 1.387: a chat's stored summaries, as the Engine reads them from the chat. Read-only copies. */
+export interface CapabilityChatSummaries {
+  /** Conversation day summaries by day ("DD.MM.YYYY"). */
+  day: Record<string, DaySummaryEntry>;
+  /** Conversation week summaries by Monday ("DD.MM.YYYY"). */
+  week: Record<string, WeekSummaryEntry>;
+  /** Rolling summary entries in the chat's order, disabled ones included; a legacy summary reads as one entry. */
+  rolling: ChatSummaryEntry[];
+  /** Game: the summary of each previous session. */
+  gameSessions: SessionSummary[];
+  /** Capability API 1.391: Advanced Memory's enabled, completed scene summaries, in the order they were written. */
+  advancedMemory: CapabilityAdvancedMemorySummary[];
+}
+
 export type CapabilityRoleplayEventAudience = "public" | "user-only" | { characterIds: string[] };
 
 export interface CapabilityRoleplayEventInput {
@@ -347,6 +472,12 @@ export interface CapabilityPersistenceSession {
   listMessages(chatId: string): Promise<CapabilityMessageRecord[]>;
   /** Read-only. Optional so packages feature-detect and degrade on older Engines. */
   getGameState?(chatId: string): Promise<CapabilityGameStateRecord | null>;
+  /**
+   * Capability API 1.387. Read-only: the chat's day, week, rolling and Game session summaries, all empty for a chat
+   * without them or one that is not found. Requires `chat-read`, like `listMessages`. Optional so packages
+   * feature-detect and degrade on older Engines.
+   */
+  listChatSummaries?(chatId: string): Promise<CapabilityChatSummaries>;
   appendRoleplayEvent?(input: CapabilityRoleplayEventInput): Promise<CapabilityRoleplayEventRecord | null>;
   listExistingLorebookEntryIds(entryIds: string[]): Promise<string[]>;
   createMessageWithSwipe(input: CapabilityCreateMessageWithSwipeInput): Promise<CapabilityMessageRecord>;
@@ -360,28 +491,129 @@ export interface CapabilityPersistenceSession {
 export interface CapabilityPersistenceHost extends CapabilityPersistenceSession {
   withChatLock<T>(chatId: string, operation: () => Promise<T>): Promise<T>;
   transaction<T>(operation: (session: CapabilityPersistenceSession) => Promise<T>): Promise<T>;
+  /**
+   * Capability API 1.341. The Engine's queued metadata patch: one queue per chat, the multiplayer room guard and
+   * write ordinals. Keys in the patch replace those keys; every other key stays. Inside `withChatLock` for the same
+   * chat it runs within that lock. Requires `chat-write`.
+   */
+  patchChatMetadata?(
+    chatId: string,
+    patch:
+      | Record<string, unknown>
+      | ((current: Record<string, unknown>) => Record<string, unknown> | Promise<Record<string, unknown>>),
+    options?: { touchUpdatedAt?: boolean },
+  ): Promise<void>;
+  /** Capability API 1.341. Adds messages, each with its first swipe, as the Engine's batch write does. Requires `chat-write`. */
+  appendMessages?(chatId: string, messages: CapabilityAppendMessageInput[]): Promise<CapabilityMessageRecord[]>;
+  /**
+   * Capability API 1.389. Hides or shows messages of one chat from the AI, as the Engine's summary does. Requires
+   * `chat-write`. Resolves the ids whose flag this call actually changed, so the package can record what it owns.
+   * Ids not in the chat are ignored. A message whose visibility the user set by hand (`extra.visibilityManual`) is
+   * never changed and is not returned.
+   */
+  setMessagesHiddenFromAI?(chatId: string, messageIds: string[], hidden: boolean): Promise<string[]>;
+  /** Capability API 1.341. A durable note from a conversation to its connected roleplay. Requires `chat-write`. */
+  createChatNote?(sourceChatId: string, targetChatId: string, content: string, anchorMessageId?: string): Promise<void>;
+  /** Capability API 1.341. A one-time influence from a conversation to its connected roleplay. Requires `chat-write`. */
+  createChatInfluence?(
+    sourceChatId: string,
+    targetChatId: string,
+    content: string,
+    anchorMessageId?: string,
+  ): Promise<void>;
+  /**
+   * Applies a `[schedule_update]` for a character of a Conversation chat as the Engine does after a reply: a temporary
+   * status on the character card, so presence shows it in every chat. Resolves the card's new status, or null when
+   * nothing changed: a status the user set by hand stays in charge, and a shared room keeps its own routines. Rejects
+   * bad input, a chat that is not a Conversation chat and a character that is not in it. Requires chat-write. Added
+   * to capability API 1.341 after it was first reported, so feature-detect it.
+   */
+  updateCharacterStatus?(
+    chatId: string,
+    characterId: string,
+    update: CapabilityCharacterStatusUpdate,
+  ): Promise<CapabilityCharacterStatusResult | null>;
 }
 
 export interface CapabilityEmbeddingHost {
   spaceId: string;
   label: string;
-  embed(texts: string[], signal?: AbortSignal): Promise<number[][] | null>;
+  /**
+   * Pass `"query"` for search text; texts default to `"document"`. Some models (e5, nomic) add a
+   * different prefix to each. Capability API 1.68: older Engines ignore the third argument.
+   */
+  embed(texts: string[], signal?: AbortSignal, inputType?: "query" | "document"): Promise<number[][] | null>;
+}
+
+/** One bounded question for the user's Decision model. */
+export interface CapabilityDecisionQuestion {
+  /** Unique within one request; the answer comes back under this id. */
+  id: string;
+  /** A yes/no statement about the context, at most 500 characters. */
+  question: string;
+  /** Present for a Choice question: the options the model chooses between. */
+  options?: string[];
+}
+
+export interface CapabilityDecisionRequest {
+  /** Caller-provided context, oldest first. The oldest messages are dropped to fit the model. */
+  /** `name` is at most 100 characters. */
+  messages: Array<{ role: "system" | "user" | "assistant"; name?: string; content: string }>;
+  questions: CapabilityDecisionQuestion[];
+  signal?: AbortSignal;
+  debugMode?: boolean;
+}
+
+export interface CapabilityDecisionResult {
+  model: string | null;
+  /** Probability of yes, per yes/no question id. A question missing here was not answered. */
+  answers: Record<string, number>;
+  /** Chosen option, per Choice question id, or "none of these" when no option fits. */
+  choices: Record<string, string>;
+  /** The model's own yes threshold. Probabilities are not comparable across Decision models. */
+  threshold: number;
+}
+
+export interface CapabilityDecisionHost {
+  /**
+   * Ask the user's configured Decision model. Resolves null when no Decision model is
+   * configured, or it gave no answer at all (unreachable, timed out or cancelled);
+   * throws only for an invalid request.
+   */
+  evaluate(request: CapabilityDecisionRequest): Promise<CapabilityDecisionResult | null>;
 }
 
 export interface CapabilityRuntimeHost {
+  /** Capability API 1.816. The Engine's supportedCapabilityApi; absent on older Engines. */
+  capabilityApi?: { readonly major: number; readonly minor: number };
   /** Read and unlock the package's own achievements. Requires the `achievements`
    *  permission and capability API 1.36. */
   achievements: CapabilityAchievementHost;
+  /** The user's Decision model. Optional: feature-detect it on older Engines. */
+  decisions?: CapabilityDecisionHost;
   /** Live provider/media services. Requires capability API 1.31. */
   integrations?: CapabilityIntegrationHost;
   embeddings: CapabilityEmbeddingHost;
   /** Resolve the package's current embedding configuration. Requires capability API 1.15. */
   resolveEmbeddings(): Promise<CapabilityEmbeddingHost>;
   getAgentConfig(): Promise<{ connectionId: string | null; settings: Record<string, unknown> } | null>;
+  /**
+   * Capability API 1.380. Resolve this package's per-chat reference lorebook through
+   * the Engine's normal triggers. Requires `agent-runtime` and `chat-read`.
+   * Other agents' attachments and the main reply are unaffected.
+   */
+  resolveAgentLorebookEntries?(options: {
+    chatId: string;
+    signal?: AbortSignal;
+  }): Promise<Array<{ id: string; name?: string; content: string }>>;
   isDebugAgentsEnabled(): boolean;
   json: CapabilityJsonHost;
   languageModels: CapabilityLanguageModelHost;
   logger: CapabilityRuntimeLogger;
   persistence: CapabilityPersistenceHost;
   resources: CapabilityResourceHost;
+  /** Capability API 1.341. */
+  services?: CapabilityServiceLookupHost;
+  /** Capability API 1.341. */
+  commands?: CapabilityConversationCommandHost;
 }

@@ -13,6 +13,8 @@ import {
   supportsNovelAiCharacterPrompts,
 } from "../../packages/server/src/services/image/character-prompts.js";
 import { resolveIllustratorCharacterPromptInstruction } from "../../packages/server/src/services/generation/illustrator-background-generation.js";
+import { buildManualIllustratorCharacterPromptInstruction } from "../../packages/server/src/services/generation/illustrator-manual-prompt-generation.js";
+import { readFileSync } from "node:fs";
 
 // Caption cap follows the model generation.
 assert.equal(resolveNovelAiCharacterPromptLimit("nai-diffusion-5-full"), 22);
@@ -64,6 +66,15 @@ assert.equal(sanitized[0]!.prompt, "girl, copper hair, green eyes", "whitespace 
 assert.deepEqual(sanitized[0]!.position, { x: 1, y: 0 }, "positions clamp to the unit square");
 assert.equal(sanitized[1]!.negativePrompt, "copper hair");
 assert.deepEqual(sanitized[1]!.position, { x: 0.33, y: 0.5 }, "positions round to two decimals and coerce strings");
+const longCaption = "embroidered silver threads, ".repeat(100) + "opal antlers";
+const longExclusions = "incorrect fur markings, ".repeat(100) + "missing anklets";
+const fullCaption = sanitizeCharacterPrompts(
+  [{ name: roster[0], prompt: longCaption, negativePrompt: longExclusions }],
+  roster,
+  22,
+)[0]!;
+assert.equal(fullCaption.prompt, longCaption, "the character caption is not clipped at 1,400 characters");
+assert.equal(fullCaption.negativePrompt, longExclusions, "character exclusions are not clipped at 700 characters");
 
 const noPositions = sanitizeCharacterPrompts(
   [
@@ -222,7 +233,9 @@ console.log("illustrator character prompts regression (manual + executor) passed
   const oversized = buildCharacterAppearanceReferenceBlock(
     Array.from({ length: 40 }, (_, index) => ({ name: `Colonist ${index + 1}`, appearance: "x".repeat(400) })),
   );
-  assert.ok(oversized.length < 9000, "the reference block is capped so a huge ensemble cannot flood the prompt");
+  for (let index = 0; index < 40; index += 1) {
+    assert.ok(oversized.includes(`[Colonist ${index + 1}] ${"x".repeat(400)}`), "every appearance is retained");
+  }
 }
 
 // #7053: an enabled, non-empty card override replaces the card appearance for
@@ -271,7 +284,7 @@ console.log("illustrator character prompts regression (manual + executor) passed
     readIllustratorAppearance({ appearance: normalAppearance, extensions: { imageAppearanceEnabled: true } }),
     normalizeIllustratorAppearance(normalAppearance),
   );
-  // Normalization still applies to the override (macro comments stripped, clipped).
+  // Normalization still applies to the override (macro comments stripped, whitespace normalized).
   assert.equal(
     readIllustratorAppearance({
       appearance: normalAppearance,
@@ -283,14 +296,13 @@ console.log("illustrator character prompts regression (manual + executor) passed
     "1girl, red hair",
     "the override is macro-stripped by the existing normalizer, not used raw",
   );
-  assert.ok(
-    (
-      readIllustratorAppearance({
-        appearance: normalAppearance,
-        extensions: { imageAppearanceEnabled: true, imageAppearance: "y".repeat(9000) },
-      }) ?? ""
-    ).length < 9000,
-    "the override is clipped by the existing normalizer",
+  assert.equal(
+    readIllustratorAppearance({
+      appearance: normalAppearance,
+      extensions: { imageAppearanceEnabled: true, imageAppearance: "y".repeat(9000) },
+    }),
+    "y".repeat(9000),
+    "the complete override is preserved by the normalizer",
   );
 
   // Personas are keyed by their own id, so both halves stay symmetric.
@@ -466,18 +478,18 @@ assert.equal(
   buildUncaptionedCharacterAppearanceBlock(
     [
       { name: "Aster", appearance: atLimitAppearance },
-      { name: "Briar", appearance: "would exceed the limit" },
+      { name: "Briar", appearance: "blue hair" },
     ],
     ["Aster", "Briar"],
     [],
   ),
-  appearancePrefix + atLimitAppearance,
-  "appearance fallback keeps complete lines within the existing reference budget",
+  appearancePrefix + atLimitAppearance + "\nBriar's Appearance: blue hair",
+  "appearance fallback retains later characters past the former reference budget",
 );
 assert.equal(
   buildUncaptionedCharacterAppearanceBlock([{ name: "Aster", appearance: atLimitAppearance + "x" }], ["Aster"], []),
-  "",
-  "an oversized first appearance is omitted instead of truncating its text",
+  appearancePrefix + atLimitAppearance + "x",
+  "a long first appearance is retained in full",
 );
 
 assert.equal(
@@ -489,6 +501,41 @@ assert.equal(
     ["Aster", "Briar"],
     [],
   ),
-  "Briar's Appearance: blue hair",
-  "an oversized entry does not discard later appearances that fit the budget",
+  appearancePrefix + atLimitAppearance + "x\nBriar's Appearance: blue hair",
+  "long entries and later appearances are both retained",
 );
+
+// Illustrate commands write their prompt like the Illustration button, so they get the same
+// NovelAI caption rules and card appearance reference instead of a flattened appended block.
+{
+  const instruction = buildIllustratorCharacterPromptInstruction(22);
+  const context = {
+    characters: [{ id: "char-1", name: "Jayden", appearance: "1girl, black hair, black eyes" }],
+    persona: { name: "Fel", appearance: "1boy, green eyes" },
+    memory: {},
+  } as unknown as Parameters<typeof buildManualIllustratorCharacterPromptInstruction>[0];
+  assert.equal(buildManualIllustratorCharacterPromptInstruction(context, undefined, true), undefined);
+  assert.equal(buildManualIllustratorCharacterPromptInstruction(context, instruction, false), instruction);
+  const withAppearance = buildManualIllustratorCharacterPromptInstruction(context, instruction, true) ?? "";
+  assert.ok(withAppearance.startsWith(instruction));
+  assert.match(withAppearance, /<character_appearance_reference>/u);
+  assert.match(withAppearance, /\[Jayden\] 1girl, black hair, black eyes/u);
+  assert.match(withAppearance, /\[Fel\] 1boy, green eyes/u);
+
+  const generateRouteSource = readFileSync(
+    new URL("../../packages/server/src/routes/generate.routes.ts", import.meta.url),
+    "utf8",
+  );
+  const commandWriter = generateRouteSource.slice(
+    generateRouteSource.indexOf("const plan = await writeManualIllustratorPromptPlan({"),
+    generateRouteSource.indexOf(
+      "result = {",
+      generateRouteSource.indexOf("const plan = await writeManualIllustratorPromptPlan({"),
+    ),
+  );
+  assert.match(commandWriter, /characterPromptInstruction: buildManualIllustratorCharacterPromptInstruction\(/u);
+  assert.match(commandWriter, /_illustratorCharacterPromptInstruction/u);
+  assert.match(commandWriter, /_illustratorCaptionAppearanceReference === true/u);
+  // Naming characters in a command no longer forces avatar references past the chat's switch.
+  assert.doesNotMatch(generateRouteSource, /commandTarget\.command\.characters\?\.length/u);
+}

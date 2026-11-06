@@ -1,6 +1,6 @@
 // ──────────────────────────────────────────────
 // View: Browser (full-page, replaces chat area)
-// Multi-provider: ChubAI, JannyAI, Pygmalion, Wyvern, DataCat (CharacterTavern is listed as unavailable)
+// Multi-provider: ChubAI, JannyAI, Pygmalion, Wyvern, DataCat, PlotLight (CharacterTavern is listed as unavailable)
 // With a login modal for Pygmalion NSFW, PNG download for all providers
 // ──────────────────────────────────────────────
 import { useState, useCallback, useEffect, useId, useLayoutEffect, useRef, useMemo } from "react";
@@ -32,6 +32,15 @@ import {
   Unplug,
 } from "lucide-react";
 import { useQueryClient } from "@tanstack/react-query";
+import {
+  DESCRIPTION_SPLIT_VERSION,
+  splitCharacterDescription,
+  unassignCardFieldAlternatives,
+  type DescriptionSplitResult,
+} from "@marinara-engine/shared";
+import { HelpTooltip } from "../ui/HelpTooltip";
+import { DescriptionSplitDialog } from "../characters/DescriptionSplitDialog";
+import { requestMariDescriptionSplit } from "../../lib/description-split-mari";
 import { characterKeys } from "../../hooks/use-characters";
 import { lorebookKeys } from "../../hooks/use-lorebooks";
 import { api } from "../../lib/api-client";
@@ -40,12 +49,9 @@ import { useUIStore } from "../../stores/ui.store";
 import { toast } from "sonner";
 import { cn } from "../../lib/utils";
 import { scopeChatMessageCss } from "../../lib/chat-message-css";
-import {
-  containsChatHtml,
-  decodeEncodedChatHtmlTags,
-  extractChatStyleBlocks,
-  sanitizeChatHtml,
-} from "../../lib/chat-html";
+import { handleRemoteImageClick, useRemoteImagePolicy } from "../../lib/remote-image-policy";
+import { HTML_TAG_RE, decodeEncodedChatHtmlTags, extractChatStyleBlocks, sanitizeChatHtml } from "../../lib/chat-html";
+import { protectMarkdownCode } from "../../lib/markdown-code";
 import {
   countLorebookEntries,
   hasLorebookEntries,
@@ -54,6 +60,16 @@ import {
   readEmbeddedLorebookFromCharacterPayload,
 } from "../../lib/character-import";
 import { mergeChubDetailIntoCharacterJson } from "../../lib/chub-character-card";
+import {
+  createPlotLightClient,
+  PLOTLIGHT_PAGE_SIZE,
+  PlotLightError,
+  type PlotLightContentType,
+  type PlotLightFormat,
+  type PlotLightItem,
+  type PlotLightSort,
+} from "../../lib/plotlight-content";
+import { translate } from "../../localization/i18n";
 import { useTranslation as useUiTranslation } from "react-i18next";
 import { Modal } from "../ui/Modal";
 
@@ -143,7 +159,8 @@ interface BrowseCard {
 
 interface SortOption {
   value: string;
-  label: string;
+  label?: string;
+  labelKey?: string;
   group?: string;
 }
 
@@ -156,6 +173,8 @@ interface FilterFeature {
 interface ProviderConfig {
   id: string;
   name: string;
+  /** Localized display name, when the name is more than a site's brand. */
+  nameKey?: string;
   icon: string;
   sortOptions: SortOption[];
   defaultSort: string;
@@ -168,8 +187,13 @@ interface ProviderConfig {
   nsfwAvailable: boolean;
   /** "free" = NSFW toggle enabled; "login" = toggle enabled once logged in; "wyvern" = toggle rendered disabled (only sourceId "wyvern" pairs this with a sort-hint toast on click — other "wyvern"-mode providers, e.g. DataCat, get no toast) */
   nsfwMode: "free" | "login" | "wyvern";
-  search: (params: SearchParams) => Promise<{ cards: BrowseCard[]; totalCount: number }>;
+  /** Tooltip for a disabled NSFW toggle. */
+  nsfwHintKey?: string;
+  /** `hasMore` replaces `totalCount` for sources that report no total. */
+  search: (params: SearchParams) => Promise<{ cards: BrowseCard[]; totalCount: number; hasMore?: boolean }>;
   fetchDetail: (card: BrowseCard, options?: { skipCompleteCard?: boolean }) => Promise<CardDetail | null>;
+  /** Downloads the complete card for import, for sources that offer card files. */
+  downloadCard?: (card: BrowseCard) => Promise<{ json: Record<string, unknown>; imageDataUrl?: string }>;
   siteName: string;
   /** Set when Marinara can no longer reach the site: it stays in the picker, and a notice replaces search. */
   unavailable?: { noticeKey: string; siteUrl: string };
@@ -288,6 +312,9 @@ function readCardTags(value: unknown): string[] {
   return [];
 }
 
+/** A finished import's split outcome; the character is set when Professor Mari can be asked to sort it. */
+type ImportSplitSummary = { result: DescriptionSplitResult; character?: { id: string; name: string } };
+
 function optionalString(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const trimmed = value.trim();
@@ -302,6 +329,24 @@ function optionalStringArray(value: unknown): string[] | undefined {
 
 function optionalRecord(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : undefined;
+}
+
+/** Reads an avatar as a data URL; a card stays importable when its image can't be fetched. */
+async function readImageDataUrl(url: string): Promise<string | undefined> {
+  if (!url) return undefined;
+  try {
+    const response = await fetch(url);
+    if (!response.ok) return undefined;
+    const blob = await response.blob();
+    return await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as string);
+      reader.onerror = () => reject(reader.error ?? new Error("Failed to read avatar"));
+      reader.readAsDataURL(blob);
+    });
+  } catch {
+    return undefined;
+  }
 }
 
 async function filterPersonaImportTags(sourceTags: string[], mode: TagImportMode): Promise<string[]> {
@@ -1288,8 +1333,8 @@ const datacatProvider: ProviderConfig = {
     // text-search support, so any user query forces the recent-public path.
     const useFresh = p.sort === "fresh" && tagIds.length === 0 && trimmedQuery.length === 0;
 
-    let list: any[] = [];
-    let totalCount = 0;
+    let list: any[];
+    let totalCount: number;
 
     if (useFresh) {
       const params = new URLSearchParams({
@@ -1428,6 +1473,112 @@ const datacatProvider: ProviderConfig = {
 };
 
 // ════════════════════════════════════════════════
+// Provider: PlotLight (characters and personas)
+// The public content API allows browser calls, so there is no server proxy.
+// ════════════════════════════════════════════════
+
+/** An error whose message is already written for the user. */
+class BrowserSourceError extends Error {}
+
+const plotlightClient = createPlotLightClient();
+
+function plotlightUserError(error: unknown, isDownload = true): BrowserSourceError {
+  if (error instanceof PlotLightError && error.status === 429) {
+    return new BrowserSourceError(translate("ui.botBrowser.plotlight.busy", { count: error.retryAfterSeconds ?? 30 }));
+  }
+  if (isDownload && error instanceof PlotLightError && [401, 403, 404].includes(error.status)) {
+    return new BrowserSourceError(translate("ui.botBrowser.plotlight.unavailable"));
+  }
+  return new BrowserSourceError(translate("ui.botBrowser.plotlight.failed"));
+}
+
+function createPlotlightProvider(type: PlotLightContentType): ProviderConfig {
+  const isPersona = type === "personas";
+  // Card PNGs carry the portrait and any lorebook; the JSON formats are lighter for previews.
+  const detailFormats: PlotLightFormat[] = isPersona ? ["json"] : ["json3", "json"];
+  const importFormats: PlotLightFormat[] = isPersona ? ["json"] : ["png3", "json3", "json"];
+  const itemOf = (card: BrowseCard) => card._raw as PlotLightItem;
+  return {
+    id: isPersona ? "plotlight-personas" : "plotlight",
+    name: isPersona ? "PlotLight Personas" : "PlotLight",
+    nameKey: isPersona ? "ui.botBrowser.plotlight.personasSource" : undefined,
+    icon: isPersona ? "🎭" : "🔦",
+    siteName: "PlotLight",
+    defaultSort: "popular",
+    pageSize: PLOTLIGHT_PAGE_SIZE,
+    sortOptions: [
+      { value: "popular", labelKey: "ui.botBrowser.plotlight.sortPopular" },
+      { value: "recent", labelKey: "ui.botBrowser.plotlight.sortRecent" },
+      { value: "rating", labelKey: "ui.botBrowser.plotlight.sortRating" },
+    ],
+    features: [],
+    hasSortDirection: false,
+    hasTokenFilters: false,
+    extraToggles: [],
+    // PlotLight's guest (After Dark) rules decide what is shown, so there is nothing to switch;
+    // results with an adult tag get the NSFW badge.
+    nsfwAvailable: false,
+    nsfwMode: "wyvern",
+    nsfwHintKey: "ui.botBrowser.plotlight.nsfwHint",
+    search: async (p) => {
+      try {
+        const { items, hasMore } = await plotlightClient.searchPage(
+          {
+            type,
+            query: p.query,
+            sort: p.sort as PlotLightSort,
+            includeTags: p.includeTags,
+            excludeTags: p.excludeTags,
+          },
+          p.page,
+        );
+        return {
+          totalCount: 0,
+          hasMore,
+          cards: items.map((item) => ({
+            id: item.id,
+            name: item.name,
+            creator: item.creator,
+            tagline: item.description.slice(0, 200),
+            tags: item.tags.map((tag) => tag.name),
+            avatarUrl: item.imageUrl,
+            stat1: 0,
+            stat1Label: "",
+            stat1Icon: "star" as const,
+            stat2: 0,
+            stat2Label: "",
+            stat2Icon: "star" as const,
+            stat3: 0,
+            stat3Label: "",
+            stat3Icon: "star" as const,
+            nsfw: item.adult,
+            externalUrl: item.detailUrl,
+            _raw: item,
+          })),
+        };
+      } catch (error) {
+        throw plotlightUserError(error, false);
+      }
+    },
+    fetchDetail: async (card) => {
+      try {
+        const { json } = await plotlightClient.downloadCard(itemOf(card), detailFormats);
+        return readCharacterCardDetailFields(json);
+      } catch (error) {
+        throw plotlightUserError(error);
+      }
+    },
+    downloadCard: async (card) => {
+      try {
+        return await plotlightClient.downloadCard(itemOf(card), importFormats);
+      } catch (error) {
+        throw plotlightUserError(error);
+      }
+    },
+  };
+}
+
+// ════════════════════════════════════════════════
 // Provider Registry
 // ════════════════════════════════════════════════
 
@@ -1438,6 +1589,8 @@ const ALL_PROVIDERS: ProviderConfig[] = [
   pygmalionProvider,
   wyvernProvider,
   datacatProvider,
+  createPlotlightProvider("cards"),
+  createPlotlightProvider("personas"),
 ];
 
 function getProvider(id: string): ProviderConfig {
@@ -1541,6 +1694,7 @@ export function BotBrowserView() {
 
   const [results, setResults] = useState<BrowseCard[]>([]);
   const [totalCount, setTotalCount] = useState(0);
+  const [hasMore, setHasMore] = useState<boolean | undefined>(undefined);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -1550,6 +1704,10 @@ export function BotBrowserView() {
   const [importing, setImporting] = useState(false);
   const [pendingImport, setPendingImport] = useState<PendingBrowserCardImport | null>(null);
   const [tagImportMode, setTagImportMode] = useState<TagImportMode>("all");
+  const [splitDescription, setSplitDescription] = useState(false);
+  // Kept after closing so the summary dialog does not empty out while it fades.
+  const [splitSummary, setSplitSummary] = useState<ImportSplitSummary | null>(null);
+  const [splitSummaryOpen, setSplitSummaryOpen] = useState(false);
   const mainScrollRef = useRef<HTMLDivElement | null>(null);
   const resultsScrollTopRef = useRef(0);
   const restoreResultsScrollRef = useRef(false);
@@ -1617,6 +1775,7 @@ export function BotBrowserView() {
     setExtraToggles({});
     setResults([]);
     setTotalCount(0);
+    setHasMore(undefined);
     setError(null);
     setSelectedCard(null);
     setDetail(null);
@@ -1698,6 +1857,7 @@ export function BotBrowserView() {
       if (seq !== searchSeqRef.current) return;
       setResults(result.cards);
       setTotalCount(result.totalCount);
+      setHasMore(result.hasMore);
     } catch (err) {
       if (seq !== searchSeqRef.current) return;
       if (err instanceof PygmalionSessionExpiredError) expirePygmalionSession();
@@ -1760,6 +1920,11 @@ export function BotBrowserView() {
       const d = await provider.fetchDetail(card);
       setDetail(d);
     } catch (err) {
+      if (err instanceof BrowserSourceError) {
+        // Keep the page open: its picture, creator and site link come from the listing.
+        toast.error(err.message);
+        return;
+      }
       if (err instanceof PygmalionSessionExpiredError) expirePygmalionSession();
       else toast.error(localizeUi("ui.botBrowser.botbrowserview.failedToLoadCharacterDetails"));
       restoreResultsScrollRef.current = true;
@@ -1770,6 +1935,19 @@ export function BotBrowserView() {
   };
 
   const prepareCardImport = async (card: BrowseCard): Promise<PreparedBrowserCardImport> => {
+    if (provider.downloadCard) {
+      const { json, imageDataUrl } = await provider.downloadCard(card);
+      return {
+        card,
+        embeddedLorebook: readEmbeddedLorebookFromCharacterPayload(json),
+        payload: {
+          ...json,
+          _avatarDataUrl: imageDataUrl ?? (await readImageDataUrl(card.avatarUrl)),
+          _botBrowserSource: `${sourceId}:${card.id}`,
+        },
+      };
+    }
+
     let downloadUrl = "";
     if (sourceId === "chub") downloadUrl = `/api/bot-browser/chub/download/${card.id}`;
     else if (sourceId === "janny") downloadUrl = `/api/bot-browser/janny/download/${encodeURIComponent(card.id)}`;
@@ -1858,24 +2036,16 @@ export function BotBrowserView() {
     };
     if (hasLorebookEntries(cardDetail?.embeddedLorebook)) payload.character_book = cardDetail?.embeddedLorebook;
 
-    if (card.avatarUrl) {
-      try {
-        const avatarResponse = await fetch(card.avatarUrl);
-        if (avatarResponse.ok) {
-          const avatarBlob = await avatarResponse.blob();
-          const reader = new FileReader();
-          payload._avatarDataUrl = await new Promise<string>((resolve, reject) => {
-            reader.onload = () => resolve(reader.result as string);
-            reader.onerror = () => reject(reader.error ?? new Error("Failed to read avatar"));
-            reader.readAsDataURL(avatarBlob);
-          });
-        }
-      } catch {
-        // The card remains importable when a provider blocks its avatar URL.
-      }
-    }
+    const avatarDataUrl = await readImageDataUrl(card.avatarUrl);
+    if (avatarDataUrl) payload._avatarDataUrl = avatarDataUrl;
 
     return { card, payload, embeddedLorebook: cardDetail?.embeddedLorebook };
+  };
+
+  // The same summary dialog as the editor's split button, shown once the import has finished.
+  const showSplitSummary = (summary: ImportSplitSummary) => {
+    setSplitSummary(summary);
+    setSplitSummaryOpen(true);
   };
 
   const importPreparedCard = async (
@@ -1891,9 +2061,17 @@ export function BotBrowserView() {
           ...prepared.payload,
           importEmbeddedLorebook,
           tagImportMode,
+          splitDescription,
         }),
       });
-      const data = (await response.json()) as { success?: boolean; name?: string; error?: string; lorebook?: unknown };
+      const data = (await response.json()) as {
+        success?: boolean;
+        characterId?: string;
+        name?: string;
+        error?: string;
+        lorebook?: unknown;
+        descriptionSplit?: DescriptionSplitResult;
+      };
       if (!response.ok || !data.success)
         throw new Error(data.error ?? localizeUi("ui.botBrowser.botbrowserview.importFailed"));
 
@@ -1902,12 +2080,23 @@ export function BotBrowserView() {
           value1: data.name ?? prepared.card.name,
         }),
       );
+      if (data.descriptionSplit) {
+        showSplitSummary({
+          result: data.descriptionSplit,
+          character: data.characterId ? { id: data.characterId, name: data.name ?? prepared.card.name } : undefined,
+        });
+      }
       void qc.invalidateQueries({ queryKey: characterKeys.list() });
       if (data.lorebook) void qc.invalidateQueries({ queryKey: lorebookKeys.all });
       return;
     }
 
     const cardData = readCharacterCardData(prepared.payload);
+    // Personas are created from explicit fields, so the split runs here instead of on the server. The
+    // persona is created as it came and the split is saved afterwards as a new persona version. Personas
+    // have no system prompt, so instruction lines stay in the description.
+    const split = splitDescription ? splitCharacterDescription(cardData, { instructions: false }) : null;
+    let summary = split;
     const extensions = optionalRecord(cardData.extensions) ?? {};
     const personaName = optionalString(cardData.name) ?? prepared.card.name;
     const sourceTags = readCardTags(cardData.tags);
@@ -1917,6 +2106,9 @@ export function BotBrowserView() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         name: personaName,
+        summary: typeof cardData.summary === "string" ? cardData.summary : "",
+        mes_example: typeof cardData.mes_example === "string" ? cardData.mes_example : "",
+        cardFieldAlternatives: unassignCardFieldAlternatives(extensions.cardFieldAlternatives),
         description: optionalString(cardData.description) ?? optionalString(cardData.personality) ?? "",
         personality: optionalString(cardData.personality) ?? "",
         scenario: optionalString(cardData.scenario) ?? "",
@@ -1931,6 +2123,28 @@ export function BotBrowserView() {
     const persona = (await personaResponse.json()) as { id?: string; error?: string };
     if (!personaResponse.ok || !persona.id) {
       throw new Error(persona.error ?? localizeUi("ui.botBrowser.botbrowserview.importFailed"));
+    }
+
+    if (split?.status === "changed") {
+      const { description, personality, scenario, backstory, appearance, mes_example } = split.after;
+      const splitResponse = await fetch(`/api/characters/personas/${persona.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          description,
+          personality,
+          scenario,
+          backstory,
+          appearance,
+          mes_example,
+          versionSource: DESCRIPTION_SPLIT_VERSION.source,
+          versionReason: DESCRIPTION_SPLIT_VERSION.reason,
+        }),
+      });
+      if (!splitResponse.ok) {
+        toast.warning(localizeUi("ui.botBrowser.importDialog.personaImportedWithoutSplit"));
+        summary = null;
+      }
     }
 
     const avatarDataUrl = optionalString(prepared.payload._avatarDataUrl);
@@ -1970,6 +2184,8 @@ export function BotBrowserView() {
     }
 
     toast.success(localizeUi("ui.characters.charactereditor.importedValue1AsAPersona", { value1: personaName }));
+    // Professor Mari's split request targets characters, so a persona summary has no Ask Mari button.
+    if (summary) showSplitSummary({ result: summary });
     void qc.invalidateQueries({ queryKey: characterKeys.personas });
   };
 
@@ -2062,7 +2278,10 @@ export function BotBrowserView() {
   const hasActiveFeatures = activeFeatureCount > 0;
   const canAddCustomTag = tagSearch.trim().length >= 2 && !includeTags.includes(tagSearch.trim().toLowerCase());
   const perPage = provider.pageSize;
-  const totalPages = Math.max(1, Math.ceil(totalCount / perPage));
+  // Sources without a total only say whether another page follows.
+  const totalPages = hasMore === undefined ? Math.max(1, Math.ceil(totalCount / perPage)) : hasMore ? page + 1 : page;
+  const providerName = (p: ProviderConfig) => (p.nameKey ? localizeUi(p.nameKey) : p.name);
+  const activeProviderName = providerName(provider);
 
   const sortGroups = useMemo(() => {
     const groups: { label: string; options: SortOption[] }[] = [];
@@ -2157,13 +2376,13 @@ export function BotBrowserView() {
             </h1>
             <p className="truncate text-xs text-[var(--marinara-chat-chrome-panel-muted)] md:text-sm">
               {provider.unavailable
-                ? provider.name
+                ? activeProviderName
                 : totalCount > 0
                   ? localizeUi("ui.botBrowser.botbrowserview.value1CardsFromValue2", {
                       value1: totalCount.toLocaleString(),
-                      value2: provider.name,
+                      value2: activeProviderName,
                     })
-                  : localizeUi("ui.botBrowser.botbrowserview.browsingValue1", { value1: provider.name })}
+                  : localizeUi("ui.botBrowser.botbrowserview.browsingValue1", { value1: activeProviderName })}
             </p>
           </div>
         </div>
@@ -2176,7 +2395,7 @@ export function BotBrowserView() {
               className="mari-chrome-control h-9 px-3 text-xs md:h-10"
             >
               <span>{provider.icon}</span>
-              <span>{provider.name}</span>
+              <span>{activeProviderName}</span>
               <ChevronDown size="0.625rem" className={cn("transition-transform", sourceOpen && "rotate-180")} />
             </button>
           </div>
@@ -2210,14 +2429,19 @@ export function BotBrowserView() {
                           : "hover:bg-[var(--accent)]",
                       )}
                     >
-                      <span className="text-sm">{p.icon}</span>
-                      <span>{p.name}</span>
-                      {p.unavailable && (
-                        <span className="ml-auto text-[0.6rem] opacity-70">
-                          {localizeUi("ui.botBrowser.providerUnavailable.badge")}
-                        </span>
-                      )}
-                      {p.id === sourceId && <span className={cn("text-[0.6rem]", !p.unavailable && "ml-auto")}>✓</span>}
+                      {/* A fixed-width icon column keeps every name aligned, whatever glyph a source uses. */}
+                      <span className="inline-flex w-5 shrink-0 justify-center text-sm" aria-hidden="true">
+                        {p.icon}
+                      </span>
+                      <span className="flex min-w-0 flex-col">
+                        <span>{providerName(p)}</span>
+                        {p.unavailable && (
+                          <span className="text-[0.6rem] opacity-70">
+                            {localizeUi("ui.botBrowser.providerUnavailable.badge")}
+                          </span>
+                        )}
+                      </span>
+                      {p.id === sourceId && <span className="ml-auto text-[0.6rem]">✓</span>}
                     </button>
                   ))}
                 </div>
@@ -2235,139 +2459,142 @@ export function BotBrowserView() {
 
       <div className="flex flex-1 overflow-hidden">
         {/* ═══ Tag Sidebar ═══ */}
-        {showTagPanel && (
-          <div className="flex w-[260px] flex-shrink-0 flex-col border-r border-[var(--marinara-chat-chrome-panel-divider)] bg-[var(--marinara-chat-chrome-panel-bg)]/80">
-            <div className="flex items-center justify-between border-b border-[var(--marinara-chat-chrome-panel-divider)] px-3 py-2">
-              <span className="mari-chrome-text-strong flex items-center gap-1.5 text-xs font-semibold">
-                <Tag size="0.75rem" /> {localizeUi("ui.characters.metadatatab.tags")}
-              </span>
-              <div className="flex items-center gap-1">
-                {(includeTags.length > 0 || excludeTags.length > 0) && (
-                  <button
-                    onClick={clearAllTags}
-                    className="mari-chrome-control mari-chrome-control--danger min-h-0 px-1.5 py-0.5 text-[0.6rem]"
-                  >
-                    {localizeUi("lorebook.editor.batch.clear")}
-                  </button>
-                )}
+        <div
+          key={sourceId}
+          className={cn(
+            "w-[260px] flex-shrink-0 flex-col border-r border-[var(--marinara-chat-chrome-panel-divider)] bg-[var(--marinara-chat-chrome-panel-bg)]/80",
+            showTagPanel ? "flex" : "hidden",
+          )}
+        >
+          <div className="flex items-center justify-between border-b border-[var(--marinara-chat-chrome-panel-divider)] px-3 py-2">
+            <span className="mari-chrome-text-strong flex items-center gap-1.5 text-xs font-semibold">
+              <Tag size="0.75rem" /> {localizeUi("ui.characters.metadatatab.tags")}
+            </span>
+            <div className="flex items-center gap-1">
+              {(includeTags.length > 0 || excludeTags.length > 0) && (
                 <button
-                  onClick={() => setShowTagPanel(false)}
-                  className="mari-chrome-control mari-chrome-control--small min-h-0 p-0.5"
+                  onClick={clearAllTags}
+                  className="mari-chrome-control mari-chrome-control--danger min-h-0 px-1.5 py-0.5 text-[0.6rem]"
                 >
-                  <X size="0.75rem" />
+                  {localizeUi("lorebook.editor.batch.clear")}
                 </button>
-              </div>
-            </div>
-            <div className="px-3 py-2">
-              <input
-                type="text"
-                value={tagSearch}
-                onChange={(e) => setTagSearch(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    addCustomTag();
-                  }
-                }}
-                placeholder={localizeUi("ui.botBrowser.botbrowserview.searchTags")}
-                className="mari-chrome-field mari-chrome-field--compact w-full px-2.5 py-1.5 text-xs"
-              />
-            </div>
-            {(includeTags.length > 0 || excludeTags.length > 0) && (
-              <div className="flex flex-wrap gap-1 border-b border-[var(--marinara-chat-chrome-panel-divider)] px-3 pb-2">
-                {includeTags.map((tag) => (
-                  <span
-                    key={`inc-${tag}`}
-                    onClick={() => toggleIncludeTag(tag)}
-                    className="cursor-pointer rounded-full bg-emerald-500/20 px-2 py-0.5 text-[0.6rem] font-medium text-emerald-400 ring-1 ring-emerald-500/30 transition-colors hover:bg-emerald-500/30"
-                  >
-                    + {tag}
-                  </span>
-                ))}
-                {excludeTags.map((tag) => (
-                  <span
-                    key={`exc-${tag}`}
-                    onClick={() => toggleExcludeTag(tag)}
-                    className="cursor-pointer rounded-full bg-red-500/20 px-2 py-0.5 text-[0.6rem] font-medium text-red-400 ring-1 ring-red-500/30 transition-colors hover:bg-red-500/30"
-                  >
-                    − {tag}
-                  </span>
-                ))}
-              </div>
-            )}
-            <div className="flex-1 overflow-y-auto px-1 py-1">
-              {canAddCustomTag && (
-                <div className="mx-1 mb-1 flex flex-col gap-1">
-                  <button
-                    onClick={addCustomTag}
-                    className="flex w-full items-center gap-1.5 rounded-md bg-emerald-500/10 px-2 py-1.5 text-xs font-medium text-emerald-400 transition-colors hover:bg-emerald-500/20"
-                  >
-                    {localizeUi("ui.characters.dialoguetab.add")} <strong>{tagSearch.trim().toLowerCase()}</strong>{" "}
-                    {localizeUi("ui.botBrowser.botbrowserview.asFilter")}
-                  </button>
-                  <button
-                    onClick={() => {
-                      const custom = tagSearch.trim().toLowerCase();
-                      if (custom.length >= 2 && !excludeTags.includes(custom)) {
-                        setExcludeTags((prev) => [...prev, custom]);
-                        setIncludeTags((prev) => prev.filter((t) => t !== custom));
-                        setTagSearch("");
-                        setPage(1);
-                      }
-                    }}
-                    className="flex w-full items-center gap-1.5 rounded-md bg-red-500/10 px-2 py-1.5 text-xs font-medium text-red-400 transition-colors hover:bg-red-500/20"
-                  >
-                    {localizeUi("ui.botBrowser.botbrowserview.block")} <strong>{tagSearch.trim().toLowerCase()}</strong>{" "}
-                    {localizeUi("ui.botBrowser.botbrowserview.fromResults")}
-                  </button>
-                </div>
               )}
-              {filteredTags.length === 0 && !canAddCustomTag ? (
-                <div className="px-2 py-4 text-center text-[0.65rem] italic text-[var(--muted-foreground)]">
-                  {availableTags.length === 0
-                    ? localizeUi("ui.botBrowser.botbrowserview.tagsWillAppearAfterSearching")
-                    : localizeUi("ui.botBrowser.botbrowserview.noTagsMatchFilter")}
-                </div>
-              ) : (
-                filteredTags.map((tag) => {
-                  const isIncluded = includeTags.includes(tag);
-                  const isExcluded = excludeTags.includes(tag);
-                  return (
-                    <div
-                      key={tag}
-                      className="mari-chrome-text flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs transition-colors hover:bg-[var(--accent)]/50"
-                    >
-                      <button
-                        onClick={() => toggleIncludeTag(tag)}
-                        className={cn(
-                          "flex h-4 w-4 shrink-0 items-center justify-center rounded border text-[0.5rem] transition-all",
-                          isIncluded
-                            ? "border-emerald-500 bg-emerald-500/20 text-emerald-400"
-                            : "border-[var(--border)] hover:border-emerald-500/50",
-                        )}
-                      >
-                        {isIncluded && "✓"}
-                      </button>
-                      <span className="min-w-0 flex-1 truncate">{tag}</span>
-                      <button
-                        onClick={() => toggleExcludeTag(tag)}
-                        className={cn(
-                          "flex h-4 w-4 shrink-0 items-center justify-center rounded border text-[0.5rem] transition-all",
-                          isExcluded
-                            ? "border-red-500 bg-red-500/20 text-red-400"
-                            : "border-red-500/30 text-red-400/40 hover:border-red-500/60 hover:text-red-400 hover:bg-red-500/10",
-                        )}
-                      >
-                        −
-                      </button>
-                    </div>
-                  );
-                })
-              )}
+              <button
+                onClick={() => setShowTagPanel(false)}
+                className="mari-chrome-control mari-chrome-control--small min-h-0 p-0.5"
+              >
+                <X size="0.75rem" />
+              </button>
             </div>
           </div>
-        )}
-
+          <div className="px-3 py-2">
+            <input
+              type="text"
+              value={tagSearch}
+              onChange={(e) => setTagSearch(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  addCustomTag();
+                }
+              }}
+              placeholder={localizeUi("ui.botBrowser.botbrowserview.searchTags")}
+              className="mari-chrome-field mari-chrome-field--compact w-full px-2.5 py-1.5 text-xs"
+            />
+          </div>
+          {(includeTags.length > 0 || excludeTags.length > 0) && (
+            <div className="flex flex-wrap gap-1 border-b border-[var(--marinara-chat-chrome-panel-divider)] px-3 pb-2">
+              {includeTags.map((tag) => (
+                <span
+                  key={`inc-${tag}`}
+                  onClick={() => toggleIncludeTag(tag)}
+                  className="cursor-pointer rounded-full bg-emerald-500/20 px-2 py-0.5 text-[0.6rem] font-medium text-emerald-400 ring-1 ring-emerald-500/30 transition-colors hover:bg-emerald-500/30"
+                >
+                  + {tag}
+                </span>
+              ))}
+              {excludeTags.map((tag) => (
+                <span
+                  key={`exc-${tag}`}
+                  onClick={() => toggleExcludeTag(tag)}
+                  className="cursor-pointer rounded-full bg-red-500/20 px-2 py-0.5 text-[0.6rem] font-medium text-red-400 ring-1 ring-red-500/30 transition-colors hover:bg-red-500/30"
+                >
+                  − {tag}
+                </span>
+              ))}
+            </div>
+          )}
+          <div className="flex-1 overflow-y-auto px-1 py-1">
+            {canAddCustomTag && (
+              <div className="mx-1 mb-1 flex flex-col gap-1">
+                <button
+                  onClick={addCustomTag}
+                  className="flex w-full items-center gap-1.5 rounded-md bg-emerald-500/10 px-2 py-1.5 text-xs font-medium text-emerald-400 transition-colors hover:bg-emerald-500/20"
+                >
+                  {localizeUi("ui.characters.dialoguetab.add")} <strong>{tagSearch.trim().toLowerCase()}</strong>{" "}
+                  {localizeUi("ui.botBrowser.botbrowserview.asFilter")}
+                </button>
+                <button
+                  onClick={() => {
+                    const custom = tagSearch.trim().toLowerCase();
+                    if (custom.length >= 2 && !excludeTags.includes(custom)) {
+                      setExcludeTags((prev) => [...prev, custom]);
+                      setIncludeTags((prev) => prev.filter((t) => t !== custom));
+                      setTagSearch("");
+                      setPage(1);
+                    }
+                  }}
+                  className="flex w-full items-center gap-1.5 rounded-md bg-red-500/10 px-2 py-1.5 text-xs font-medium text-red-400 transition-colors hover:bg-red-500/20"
+                >
+                  {localizeUi("ui.botBrowser.botbrowserview.block")} <strong>{tagSearch.trim().toLowerCase()}</strong>{" "}
+                  {localizeUi("ui.botBrowser.botbrowserview.fromResults")}
+                </button>
+              </div>
+            )}
+            {filteredTags.length === 0 && !canAddCustomTag ? (
+              <div className="px-2 py-4 text-center text-[0.65rem] italic text-[var(--muted-foreground)]">
+                {availableTags.length === 0
+                  ? localizeUi("ui.botBrowser.botbrowserview.tagsWillAppearAfterSearching")
+                  : localizeUi("ui.botBrowser.botbrowserview.noTagsMatchFilter")}
+              </div>
+            ) : (
+              filteredTags.map((tag) => {
+                const isIncluded = includeTags.includes(tag);
+                const isExcluded = excludeTags.includes(tag);
+                return (
+                  <div
+                    key={tag}
+                    className="mari-chrome-text flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs transition-colors hover:bg-[var(--accent)]/50"
+                  >
+                    <button
+                      onClick={() => toggleIncludeTag(tag)}
+                      className={cn(
+                        "flex h-4 w-4 shrink-0 items-center justify-center rounded border text-[0.5rem] transition-all",
+                        isIncluded
+                          ? "border-emerald-500 bg-emerald-500/20 text-emerald-400"
+                          : "border-[var(--border)] hover:border-emerald-500/50",
+                      )}
+                    >
+                      {isIncluded && "✓"}
+                    </button>
+                    <span className="min-w-0 flex-1 truncate">{tag}</span>
+                    <button
+                      onClick={() => toggleExcludeTag(tag)}
+                      className={cn(
+                        "flex h-4 w-4 shrink-0 items-center justify-center rounded border text-[0.5rem] transition-all",
+                        isExcluded
+                          ? "border-red-500 bg-red-500/20 text-red-400"
+                          : "border-red-500/30 text-red-400/40 hover:border-red-500/60 hover:text-red-400 hover:bg-red-500/10",
+                      )}
+                    >
+                      −
+                    </button>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </div>
         {/* ═══ Main area ═══ */}
         <div ref={mainScrollRef} className="flex-1 overflow-y-auto p-4">
           {provider.unavailable ? (
@@ -2432,14 +2659,14 @@ export function BotBrowserView() {
                       <optgroup key={group.label} label={group.label}>
                         {group.options.map((opt) => (
                           <option key={opt.value} value={opt.value}>
-                            {opt.label}
+                            {opt.labelKey ? localizeUi(opt.labelKey) : opt.label}
                           </option>
                         ))}
                       </optgroup>
                     ) : (
                       group.options.map((opt) => (
                         <option key={opt.value} value={opt.value}>
-                          {opt.label}
+                          {opt.labelKey ? localizeUi(opt.labelKey) : opt.label}
                         </option>
                       ))
                     ),
@@ -2503,13 +2730,15 @@ export function BotBrowserView() {
                           ? localizeUi("ui.botBrowser.botbrowserview.nsfwDependsOnYourAccountSettings")
                           : effectiveNsfwAvailable
                             ? localizeUi("ui.botBrowser.botbrowserview.toggleNsfwContent")
-                            : sourceId === "wyvern"
-                              ? localizeUi("ui.botBrowser.botbrowserview.useThePopularNsfwSortOption")
-                              : sourceId === "datacat"
-                                ? localizeUi("ui.botBrowser.botbrowserview.datacatIsNsfwOnly_a49a06a")
-                                : localizeUi("ui.botBrowser.botbrowserview.clickToLogInToValue1ForNsfwContent", {
-                                    value1: provider.name,
-                                  })
+                            : provider.nsfwHintKey
+                              ? localizeUi(provider.nsfwHintKey)
+                              : sourceId === "wyvern"
+                                ? localizeUi("ui.botBrowser.botbrowserview.useThePopularNsfwSortOption")
+                                : sourceId === "datacat"
+                                  ? localizeUi("ui.botBrowser.botbrowserview.datacatIsNsfwOnly_a49a06a")
+                                  : localizeUi("ui.botBrowser.botbrowserview.clickToLogInToValue1ForNsfwContent", {
+                                      value1: activeProviderName,
+                                    })
                       }
                       onClick={nsfwGreyedOut ? (e: React.MouseEvent) => e.preventDefault() : handleNsfwClick}
                     >
@@ -2692,17 +2921,20 @@ export function BotBrowserView() {
                     <RefreshCw size="0.75rem" /> {localizeUi("ui.game.gamesurfacecomponent.retry")}
                   </button>
                 </div>
-              ) : results.length === 0 ? (
-                <div className="mari-chrome-text-muted flex flex-1 items-center justify-center py-12 text-sm">
-                  {localizeUi("ui.botBrowser.botbrowserview.noCharactersFound")}
-                </div>
               ) : (
                 <>
-                  <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
-                    {results.map((card) => (
-                      <CardTile key={card.id} card={card} onClick={() => openDetail(card)} />
-                    ))}
-                  </div>
+                  {results.length === 0 ? (
+                    <div className="mari-chrome-text-muted flex flex-1 items-center justify-center py-12 text-sm">
+                      {localizeUi("ui.botBrowser.botbrowserview.noCharactersFound")}
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
+                      {results.map((card) => (
+                        <CardTile key={card.id} card={card} onClick={() => openDetail(card)} />
+                      ))}
+                    </div>
+                  )}
+                  {/* An empty page can still have pages around it (PlotLight drops items after paging). */}
                   {(totalPages > 1 || page > 1) && (
                     <div className="flex items-center justify-center gap-2 pt-2 pb-4">
                       <button
@@ -2712,7 +2944,7 @@ export function BotBrowserView() {
                       >
                         {localizeUi("ui.botBrowser.botbrowserview.previous")}
                       </button>
-                      {totalPages > 1 && totalPages < 9000 ? (
+                      {hasMore === undefined && totalPages > 1 && totalPages < 9000 ? (
                         <label className="flex items-center gap-1 text-xs text-[var(--muted-foreground)]">
                           {localizeUi("ui.botBrowser.botbrowserview.page")}
                           <select
@@ -2778,7 +3010,7 @@ export function BotBrowserView() {
                 <p className="truncate text-xs text-[var(--marinara-chat-chrome-panel-muted)]">
                   {pendingImport.card.creator
                     ? localizeUi("ui.botBrowser.importDialog.byValue1", { value1: pendingImport.card.creator })
-                    : provider.name}
+                    : activeProviderName}
                 </p>
               </div>
             </div>
@@ -2831,6 +3063,22 @@ export function BotBrowserView() {
                     </span>
                   </button>
                 </div>
+                <label className="flex cursor-pointer items-center gap-3 rounded-xl border border-[var(--border)] bg-[var(--secondary)]/40 p-3">
+                  <input
+                    type="checkbox"
+                    checked={splitDescription}
+                    onChange={(e) => setSplitDescription(e.target.checked)}
+                    className="h-4 w-4 shrink-0 accent-[var(--primary)]"
+                  />
+                  <span className="inline-flex items-center gap-1 text-xs font-semibold text-[var(--foreground)]">
+                    {localizeUi("ui.botBrowser.importDialog.splitDescriptionIntoFields")}
+                    <HelpTooltip
+                      text={localizeUi("ui.botBrowser.importDialog.splitDescriptionHelp")}
+                      ariaLabel={localizeUi("ui.botBrowser.importDialog.aboutSplitDescription")}
+                      wide
+                    />
+                  </span>
+                </label>
               </>
             ) : !pendingImport.prepared ? (
               <div className="flex min-h-28 items-center justify-center gap-2 text-sm text-[var(--marinara-chat-chrome-panel-muted)]">
@@ -2889,6 +3137,25 @@ export function BotBrowserView() {
           </div>
         )}
       </Modal>
+
+      <DescriptionSplitDialog
+        open={splitSummaryOpen}
+        result={splitSummary?.result ?? null}
+        applied
+        hasUnsavedChanges={false}
+        onAskMari={
+          splitSummary?.character
+            ? () => {
+                setSplitSummaryOpen(false);
+                requestMariDescriptionSplit(
+                  splitSummary.character!,
+                  localizeUi("ui.characters.descriptionsplitdialog.mariDraft", { name: splitSummary.character!.name }),
+                );
+              }
+            : undefined
+        }
+        onClose={() => setSplitSummaryOpen(false)}
+      />
 
       {/* ═══ Login Modal ═══ */}
       {showLoginModal && (
@@ -3757,14 +4024,17 @@ crc32.table = null as Uint32Array | null;
 function DefSection({ title, content, allowHtml = false }: { title: string; content: string; allowHtml?: boolean }) {
   const sectionId = useId();
   const htmlScopeClass = `mari-bot-notes-${sectionId.replace(/[^a-zA-Z0-9_-]/g, "") || "content"}`;
+  const remoteImages = useRemoteImagePolicy();
   const renderedHtml = useMemo(() => {
-    if (!allowHtml || !containsChatHtml(content)) return null;
-    const decoded = decodeEncodedChatHtmlTags(content);
+    if (!allowHtml) return null;
+    const code = protectMarkdownCode(content);
+    const decoded = decodeEncodedChatHtmlTags(code.text);
+    if (!HTML_TAG_RE.test(decoded)) return null;
     const { html, css } = extractChatStyleBlocks(decoded);
-    const clean = sanitizeChatHtml(html, { allowStyle: true, allowLinks: false });
-    const scopedCss = scopeChatMessageCss(css, `.${htmlScopeClass}`);
+    const clean = sanitizeChatHtml(code.restoreHtml(html), { allowStyle: true, allowLinks: false, remoteImages });
+    const scopedCss = scopeChatMessageCss(css, `.${htmlScopeClass}`, { remoteUrls: remoteImages.loadAll });
     return scopedCss ? `<style>${scopedCss}</style>${clean}` : clean;
-  }, [allowHtml, content, htmlScopeClass]);
+  }, [allowHtml, content, htmlScopeClass, remoteImages]);
 
   return (
     <div>
@@ -3776,6 +4046,7 @@ function DefSection({ title, content, allowHtml = false }: { title: string; cont
             "relative max-h-40 !overflow-x-hidden overflow-y-auto whitespace-pre-wrap !contain-paint rounded-lg bg-[var(--secondary)] p-2.5 text-xs leading-relaxed text-[var(--muted-foreground)]",
             htmlScopeClass,
           )}
+          onClick={handleRemoteImageClick}
           dangerouslySetInnerHTML={{ __html: renderedHtml }}
         />
       ) : (

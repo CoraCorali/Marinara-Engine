@@ -1,19 +1,22 @@
 import { useState } from "react";
 import { ChevronDown, ChevronRight, FlaskConical, Loader2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import type { DecisionDebugPreview } from "@marinara-engine/shared";
+import { readableJson, type DecisionDebugPreview } from "@marinara-engine/shared";
 import { useDecisionDebug } from "../../hooks/use-decision-debug";
+import { reasonKeys } from "./AdvancedMemoryInspector";
 
 export function DecisionDebugPanel({
   chatId,
+  characterId,
   onPreview,
 }: {
   chatId: string;
+  characterId?: string;
   onPreview: (preview: DecisionDebugPreview | null) => void;
 }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
-  const test = useDecisionDebug(chatId);
+  const test = useDecisionDebug(chatId, characterId);
   const report = test.data?.prompt.decisionDebug;
   const canRun = report?.results.some((row) =>
     ["ready", "evaluated", "cached", "deferred", "unanswered"].includes(row.status),
@@ -93,6 +96,9 @@ export function DecisionDebugPanel({
                   {!report.advancedMemory.recall && !report.advancedMemory.sceneCheck && (
                     <p role="status">{t("decisionDebug.memory.empty")}</p>
                   )}
+                  {!report.advancedMemory.recall && report.advancedMemory.sceneCheck && (
+                    <p role="status">{t("decisionDebug.memory.noRecall")}</p>
+                  )}
                   {(
                     [
                       ["recall", report.advancedMemory.recall],
@@ -114,6 +120,11 @@ export function DecisionDebugPanel({
                           <p className="py-1">
                             {t(saved.fallback ? "decisionDebug.memory.fallback" : "decisionDebug.memory.completed")}
                           </p>
+                          {saved.notes?.map((note) => (
+                            <p key={note} className="py-1">
+                              {t(reasonKeys[note] ?? note, { defaultValue: note })}
+                            </p>
+                          ))}
                           <p className="text-[var(--muted-foreground)]">
                             {t("decisionDebug.threshold")} {saved.threshold}
                           </p>
@@ -225,7 +236,7 @@ export function DecisionDebugPanel({
                     })}
                   </summary>
                   <pre className="max-h-80 overflow-auto whitespace-pre-wrap break-all rounded-md bg-[var(--background)] p-3 text-xs">
-                    {JSON.stringify(report.requests, null, 2)}
+                    {readableJson(report.requests)}
                   </pre>
                 </details>
               )}

@@ -4,6 +4,8 @@
 // https://github.com/SillyTavern/SillyTavern/blob/release/public/index.html
 // ──────────────────────────────────────────────────────────────
 import type { APIProvider } from "../types/connection.js";
+import { PROVIDERS } from "./providers.js";
+import { LOCAL_SIDECAR_CONNECTION_ID } from "./defaults.js";
 
 export interface KnownModel {
   id: string;
@@ -13,16 +15,96 @@ export interface KnownModel {
   maxOutput: number;
 }
 
+const BRACKET_PAIRS: Record<string, string> = { "[": "]", "【": "】", "(": ")", "（": "）" };
+
+/** Channel tags that new-api/one-api resellers put in front of a model id, such as `[次]`, `[SP]`, `【限时】`. */
+function stripTagPrefix(id: string): string {
+  let s = id.trimStart();
+  for (let close = BRACKET_PAIRS[s[0] ?? ""]; close; close = BRACKET_PAIRS[s[0] ?? ""]) {
+    const end = s.indexOf(close);
+    if (end < 0) break;
+    s = s.slice(end + 1).trimStart();
+  }
+  return s;
+}
+
+/**
+ * Modifiers after a model id: CLIProxyAPI `(high)`/`(8192)`, Claude Code `[1m]`, new-api `@thinking:on` and
+ * Vertex `@20250805`. No catalog id contains brackets or `@`. Linear scans, because ids are user input.
+ */
+function stripModifierSuffix(id: string): string {
+  let t = id.trimEnd();
+  // Proxies add one or two suffixes; the cap keeps a crafted imported id from looping once per character.
+  for (let pass = 0; pass < 4; pass++) {
+    const open = Object.keys(BRACKET_PAIRS).find((o) => t.endsWith(BRACKET_PAIRS[o]!));
+    const start = open ? t.lastIndexOf(open) : -1;
+    if (start >= 0) {
+      t = t.slice(0, start).trimEnd();
+      continue;
+    }
+    const at = t.lastIndexOf("@");
+    if (at < 0 || t.indexOf("/", at) >= 0) break;
+    t = t.slice(0, at).trimEnd();
+  }
+  return t;
+}
+
+/**
+ * The id that capability checks read: trimmed, lower case, without proxy tags or modifiers.
+ * `[次]claude-opus-4-6` and `claude-opus-4-6(high)` are checked as `claude-opus-4-6`. Vendor paths (`anthropic/…`)
+ * stay, because OpenRouter rules read them. Never send this id to a provider; the request keeps the configured id.
+ */
+export function capabilityModelId(model: string): string {
+  return stripModifierSuffix(stripTagPrefix(model.trim().toLowerCase()));
+}
+
+/**
+ * Proxy ids that make the proxy turn thinking on whatever the request says: new-api's `-thinking`,
+ * `-thinking-<budget>`, effort tails (`-high`) and `@thinking:<on|budget>`, AiHubMix `-think`, CLIProxyAPI
+ * `(<level|budget>)`. Treat them like a thinking request: no sampling and no forced tool choice, which Anthropic and
+ * GPT-5 reject while reasoning runs. Thinking settings Marinara sends still apply where the proxy keeps them.
+ */
+export function impliesProxyThinking(model: string): boolean {
+  let raw = model.trim().toLowerCase();
+  // The modifier nearest the end that carries a thinking setting decides; plain labels such as `(free)` or `[1m]` are skipped.
+  for (let pass = 0; pass < 4; pass++) {
+    const closer = raw.trimEnd().slice(-1);
+    const open = Object.keys(BRACKET_PAIRS).find((o) => BRACKET_PAIRS[o] === closer);
+    const start = open ? raw.trimEnd().lastIndexOf(open) : -1;
+    if (start >= 0) {
+      const inner = raw
+        .trimEnd()
+        .slice(start + 1, -1)
+        .trim();
+      if (open === "(" || open === "（") {
+        if (/^(?:minimal|low|medium|high|xhigh|max|auto|[1-9]\d*)$/u.test(inner)) return true;
+        if (["none", "off", "0"].includes(inner)) return false;
+      }
+      raw = raw.slice(0, start);
+      continue;
+    }
+    const at = raw.lastIndexOf("@");
+    if (at < 0 || raw.indexOf("/", at) >= 0) break;
+    if (raw.startsWith("@thinking:", at)) return !["", "off", "none", "0"].includes(raw.slice(at + 10).trim());
+    raw = raw.slice(0, at);
+  }
+  const id = capabilityModelId(raw);
+  return (
+    /(?<!-no|-non)-think(?:ing(?:-[1-9]\d*)?)?$/u.test(id) ||
+    /^(?:claude-|gpt-5|o[134])\S*-(?:minimal|low|medium|high|xhigh|max)$/u.test(id)
+  );
+}
+
 const CLAUDE_ADAPTIVE_ONLY_OPUS_RE = /claude-opus-4-(?:[7-9]|\d{2,})/;
 
 /** Native Claude ID and the dotted ID used by OpenRouter/compatible gateways. */
 export function isClaudeOpus55Model(model: string): boolean {
-  return /(?:^|\/)claude-opus-5[.-]5(?:$|[-:])/iu.test(model.trim());
+  return /(?:^|\/)claude-opus-5[.-]5(?:$|[-:])/u.test(capabilityModelId(model));
 }
 
 /** Native Claude ID and the dotted ID used by OpenRouter/compatible gateways. */
 export function isClaudeSonnet55Model(model: string): boolean {
-  return /(?:^|\/)claude-sonnet-5[.-]5(?:$|[-:])/iu.test(model.trim());
+  return /(?:^|\/)claude-sonnet-5[.-]5(?:$|[-:])/u.test(capabilityModelId(model));
 }
 
 /**
@@ -36,7 +118,7 @@ export function isClaudeStrictRequestModel(model: string): boolean {
 }
 
 export function isClaudeAdaptiveOnlyNoSamplingModel(model: string): boolean {
-  const normalized = model.toLowerCase();
+  const normalized = capabilityModelId(model);
   return (
     CLAUDE_ADAPTIVE_ONLY_OPUS_RE.test(normalized) ||
     /claude-(?:opus|sonnet)-5(?:$|[-.])/u.test(normalized) ||
@@ -46,7 +128,7 @@ export function isClaudeAdaptiveOnlyNoSamplingModel(model: string): boolean {
 }
 
 export function supportsXhighReasoningEffort(model: string): boolean {
-  const normalized = model.toLowerCase();
+  const normalized = capabilityModelId(model);
   return (
     isOpenAIGpt6Model(normalized) ||
     normalized.startsWith("gpt-5.6") ||
@@ -64,19 +146,38 @@ export function supportsXhighReasoningEffort(model: string): boolean {
  * lowered to `high` on the way to the provider.
  */
 export function isZaiMaxReasoningEffortModel(model: string): boolean {
-  return /(?:^|\/)glm-5\.[23](?:$|[-:])/u.test(model.toLowerCase());
+  return /(?:^|\/)glm-5\.[23](?:$|[-:])/u.test(capabilityModelId(model));
+}
+
+/**
+ * Native Mistral models whose `reasoning_effort` can be set. They accept only "high" and "none". Other Mistral models
+ * (Magistral, older releases) are not listed as taking it, so they get no effort and keep their own behaviour.
+ * https://docs.mistral.ai/capabilities/reasoning
+ */
+export function isMistralAdjustableReasoningModel(model: string): boolean {
+  const normalized = capabilityModelId(model);
+  return (
+    normalized === "mistral-small-latest" ||
+    /^mistral-large-4(?:$|[-.])/u.test(normalized) ||
+    /^mistral-medium-3[-.]5(?:$|[-.])/u.test(normalized)
+  );
+}
+
+/** GLM 5.3 on Mistral (`zai-glm-5-3`) always reasons and takes only "low", "high" or "max", never "none". */
+export function isMistralGlm53Model(model: string): boolean {
+  return /^zai-glm-5-3(?:$|-)/u.test(capabilityModelId(model));
 }
 
 export function isOpenAIGpt56Model(model: string): boolean {
-  return model.toLowerCase().startsWith("gpt-5.6");
+  return capabilityModelId(model).startsWith("gpt-5.6");
 }
 
 export function isOpenAIGpt6AstraModel(model: string): boolean {
-  return /^(?:openai\/)?gpt-6-astra(?:$|[-:])/i.test(model);
+  return /^(?:openai\/)?gpt-6-astra(?:$|[-:])/u.test(capabilityModelId(model));
 }
 
 export function isOpenAIGpt6Model(model: string): boolean {
-  return /^(?:openai\/)?gpt-6(?:-(?:astra|sol|luna)|\.1-sol)(?:$|[-:])/i.test(model);
+  return /^(?:openai\/)?gpt-6(?:-(?:astra|sol|luna)|\.1-sol)(?:$|[-:])/u.test(capabilityModelId(model));
 }
 
 /**
@@ -84,7 +185,7 @@ export function isOpenAIGpt6Model(model: string): boolean {
  * so these never take it at all. https://developers.openai.com/api/docs/models/gpt-6.1-sol
  */
 export function isOpenAIGpt6AlwaysReasoningModel(model: string): boolean {
-  return isOpenAIGpt6AstraModel(model) || /^(?:openai\/)?gpt-6\.1-sol(?:$|[-:])/i.test(model);
+  return isOpenAIGpt6AstraModel(model) || /^(?:openai\/)?gpt-6\.1-sol(?:$|[-:])/u.test(capabilityModelId(model));
 }
 
 export function isOpenAIGpt56SolProAlias(model: string): boolean {
@@ -103,14 +204,28 @@ export function resolveProviderReasoningEffort(args: {
   model: string;
   reasoningEffort: StoredReasoningEffort | undefined;
 }): ProviderReasoningEffort {
-  if (!args.reasoningEffort || args.reasoningEffort === "none") return null;
-  const modelLower = args.model.toLowerCase();
   const providerLower = args.provider.toLowerCase();
+  // Argon cannot turn thinking off; without a level it thinks at Google's default, medium, so name that level.
+  if (
+    (!args.reasoningEffort || args.reasoningEffort === "none") &&
+    (providerLower === "google" || providerLower === "google_vertex") &&
+    isGeminiArgonModel(args.model)
+  ) {
+    return "medium";
+  }
+  if (!args.reasoningEffort || args.reasoningEffort === "none") return null;
+  const modelLower = capabilityModelId(args.model);
 
   const xaiUsesAutoReasoning =
     (providerLower === "xai" && isXaiAutoReasoningModel(modelLower)) ||
     (providerLower === "openrouter" && modelLower.startsWith("x-ai/grok-"));
   if (xaiUsesAutoReasoning) return null;
+  // Mistral reasoning models have a single level besides "none".
+  if (providerLower === "mistral" && isMistralAdjustableReasoningModel(modelLower)) return "high";
+  if (providerLower === "mistral" && isMistralGlm53Model(modelLower)) {
+    if (args.reasoningEffort === "low") return "low";
+    return args.reasoningEffort === "medium" || args.reasoningEffort === "high" ? "high" : "max";
+  }
 
   const isNativeAnthropicAdaptiveOnly =
     (providerLower === "anthropic" || providerLower === "claude_subscription") &&
@@ -120,6 +235,9 @@ export function resolveProviderReasoningEffort(args: {
     isOpenAIGpt6Model(modelLower) ||
     isOpenAIGpt56Model(modelLower) ||
     isNativeAnthropicAdaptiveOnly ||
+    // DeepSeek takes max for every chat model; xhigh is not one of its levels, so maximum maps to max rather than
+    // collapsing to high.
+    providerLower === "deepseek" ||
     (providerLower === "zai" && isZaiMaxReasoningEffortModel(modelLower));
 
   if (args.reasoningEffort === "maximum") {
@@ -131,16 +249,51 @@ export function resolveProviderReasoningEffort(args: {
   if (args.reasoningEffort === "xhigh") {
     return supportsXhigh ? "xhigh" : "high";
   }
+  // DeepSeek accepts medium for compatibility but serves it as high, so mapping it here keeps the offered levels
+  // honest: without this, "Medium" and "High" would be two buttons that send a different value yet behave the same.
+  if (providerLower === "deepseek" && args.reasoningEffort === "medium") return "high";
   return args.reasoningEffort;
 }
 
+/** Gemini 3 and later set thinking with `thinkingLevel`; Gemini 2.5 and older take `thinkingBudget`. */
+export function isGeminiThinkingLevelModel(model: string): boolean {
+  return /gemini-(?:[3-9]|[1-9]\d)(?!\d)/u.test(capabilityModelId(model));
+}
+
+/**
+ * Gemini 4 Argon takes thinking levels low to high only and cannot turn thinking off. Its sampler, penalty and prefill
+ * rules are shared with the newer Flash models (isGeminiStrictRequestModel).
+ * https://ai.google.dev/gemini-api/docs/models/gemini-4-argon
+ * https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/guides/gemini-4-argon
+ */
+export function isGeminiArgonModel(model: string): boolean {
+  return /(?:^|\/)gemini-4-argon(?:$|-)/u.test(capabilityModelId(model));
+}
+
+/** Any Gemini model id, bare or with a router prefix such as OpenRouter's `google/`. */
+export function isGeminiModel(model: string): boolean {
+  return /(?:^|\/)gemini-/u.test(capabilityModelId(model));
+}
+
+/**
+ * Gemini models that ignore temperature, top-p and top-k and reject frequency and presence penalties and a request
+ * ending on a model turn (a prefill): Argon, 3.5 Flash-Lite and 3.6 to 3.8 Flash. OpenRouter variants such as
+ * `:online` count too.
+ * https://ai.google.dev/gemini-api/docs/whats-new-gemini-3.6
+ * https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/gemini/3-5-flash-lite
+ * https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/guides/gemini-3-6-flash (also 3-7, 3-8)
+ */
+export function isGeminiStrictRequestModel(model: string): boolean {
+  return /(?:^|\/)gemini-(?:4-argon|3\.5-flash-lite|3\.[6-8]-flash)(?:$|[-:])/u.test(capabilityModelId(model));
+}
+
 export function isXaiConfigurableReasoningModel(model: string): boolean {
-  const normalized = model.toLowerCase().replace(/^x-ai\//, "");
+  const normalized = capabilityModelId(model).replace(/^x-ai\//, "");
   return /^grok-4\.[3567](?:$|-)/.test(normalized);
 }
 
 export function isXaiAutoReasoningModel(model: string): boolean {
-  const normalized = model.toLowerCase().replace(/^x-ai\//, "");
+  const normalized = capabilityModelId(model).replace(/^x-ai\//, "");
   return normalized.startsWith("grok-4-1-fast");
 }
 
@@ -296,14 +449,17 @@ export const ANTHROPIC_MODELS: KnownModel[] = [
 // ── Claude (Subscription via Claude Agent SDK) ──
 // Models reachable through the local `claude` CLI auth (Pro / Max). Anthropic
 // gates which model IDs are available per plan tier; the SDK surfaces a clear
-// error if the signed-in plan can't run the requested model. We keep this list
-// to the current tool-eligible families to avoid offering retired aliases that
-// the subscription path no longer accepts.
+// error if the signed-in plan can't run the requested model. The model picker
+// shows Claude Code's cached catalog for the account; this curated list is the
+// fallback before Claude Code has cached one. We keep it to the current tool-eligible
+// families to avoid offering retired aliases the subscription path rejects.
 export const CLAUDE_SUBSCRIPTION_MODELS: KnownModel[] = [
   { id: "claude-opus-5-5", name: "Claude Opus 5.5", context: 1000000, maxOutput: 128000 },
   { id: "claude-opus-5", name: "Claude Opus 5", context: 1000000, maxOutput: 128000 },
   { id: "claude-sonnet-5-5", name: "Claude Sonnet 5.5", context: 1000000, maxOutput: 128000 },
   { id: "claude-sonnet-5", name: "Claude Sonnet 5", context: 1000000, maxOutput: 128000 },
+  { id: "claude-haiku-5-5", name: "Claude Haiku 5.5", context: 1000000, maxOutput: 128000 },
+  { id: "claude-fable-5-1", name: "Claude Fable 5.1", context: 1000000, maxOutput: 128000 },
   { id: "claude-fable-5", name: "Claude Fable 5", context: 1000000, maxOutput: 128000 },
   { id: "claude-opus-4-8", name: "Claude Opus 4.8", context: 1000000, maxOutput: 128000 },
   { id: "claude-opus-4-7", name: "Claude Opus 4.7", context: 1000000, maxOutput: 128000 },
@@ -346,8 +502,10 @@ export const OPENAI_CHATGPT_MODELS: KnownModel[] = [
 // ── Google AI Studio (from #model_google_select) ──
 
 export const GOOGLE_MODELS: KnownModel[] = [
-  // Gemini 3.8
+  // Gemini 3.8. New Google and Vertex connections start on the first entry, so keep a widely available Flash here.
   { id: "gemini-3.8-flash", name: "gemini-3.8-flash", context: 1000000, maxOutput: 65536 },
+  // Gemini 4. Argon needs a paid tier and, on Vertex, the global, us or eu location.
+  { id: "gemini-4-argon", name: "gemini-4-argon", context: 1000000, maxOutput: 65536 },
   // Gemini 3.7
   { id: "gemini-3.7-flash", name: "gemini-3.7-flash", context: 1000000, maxOutput: 65536 },
   // Gemini 3.6
@@ -578,11 +736,12 @@ export const GROQ_MODELS: KnownModel[] = [
 
 // DeepSeek (from #model_deepseek_select)
 export const DEEPSEEK_MODELS: KnownModel[] = [
+  // The current names. `deepseek-v4-flash` is a legacy alias of `deepseek-flash`
+  // and still resolves, while deepseek-chat / deepseek-coder / deepseek-reasoner
+  // were retired on 2026-07-24.
+  { id: "deepseek-flash", name: "deepseek-flash", context: 1_000_000, maxOutput: 384_000 },
   { id: "deepseek-v4-pro", name: "deepseek-v4-pro", context: 1_000_000, maxOutput: 384_000 },
-  { id: "deepseek-v4-flash", name: "deepseek-v4-flash", context: 1_000_000, maxOutput: 384_000 },
-  { id: "deepseek-chat", name: "deepseek-chat", context: 131072, maxOutput: 8192 },
-  { id: "deepseek-coder", name: "deepseek-coder", context: 131072, maxOutput: 8192 },
-  { id: "deepseek-reasoner", name: "deepseek-reasoner", context: 131072, maxOutput: 8192 },
+  { id: "deepseek-v4-flash", name: "deepseek-v4-flash (legacy alias)", context: 1_000_000, maxOutput: 384_000 },
 ];
 
 // Xiaomi MiMo (available through OAI-compatible aggregators and direct APIs)
@@ -740,6 +899,17 @@ export const VIDEO_GENERATION_SOURCES: VideoGenSource[] = [
 /** The image model Codex's own image tool uses through a ChatGPT login. */
 export const CODEX_IMAGE_MODEL = "gpt-image-2";
 
+/** Image sources that use the same vendor key as the chat provider of the given id (one Connection holds both). */
+export const IMAGE_SOURCE_VENDOR: Record<string, string> = {
+  openai: "openai",
+  openrouter: "openrouter",
+  xai: "xai",
+  nanogpt: "nanogpt",
+  arli: "arli",
+  zai: "zai",
+  gemini_image: "google",
+};
+
 export const IMAGE_GENERATION_SOURCES: ImageGenSource[] = [
   {
     id: "openai",
@@ -825,6 +995,13 @@ export const IMAGE_GENERATION_SOURCES: ImageGenSource[] = [
     name: "fal.ai",
     description: "Text-to-image generation with FLUX and other fal.ai models.",
     defaultBaseUrl: "https://fal.run",
+    requiresApiKey: true,
+  },
+  {
+    id: "spicyapi",
+    name: "SpicyAPI",
+    description: "Uncensored image models from SpicyAPI's catalog.",
+    defaultBaseUrl: "https://api.spicyapi.ai/api/v1",
     requiresApiKey: true,
   },
   {
@@ -914,6 +1091,12 @@ export const FAL_IMAGE_MODELS: KnownModel[] = [
   { id: "fal-ai/flux/dev", name: "FLUX.1 Dev (fal.ai)", context: 0, maxOutput: 0 },
 ];
 
+export const SPICYAPI_IMAGE_MODELS: KnownModel[] = [
+  { id: "alibaba/z-image-spicy-pro/text-to-image", name: "Z-Image Spicy Pro (SpicyAPI)", context: 0, maxOutput: 0 },
+  { id: "bytedance/seedream-5.0-pro/text-to-image", name: "Seedream 5.0 Pro (SpicyAPI)", context: 0, maxOutput: 0 },
+  { id: "alibaba/qwen-image-2.1/text-to-image", name: "Qwen Image 2.1 (SpicyAPI)", context: 0, maxOutput: 0 },
+];
+
 export const ATLAS_CLOUD_VIDEO_MODELS: KnownModel[] = [
   { id: "google/veo3.1/text-to-video", name: "Veo 3.1 Text to Video (Atlas Cloud)", context: 0, maxOutput: 0 },
   { id: "google/veo3.1/image-to-video", name: "Veo 3.1 Image to Video (Atlas Cloud)", context: 0, maxOutput: 0 },
@@ -933,6 +1116,8 @@ export const ATLAS_CLOUD_VIDEO_MODELS: KnownModel[] = [
 
 const IMAGE_GEN_MODELS: KnownModel[] = [
   // OpenAI
+  { id: "gpt-image-2.6-flare", name: "GPT Image 2.6 Flare", context: 0, maxOutput: 0 },
+  { id: "gpt-image-2.6-sunburst", name: "GPT Image 2.6 Sunburst", context: 0, maxOutput: 0 },
   { id: "gpt-image-2.5-flare", name: "GPT Image 2.5 Flare", context: 0, maxOutput: 0 },
   { id: "gpt-image-2.5-sunburst", name: "GPT Image 2.5 Sunburst", context: 0, maxOutput: 0 },
   { id: "gpt-image-2", name: "GPT Image 2", context: 0, maxOutput: 0 },
@@ -989,6 +1174,7 @@ const IMAGE_GEN_MODELS: KnownModel[] = [
   { id: "venice-sd35", name: "Venice SD3.5", context: 0, maxOutput: 0 },
   ...ZAI_IMAGE_MODELS,
   ...FAL_IMAGE_MODELS,
+  ...SPICYAPI_IMAGE_MODELS,
   ...ATLAS_CLOUD_IMAGE_MODELS,
   // NovelAI
   { id: "nai-diffusion-3", name: "NAI Diffusion 3 (Anime V3)", context: 0, maxOutput: 0 },
@@ -1012,6 +1198,8 @@ const VIDEO_GEN_MODELS: KnownModel[] = [
   { id: "grok-imagine-video", name: "Grok Imagine Video", context: 0, maxOutput: 0 },
   { id: "google/veo-3.1", name: "Google Veo 3.1 (OpenRouter)", context: 0, maxOutput: 0 },
   { id: "alibaba/wan-2.7", name: "Alibaba WAN 2.7 (OpenRouter)", context: 0, maxOutput: 0 },
+  { id: "minimax/hailuo-3-max", name: "MiniMax: H3 Max (OpenRouter)", context: 0, maxOutput: 0 },
+  { id: "bytedance/seedance-2.5", name: "ByteDance: Seedance 2.5 (OpenRouter)", context: 0, maxOutput: 0 },
   { id: "seedance-2-0", name: "Seedance 2.0", context: 0, maxOutput: 0 },
   { id: "seedance-2-0-fast", name: "Seedance 2.0 Fast", context: 0, maxOutput: 0 },
   ...ATLAS_CLOUD_VIDEO_MODELS,
@@ -1055,7 +1243,11 @@ export function inferVideoSource(model: string, baseUrl: string): string {
     return "nanogpt";
   }
   if (m === "openrouter" || isProviderHost(hostname, "openrouter.ai")) return "openrouter";
-  if (m.includes("/") && (m.includes("veo") || m.includes("wan"))) return "openrouter";
+  if (
+    m.includes("/") &&
+    (m.includes("veo") || m.includes("wan") || m.startsWith("minimax/hailuo-") || m.startsWith("bytedance/seedance-"))
+  )
+    return "openrouter";
   if (m === "google_veo" || m === "veo" || /^veo-[\d.]+/.test(m)) return "google_veo";
   if (m === "xai" || isProviderHost(hostname, "x.ai")) return "xai";
   if (m.includes("grok") && m.includes("imagine") && m.includes("video")) return "xai";
@@ -1091,6 +1283,7 @@ export function inferImageSource(model: string, baseUrl: string): string {
     m === "zai" ||
     m === "atlas" ||
     m === "fal" ||
+    m === "spicyapi" ||
     m === "comfyui" ||
     m === "swarmui" ||
     m === "automatic1111" ||
@@ -1101,6 +1294,7 @@ export function inferImageSource(model: string, baseUrl: string): string {
   }
   if (m === "drawthings") return "automatic1111";
   if (hostname === "fal.run") return "fal";
+  if (isProviderHost(hostname, "spicyapi.ai")) return "spicyapi";
   if (isProviderHost(hostname, "nano-gpt.com")) return "nanogpt";
   if (isProviderHost(hostname, "openrouter.ai")) return "openrouter";
   if (isProviderHost(hostname, "x.ai")) return "xai";
@@ -1130,6 +1324,77 @@ export function inferImageSource(model: string, baseUrl: string): string {
   return "openai";
 }
 
+const EXPLICIT_IMAGE_SOURCES = new Set([
+  "openai",
+  "codex_chatgpt",
+  "arli",
+  "nanogpt",
+  "openrouter",
+  "pollinations",
+  "stability",
+  "togetherai",
+  "novelai",
+  "horde",
+  "xai",
+  "venice",
+  "zai",
+  "fal",
+  "spicyapi",
+  "atlas",
+  "comfyui",
+  "swarmui",
+  "automatic1111",
+  "runpod_comfyui",
+  "gemini_image",
+]);
+
+function normalizeExplicitImageSource(serviceHint: string): string {
+  const normalized = serviceHint.trim().toLowerCase();
+  if (!normalized) return "";
+  if (normalized === "drawthings") return "automatic1111";
+  return EXPLICIT_IMAGE_SOURCES.has(normalized) ? normalized : "";
+}
+
+/** The image backend the server's generateImage calls for these arguments: the explicit service, else the inferred one. */
+export function resolveImageBackend(
+  source: string,
+  baseUrl: string,
+  serviceHint: string,
+  requestModel?: string,
+): string {
+  const inferredSource = inferImageSource(requestModel || source, baseUrl);
+  const explicitSource = normalizeExplicitImageSource(serviceHint);
+
+  if (!explicitSource) return inferredSource;
+
+  // Gemini image models exposed through OpenAI-compatible proxies (for example LinkAPI)
+  // must use the chat-completions path even if an older connection still says "openai".
+  if (explicitSource === "openai" && inferredSource === "gemini_image") {
+    return inferredSource;
+  }
+
+  return explicitSource;
+}
+
+/** Whether a base URL is ToAPIs, which an "OpenAI (DALL-E)" or Seedance connection reaches as asynchronous media tasks. */
+export function isToAPIsMediaUrl(baseUrl: string): boolean {
+  try {
+    const u = new URL(baseUrl);
+    return (
+      u.protocol === "https:" &&
+      ["toapis.com", "toapis.cn"].includes(u.hostname) &&
+      !u.username &&
+      !u.password &&
+      !u.port &&
+      !u.search &&
+      !u.hash &&
+      /^\/(?:v1\/?)?$/.test(u.pathname)
+    );
+  } catch {
+    return false;
+  }
+}
+
 // ── Provider → Model map ──
 
 export const MODEL_LISTS: Record<APIProvider, KnownModel[]> = {
@@ -1147,10 +1412,12 @@ export const MODEL_LISTS: Record<APIProvider, KnownModel[]> = {
   xai: XAI_MODELS,
   arli: [], // Arli AI — models fetched dynamically via the /models endpoint
   zai: ZAI_MODELS,
+  deepseek: DEEPSEEK_MODELS,
   // Seed OAI-compatible endpoints with the OpenAI catalog; remote /models still merge on top.
   custom: [...OPENAI_MODELS, ...ZAI_MODELS],
   image_generation: IMAGE_GEN_MODELS,
   video_generation: VIDEO_GEN_MODELS,
+  audio_generation: [], // Music and sound-effect models are selected per generation source.
   audio: AUDIO_GEN_MODELS,
   decision: [],
 };
@@ -1167,22 +1434,109 @@ const OPENAI_COMPATIBLE_AGGREGATOR_MODELS: KnownModel[] = [
 ];
 
 /**
- * Look up a known model by ID across all providers.
+ * Variant suffixes proxies add to a catalog id: thinking switches (new-api `-thinking[-<budget>]`/`-nothinking`,
+ * AiHubMix `-think`/`-nothink`), effort tails (new-api, AiHubMix `gpt-5.4-high`), AiHubMix `-search`, LinkAPI `-r`,
+ * Chutes `-tee`, and date pins (`-20250929`, `-2024-08-06`, `-0731`). findKnownModel removes them one at a time,
+ * and only while the id is still unknown, so a real catalog id that ends the same way (`command-r`,
+ * `gpt-5.1-codex-max`, `grok-4-0709`) always matches as it is.
+ */
+const PROXY_MODEL_SUFFIX_RE =
+  /-(?:thinking(?:-\d+)?|think|nothinking|nothink|no-thinking|non-thinking|none|minimal|low|medium|high|xhigh|max|search|r|tee|\d{4}-\d{2}-\d{2}|\d{8}|\d{4})$/u;
+
+/**
+ * The catalog form of a proxy or gateway id: no tags or modifiers, no namespace path (OpenRouter, Bifrost and
+ * LiteLLM `vendor/…`, Chutes `deepseek-ai/…`, CLIProxyAPI `provider://…`), no `:variant` (OpenRouter `:free`, NanoGPT
+ * `:thinking`), no Bedrock wrapper (`us.anthropic.…-v1:0`), Vertex date pins as Anthropic's (`@20250805` is
+ * `-20250805`), and hyphenated Claude versions (Poe and OpenRouter `claude-opus-4.6`).
+ */
+export function catalogModelId(modelId: string): string {
+  return (
+    capabilityModelId(modelId.trim().replace(/@(\d{8})$/u, "-$1"))
+      .split("/")
+      .pop() ?? ""
+  )
+    .split(":", 1)[0]!
+    .replace(/^(?:[a-z]+\.)?anthropic\.(claude-.+)-v\d+$/u, "$1")
+    .replace(/^(claude-(?:opus|sonnet|haiku|fable|mythos)-\d+)\.(\d+)/u, "$1-$2");
+}
+
+/**
+ * Look up a known model by ID across all providers. A proxy id resolves to the catalog model it serves:
+ * `[次]claude-opus-4-6-thinking` is `claude-opus-4-6`.
  */
 export function findKnownModel(provider: APIProvider, modelId: string): KnownModel | undefined {
   const exact = MODEL_LISTS[provider]?.find((model) => model.id === modelId);
-  if (exact || (provider !== "openrouter" && provider !== "nanogpt" && provider !== "custom")) return exact;
+  if (exact) return exact;
 
   // Aggregators namespace model IDs (for example, `deepseek/deepseek-v4-pro`)
   // while direct OAI-compatible endpoints generally do not. Resolve both
   // forms without exposing a large, stale static list in their model pickers.
-  const normalizedId = modelId.trim().toLowerCase();
-  const unqualifiedId = isClaudeOpus55Model(normalizedId)
-    ? "claude-opus-5-5"
-    : isClaudeSonnet55Model(normalizedId)
-      ? "claude-sonnet-5-5"
-      : (normalizedId.split("/").pop()?.split(":", 1)[0] ?? normalizedId);
-  return OPENAI_COMPATIBLE_AGGREGATOR_MODELS.find((model) => model.id.toLowerCase() === unqualifiedId);
+  const catalog =
+    provider === "openrouter" || provider === "nanogpt" || provider === "custom"
+      ? OPENAI_COMPATIBLE_AGGREGATOR_MODELS
+      : MODEL_LISTS[provider];
+  if (!catalog?.length) return undefined;
+  let id = catalogModelId(modelId);
+  // At most 4 suffix passes: a crafted imported id must not loop once per character.
+  for (let pass = 0; ; pass++) {
+    const known = catalog.find((model) => model.id.toLowerCase() === id);
+    const shorter = id.replace(PROXY_MODEL_SUFFIX_RE, "");
+    if (known || shorter === id || pass === 4) return known;
+    id = shorter;
+  }
+}
+
+/** How a target catalog model matches a Model that moves to another service: same id, same id after the gateway path, same catalog model. */
+export type ModelMoveMatch = "exact" | "prefix" | "catalog";
+export interface ModelMoveCandidate<T> {
+  model: T;
+  match: ModelMoveMatch;
+  /** Another behaviour or billing variant (`:thinking`, `:free`, `[1m]`, `@thinking:on`): the user must confirm it. */
+  variant: boolean;
+}
+
+/** The behaviour/billing tail of an id: its `:variant` and bracket or `@` modifiers. Vertex date pins are not variants. */
+function modelVariantTag(modelId: string): string {
+  const last =
+    modelId
+      .trim()
+      .toLowerCase()
+      .replace(/@(\d{8})$/u, "-$1")
+      .split("/")
+      .pop() ?? "";
+  const base = stripModifierSuffix(last);
+  const colon = base.indexOf(":");
+  return `${colon >= 0 ? base.slice(colon) : ""}${last.slice(base.length).replace(/\s+/gu, "")}`;
+}
+
+/**
+ * Target catalog models that serve the same model as `sourceId`, best first: the exact id, the id without its gateway
+ * path (`nanogpt/…`, Bifrost `vendor/…`), then the same catalog model (`catalogModelId`). A match with another variant
+ * tail is never a suggestion on its own: it is flagged and ranked after the plain matches.
+ */
+export function rankModelMoveCandidates<T extends { id: string }>(
+  sourceId: string,
+  models: readonly T[],
+): Array<ModelMoveCandidate<T>> {
+  const source = sourceId.trim();
+  const sourceLast = source.toLowerCase().split("/").pop() ?? "";
+  const sourceCatalog = catalogModelId(source);
+  const sourceTag = modelVariantTag(source);
+  const rank = { exact: 0, prefix: 1, catalog: 2 } as const;
+  const hits: Array<ModelMoveCandidate<T>> = [];
+  for (const model of models) {
+    const match: ModelMoveMatch | null =
+      model.id === source
+        ? "exact"
+        : model.id.toLowerCase().split("/").pop() === sourceLast
+          ? "prefix"
+          : sourceCatalog && catalogModelId(model.id) === sourceCatalog
+            ? "catalog"
+            : null;
+    if (match) hits.push({ model, match, variant: modelVariantTag(model.id) !== sourceTag });
+  }
+  // Stable sort: within one rank the catalog order stays.
+  return hits.sort((a, b) => Number(a.variant) - Number(b.variant) || rank[a.match] - rank[b.match]);
 }
 
 function normalizeProviderForCatalog(provider: APIProvider | string): APIProvider | null {
@@ -1204,4 +1558,131 @@ export function shouldSuppressUnknownModelParameters(
   const catalog = MODEL_LISTS[normalizedProvider];
   if (!catalog || catalog.length === 0) return false;
   return !findKnownModel(normalizedProvider, modelId.trim());
+}
+
+// ── Cost badges ──
+
+/** How a whole Connection is paid for, when one word says it: a plan, or a free community service. */
+export type ConnectionBilling = "plan" | "free" | null;
+
+/** What one model of a catalog costs: in the subscription (with an input-token multiplier), free, paid, or unknown. */
+export type ConnectionModelCost = "included" | `multiplier:${number}` | "free" | "paid" | null;
+
+/** Model prices per million tokens, as the provider's list or the price catalog gives them (USD unless `currency`). */
+export interface ModelCatalogPricing {
+  prompt?: number;
+  completion?: number;
+  cacheRead?: number;
+  cacheWrite?: number;
+  /** A price per request instead of per token (LinkAPI per-call models). */
+  perCall?: number;
+  /** ISO code when not USD (LinkAPI prices in its display unit). */
+  currency?: string;
+  /** Where a catalog price came from, and when it was read; left out for the provider's own list. */
+  source?: "openrouter" | "linkapi" | "models.dev";
+  fetchedAt?: string;
+  /** LinkAPI: the base price, because the key's price group is not known. */
+  beforeGroupDiscount?: true;
+}
+
+/** One model of a saved catalog as `GET /connections/:id/models` serves it. */
+export interface ConnectionCatalogModel {
+  id: string;
+  name: string;
+  context?: number;
+  maxOutput?: number;
+  capabilities?: unknown;
+  /** NanoGPT subscription: whether the model is in the plan, and its input-token multiplier. */
+  subscriptionIncluded?: boolean;
+  inputTokenMultiplier?: number;
+  pricing?: ModelCatalogPricing;
+  inputModalities?: string[];
+  outputModalities?: string[];
+  free?: true;
+  deprecated?: true;
+  /** When the provider retires the model (ISO date as the provider gives it). */
+  retiresAt?: string;
+  /** Left out when unknown. */
+  cost?: Exclude<ConnectionModelCost, null>;
+}
+
+/** A Model's own answer to "can it read images?"; null (Automatic) lets its catalog decide. */
+export const MODEL_IMAGE_INPUTS = ["reads", "text"] as const;
+export type ModelImageInput = (typeof MODEL_IMAGE_INPUTS)[number];
+
+/**
+ * Whether a Model reads images: its own setting first, then the catalog's input modalities. null means unknown,
+ * and the images are then sent as they are. The on-device model never reads images.
+ */
+export function modelReadsImages(
+  row: { id?: string | null; imageInput?: string | null },
+  catalogModel?: { inputModalities?: readonly string[] } | null,
+): boolean | null {
+  if (row.id === LOCAL_SIDECAR_CONNECTION_ID) return false;
+  if (row.imageInput === "reads") return true;
+  if (row.imageInput === "text") return false;
+  const modalities = catalogModel?.inputModalities;
+  return modalities?.length ? modalities.includes("image") : null;
+}
+
+/** Old choice for NanoGPT plan badges; read once to set `OUTSIDE_READS_SETTINGS_KEY`. */
+export const NANOGPT_PLAN_BADGES_SETTINGS_KEY = "nanogpt-plan-badges";
+
+/** Old choice for public price lists; read once to set `OUTSIDE_READS_SETTINGS_KEY`. */
+export const PRICE_CATALOG_SETTINGS_KEY = "price-catalog";
+
+/**
+ * One switch for every outside read on Connections: NanoGPT plan badges, public price lists and balance reads.
+ * "on" allows them, "off" or unset does not. It replaces the two keys above; an old "on" carries over.
+ */
+export const OUTSIDE_READS_SETTINGS_KEY = "outside-reads";
+
+/** Image sources run by volunteers or free for everyone: the whole Connection is free. */
+const FREE_IMAGE_SOURCES = new Set(["horde", "pollinations"]);
+
+export function connectionBilling(row: {
+  provider: string;
+  baseUrl?: string | null;
+  model?: string | null;
+  imageGenerationSource?: string | null;
+  imageService?: string | null;
+}): ConnectionBilling {
+  if (PROVIDERS[row.provider as APIProvider]?.billing === "plan") return "plan";
+  if (row.provider !== "image_generation") return null;
+  const source =
+    row.imageGenerationSource?.trim() ||
+    row.imageService?.trim() ||
+    inferImageSource(row.model ?? "", (row.baseUrl ?? "").trim());
+  return FREE_IMAGE_SOURCES.has(source) ? "free" : null;
+}
+
+/** The cost badge of one catalog model. Subscription coverage wins over price; a free Connection makes all free. */
+export function modelCost(
+  model: {
+    subscriptionIncluded?: unknown;
+    inputTokenMultiplier?: unknown;
+    free?: unknown;
+    pricing?: unknown;
+  },
+  billing: ConnectionBilling,
+  /** The account's own subscription reading: false drops the Plan badge, null/undefined keeps it. */
+  subscriptionActive?: boolean | null,
+): ConnectionModelCost {
+  if (model.subscriptionIncluded === true && subscriptionActive !== false) {
+    const multiplier = model.inputTokenMultiplier;
+    return typeof multiplier === "number" && Number.isFinite(multiplier) && multiplier > 1
+      ? `multiplier:${multiplier}`
+      : "included";
+  }
+  if (billing === "free" || model.free === true) return "free";
+  if (model.subscriptionIncluded === false) return "paid";
+  const pricing = model.pricing as ModelCatalogPricing | null | undefined;
+  if (
+    pricing &&
+    typeof pricing === "object" &&
+    ((pricing.prompt ?? 0) > 0 || (pricing.completion ?? 0) > 0 || (pricing.perCall ?? 0) > 0)
+  ) {
+    return "paid";
+  }
+  return null;
 }

@@ -2,18 +2,29 @@
 // Game: reading one catalog of a registered ruleset
 // ──────────────────────────────────────────────
 // A catalog's entries sit inline in `ruleset.json` or in a hash-pinned `catalogs/<id>.json` asset
-// beside it. Two callers need them: the route the sheet editor's picker reads, and the turn that
+// beside it: a package's installed file, or, for a ruleset imported from a package file (RM), the file
+// kept with it in the store, under `local/<its id>`. Two callers need them: the route the sheet editor's picker reads, and the turn that
 // resolves a `use` command. Opening and reading are separate steps on purpose, so the route can
 // answer a browser that already holds the file before the megabyte is read and checked.
 
+import { createHash } from "node:crypto";
 import {
+  communityRulesetId,
+  experienceOverlayEntries,
+  isCommunityRulesetId,
+  parseBorrowedRulesetCatalog,
   parseRulesetCatalogFile,
+  readRulesetLocaleFile,
+  RULESET_LOCAL_NAMESPACE,
   type RulesetCatalogEntry,
   type RulesetCatalogHeader,
   type RulesetDefinition,
 } from "@marinara-engine/shared";
 import { logger } from "../../lib/logger.js";
 import { capabilityPackageManager } from "../capability-packages/package-manager.service.js";
+import { getDB } from "../../db/connection.js";
+import { createGameRulesetsStorage } from "../storage/game-rulesets.storage.js";
+import { readRulesetRegistry, type RulesetRegistry } from "./ruleset-registry.service.js";
 
 /** One catalog's entries, or the author's own issue lines for a file the Engine will not read. */
 export type RulesetCatalogEntriesResult =
@@ -32,13 +43,16 @@ export async function openRulesetCatalog(
   packageId: string | null,
   definition: RulesetDefinition,
   catalog: RulesetCatalogHeader,
+  registry?: RulesetRegistry,
 ): Promise<OpenedRulesetCatalog> {
+  if (catalog.from) return openBorrowedCatalog(definition, catalog, catalog.from, registry);
   if (catalog.entries) return { kind: "inline", entries: catalog.entries };
-  // Only a package can ship a catalog file; an imported ruleset carries its catalogs inline, inside
-  // the one file the user imported.
   if (!catalog.asset) return { kind: "unusable", issues: ["(root): this catalog holds no entries"] };
-  if (!packageId) return { kind: "unusable", issues: [`asset: ${catalog.asset} can only be shipped by a package`] };
-  const source = await capabilityPackageManager.rulesetCatalogAsset(packageId, catalog.id);
+  // A package ships its catalog files; of the imported rulesets, only one from a package file has them,
+  // and the package import always files it under `local/` (the JSON and repository imports refuse them).
+  const source = packageId
+    ? await capabilityPackageManager.rulesetCatalogAsset(packageId, catalog.id)
+    : await storedCatalog(definition, catalog.id);
   if (!source) return { kind: "missing" };
   if ("issue" in source) return { kind: "unusable", issues: [source.issue] };
   return {
@@ -69,17 +83,233 @@ export async function openRulesetCatalog(
   };
 }
 
-/** One catalog's entries, for a caller with no cached copy to compare against. */
+/** Another installed ruleset's catalog, read against this one (Capability API 1.220). The lender is
+ *  found by its id, bare or under a community namespace; an entry that does not fit this ruleset is
+ *  left out and logged, and the catalog's own entries add to the rest or replace one of the same id. */
+async function openBorrowedCatalog(
+  definition: RulesetDefinition,
+  catalog: RulesetCatalogHeader,
+  from: NonNullable<RulesetCatalogHeader["from"]>,
+  known?: RulesetRegistry,
+): Promise<OpenedRulesetCatalog> {
+  // A caller that has just read the installed rulesets passes them on rather than reading them again.
+  let registry = known;
+  if (!registry) {
+    try {
+      registry = await readRulesetRegistry();
+    } catch {
+      return { kind: "unusable", issues: ["(root): the installed rulesets could not be read"] };
+    }
+  }
+  const notHere = (why: string) => ({ kind: "unusable" as const, issues: [`from: ${why}`] });
+  // A short id names a ruleset only when one installed ruleset ends with it.
+  const suffixed = [...registry].filter(([id]) => id.endsWith(`:${from.ruleset}`) || id.endsWith(`/${from.ruleset}`));
+  if (!registry.has(from.ruleset) && suffixed.length > 1) {
+    return notHere(`more than one installed ruleset is named "${from.ruleset}"; name it by its full id`);
+  }
+  const lender = registry.get(from.ruleset) ?? suffixed[0]?.[1];
+  if (!lender) return notHere(`the ruleset "${from.ruleset}" this catalog borrows from is not installed`);
+  if (lender.definition.id === definition.id) return notHere("a catalog cannot borrow from its own ruleset");
+  const theirs = lender.definition.catalogs?.find((entry) => entry.id === from.catalog);
+  if (!theirs) return notHere(`the ruleset "${from.ruleset}" has no catalog "${from.catalog}"`);
+  if (theirs.from) return notHere(`"${from.ruleset}" borrows its catalog "${from.catalog}" in turn`);
+  let file: { sha256: string; read: () => Promise<{ data: Buffer } | { issue: string }> };
+  if (theirs.entries) {
+    const data = Buffer.from(JSON.stringify({ schemaVersion: 1, catalog: theirs.id, entries: theirs.entries }), "utf8");
+    file = { sha256: createHash("sha256").update(data).digest("hex"), read: async () => ({ data }) };
+  } else {
+    const source = lender.packageId
+      ? await capabilityPackageManager.rulesetCatalogAsset(lender.packageId, theirs.id)
+      : await storedCatalog(lender.definition, theirs.id);
+    if (!source) return notHere(`the file for "${from.ruleset}"'s catalog "${from.catalog}" is gone`);
+    if ("issue" in source) return { kind: "unusable", issues: [source.issue] };
+    file = source;
+  }
+  // The lender's file, its version, this catalog's own entries and the borrowing ruleset (whose sheet
+  // decides which entries fit) name what the answer was read from.
+  const sha256 = createHash("sha256")
+    .update(
+      `${file.sha256}.${lender.definition.version}.${definition.id}.${definition.version}.${JSON.stringify(catalog.entries ?? [])}`,
+    )
+    .digest("hex");
+  return {
+    kind: "asset",
+    sha256,
+    read: async () => {
+      const read = await file.read();
+      if ("issue" in read) return { ok: false, issues: [read.issue] };
+      let document: unknown;
+      try {
+        document = JSON.parse(read.data.toString("utf8"));
+      } catch {
+        return { ok: false, issues: ["(root): the borrowed catalog file is not valid JSON"] };
+      }
+      const parsed = parseBorrowedRulesetCatalog(definition, catalog.id, theirs, document, true);
+      if (!parsed.ok) {
+        logger.warn(
+          "[capability/rulesets] Catalog %s of %s, borrowed from %s, is unusable: %s",
+          catalog.id,
+          definition.id,
+          from.ruleset,
+          parsed.issues.slice(0, 5).join("; "),
+        );
+        return { ok: false, issues: parsed.issues };
+      }
+      if (parsed.dropped.length) {
+        logger.warn(
+          "[capability/rulesets] Catalog %s of %s leaves out %d of %s's entries it cannot read: %s",
+          catalog.id,
+          definition.id,
+          parsed.dropped.length,
+          from.ruleset,
+          parsed.dropped.slice(0, 5).join("; "),
+        );
+      }
+      return { ok: true, entries: parsed.entries };
+    },
+  };
+}
+
+/** A package-imported ruleset's catalog file, from the store, in the shape a package's asset comes in. */
+async function storedCatalog(
+  definition: RulesetDefinition,
+  catalogId: string,
+): Promise<{ sha256: string; read: () => Promise<{ data: Buffer } | { issue: string }> } | null> {
+  // The registry hands an imported ruleset out under its namespaced id; a file as written has its own.
+  let rulesetId = definition.id;
+  if (!isCommunityRulesetId(rulesetId)) {
+    try {
+      rulesetId = communityRulesetId(RULESET_LOCAL_NAMESPACE, definition.id);
+    } catch {
+      return null;
+    }
+  }
+  const stored = await createGameRulesetsStorage(await getDB()).catalogText(rulesetId, definition.version, catalogId);
+  return stored ? { sha256: stored.sha256, read: async () => ({ data: Buffer.from(stored.text, "utf8") }) } : null;
+}
+
+/**
+ * A ruleset's translation into a language: its strings, each its English display text word for word to
+ * that text in the language, or null when none is kept in that language or the one it is a kind of ("pt"
+ * for "pt-BR"). A catalog package's language pack (1.811), or the one language kept with an imported
+ * package file.
+ */
+export async function openRulesetLocale(
+  packageId: string | null,
+  definition: RulesetDefinition,
+  locale: string,
+): Promise<{
+  locale: string;
+  sha256: string;
+  read: () => Promise<{ ok: true; strings: Record<string, string> } | { ok: false; issue: string }>;
+} | null> {
+  const base = locale.split("-")[0]!;
+  for (const language of base !== locale ? [locale, base] : [locale]) {
+    let source:
+      { sha256: string; read: () => Promise<{ data: Buffer } | { issue: string }> } | { issue: string } | null;
+    if (packageId) source = await capabilityPackageManager.rulesetLocaleAsset(packageId, language);
+    else {
+      let rulesetId = definition.id;
+      if (!isCommunityRulesetId(rulesetId)) {
+        try {
+          rulesetId = communityRulesetId(RULESET_LOCAL_NAMESPACE, definition.id);
+        } catch {
+          return null;
+        }
+      }
+      const stored = await createGameRulesetsStorage(await getDB()).localeText(rulesetId, definition.version, language);
+      source = stored
+        ? {
+            sha256: stored.sha256,
+            // Kept as the strings alone, as the package file was read.
+            read: async () => ({
+              data: Buffer.from(
+                JSON.stringify({ _meta: { locale: language }, ruleset: JSON.parse(stored.text) }),
+                "utf8",
+              ),
+            }),
+          }
+        : null;
+    }
+    if (!source) continue;
+    if ("issue" in source) {
+      logger.warn("[capability/rulesets] Translation %s of %s is unusable: %s", language, definition.id, source.issue);
+      continue;
+    }
+    const file = source;
+    return {
+      locale: language,
+      sha256: file.sha256,
+      read: async () => {
+        const data = await file.read();
+        if ("issue" in data) return { ok: false, issue: data.issue };
+        let document: unknown;
+        try {
+          document = JSON.parse(data.data.toString("utf8"));
+        } catch {
+          return { ok: false, issue: `The ${language} translation is not valid JSON` };
+        }
+        const read = readRulesetLocaleFile(document, language, { name: `The ${language} translation` });
+        return read.ok ? { ok: true, strings: read.strings } : { ok: false, issue: read.issue };
+      },
+    };
+  }
+  return null;
+}
+
+/** One catalog's entries as a game reads them, for a caller with no cached copy to compare against:
+ *  the catalog's own, then what the game's Experience adds to it (1.355) when `definition` is the
+ *  game's merged one. The picker's route reads the ruleset's own through `openRulesetCatalog`. */
 export async function loadRulesetCatalogEntries(
   packageId: string | null,
   definition: RulesetDefinition,
   catalog: RulesetCatalogHeader,
+  registry?: RulesetRegistry,
 ): Promise<RulesetCatalogEntriesResult> {
-  const opened = await openRulesetCatalog(packageId, definition, catalog);
-  if (opened.kind === "inline") return { ok: true, entries: opened.entries };
-  if (opened.kind === "asset") return opened.read();
+  const opened = await openRulesetCatalog(packageId, definition, catalog, registry);
+  const added = experienceOverlayEntries(definition, catalog.id);
+  const withAdded = (entries: RulesetCatalogEntry[]): RulesetCatalogEntriesResult => ({
+    ok: true,
+    entries: added.length ? [...entries, ...added] : entries,
+  });
+  if (opened.kind === "inline") return withAdded(opened.entries);
+  if (opened.kind === "asset") {
+    const read = await opened.read();
+    return read.ok ? withAdded(read.entries) : read;
+  }
   return {
     ok: false,
     issues: opened.kind === "missing" ? [`(root): the file for catalog "${catalog.id}" is gone`] : opened.issues,
   };
+}
+
+/** The entry ids of a ruleset's catalogs kept in a file, read once per file (by its hash), for an
+ *  Experience's overlay to be checked against (1.355). `key` names the files they came from. A file
+ *  that cannot be read is left out: its catalog then has no ids to check against. */
+const fileIdsRead = new Map<string, ReadonlySet<string>>();
+export async function rulesetFileCatalogIds(
+  packageId: string | null,
+  definition: RulesetDefinition,
+  catalogIds: Iterable<string>,
+  registry?: RulesetRegistry,
+): Promise<{ ids: Map<string, ReadonlySet<string>>; key: string }> {
+  const ids = new Map<string, ReadonlySet<string>>();
+  const hashes: string[] = [];
+  for (const catalogId of new Set(catalogIds)) {
+    const catalog = definition.catalogs?.find((each) => each.id === catalogId);
+    if (!catalog || catalog.entries) continue;
+    const opened = await openRulesetCatalog(packageId, definition, catalog, registry);
+    if (opened.kind !== "asset") continue;
+    let read = fileIdsRead.get(opened.sha256);
+    if (!read) {
+      const file = await opened.read();
+      if (!file.ok) continue;
+      read = new Set(file.entries.map((entry) => entry.id));
+      fileIdsRead.set(opened.sha256, read);
+      if (fileIdsRead.size > 32) fileIdsRead.delete(fileIdsRead.keys().next().value!);
+    }
+    ids.set(catalogId, read);
+    hashes.push(`${catalogId}:${opened.sha256}`);
+  }
+  return { ids, key: hashes.join(",") };
 }

@@ -1,7 +1,10 @@
+import { partialInput } from "@marinara-engine/shared";
 import {
   DEFAULT_AGENT_MAX_TOKENS,
   MIN_AGENT_MAX_TOKENS,
   generationParametersSchema,
+  isClaudeStrictRequestModel,
+  isGeminiStrictRequestModel,
   resolveProviderReasoningEffort,
 } from "@marinara-engine/shared";
 import type { BaseLLMProvider, ChatOptions } from "../llm/base-provider.js";
@@ -56,7 +59,7 @@ export function resolveStoredChatOptions(
       return {};
     }
   }
-  const result = generationParametersSchema.partial().safeParse(parsed);
+  const result = partialInput(generationParametersSchema).safeParse(parsed);
   if (!result.success) return {};
   const parameters = result.data;
   const reasoningEffort = resolveProviderReasoningEffort({
@@ -74,7 +77,7 @@ export function resolveStoredChatOptions(
     reasoningEffort:
       parameters.enabledParameters?.reasoningEffort === false
         ? undefined
-        : parameters.reasoningEffort === null
+        : parameters.reasoningEffort === null && !reasoningEffort
           ? "none"
           : (reasoningEffort ?? undefined),
     verbosity: parameters.verbosity ?? undefined,
@@ -182,7 +185,9 @@ export function collectPastReasoningMetadata(
     const message = messages[index]!;
     if (message.role !== "assistant") continue;
     const extra = parseExtra(message.extra);
-    if (extra.hiddenFromAI === true || extra.roleplayPrivateContext === true) continue;
+    // An earlier part of a split reply (#7481) holds reasoning about later parts that may be hidden from this reader.
+    if (extra.hiddenFromAI === true || extra.roleplayPrivateContext === true || extra.continuesAfterSceneBreak === true)
+      continue;
     const metadata: Record<string, unknown> = {};
     if (
       (provider === "google" || provider === "google_vertex") &&
@@ -249,9 +254,28 @@ export function appendRoundGeminiParts(
   return saved ? [...saved, ...replayable] : replayable;
 }
 
-/** Whether the connection uses the OpenAI-style message shape that can carry a partial reasoning prefill. */
+/**
+ * Whether the connection uses the OpenAI-style message shape that can carry a partial reasoning prefill. Mistral is
+ * left out: its messages have no reasoning_content or partial field.
+ *
+ * DeepSeek is left out too, and for a different reason: it only accepts a reasoning prefill through chat prefix
+ * completion, which requires the `/beta` base URL and a `prefix: true` flag on the final assistant message. The
+ * default `/v1` endpoint we ship has neither, so a prefill built here would be sent in a format DeepSeek rejects.
+ * Adding it back is a real option — DeepSeek's own docs cover it — but it means the beta endpoint and the flag,
+ * not just this allowlist.
+ */
 export function supportsAssistantReasoningPrefill(provider: string): boolean {
-  return ["openai", "openrouter", "nanogpt", "xai", "mistral", "cohere", "arli", "zai", "custom"].includes(provider);
+  return ["openai", "openrouter", "nanogpt", "xai", "cohere", "arli", "zai", "custom"].includes(provider);
+}
+
+/**
+ * Connections that refuse a request ending on an assistant message (a prefill): Claude (Subscription) with any model,
+ * since its Agent SDK prompt is user-only, and by any provider Claude Opus 5.5 and Sonnet 5.5, and Gemini 4 Argon,
+ * 3.5 Flash-Lite and 3.6 to 3.8 Flash. Their providers turn such a request into a continuation, so the Assistant
+ * Prefill goes into the chat history for them instead (endPromptOnAssistantPrefill).
+ */
+export function rejectsFinalAssistantMessage(provider: string, model: string): boolean {
+  return provider === "claude_subscription" || isClaudeStrictRequestModel(model) || isGeminiStrictRequestModel(model);
 }
 
 /**

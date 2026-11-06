@@ -21,6 +21,19 @@ function normalizeDialoguePauseMs(value: number): number {
   return Math.min(TTS_DIALOGUE_PAUSE_MAX_SECONDS, Math.max(TTS_DIALOGUE_PAUSE_MIN_SECONDS, wholeSeconds)) * 1000;
 }
 
+/**
+ * How long one speech request may take, in milliseconds. The default is the fixed limit every
+ * request had before it could be changed; a local voice server on a laptop can need more (#7711).
+ */
+export const TTS_REQUEST_TIMEOUT_MS = { default: 60_000, min: 10_000, max: 3_600_000 } as const;
+
+/** A speech request's time limit: the saved one in whole seconds within bounds, otherwise the default. */
+export function resolveTtsRequestTimeoutMs(value: unknown): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) return TTS_REQUEST_TIMEOUT_MS.default;
+  const { min, max } = TTS_REQUEST_TIMEOUT_MS;
+  return Math.min(max, Math.max(min, Math.round(value / 1000) * 1000));
+}
+
 export const ttsConversationCallAudioInputModeSchema = z.enum(["system", "auto", "transcribe", "local_whisper"]);
 export type TTSConversationCallAudioInputMode = z.infer<typeof ttsConversationCallAudioInputModeSchema>;
 
@@ -188,6 +201,8 @@ const ttsConfigBaseSchema = z.object({
     .default(TTS_DIALOGUE_PAUSE_DEFAULT_SECONDS * 1000)
     .transform(normalizeDialoguePauseMs),
   audioFormat: ttsAudioFormatSchema.default("mp3"),
+  /** How long a speech request from these settings may take. An audio connection has its own. */
+  requestTimeoutMs: z.number().default(TTS_REQUEST_TIMEOUT_MS.default).transform(resolveTtsRequestTimeoutMs),
   /** Global gate for Conversation-mode calls. Individual chats opt in separately. */
   callAudioEnabled: z.boolean().default(false),
   /** Deprecated: call transcription now uses the active conversation connection. */
@@ -236,15 +251,48 @@ export const ttsSourceProfilesSchema = z
     pockettts: ttsSourceProfileSchema.optional(),
     xai: ttsSourceProfileSchema.optional(),
   })
-  .default({});
+  .prefault({});
 export type TTSSourceProfiles = z.infer<typeof ttsSourceProfilesSchema>;
+
+/**
+ * The card's voices and speech settings for one Audio connection (#7848). The connection keeps
+ * its own address, key and model, so a profile never holds them.
+ */
+export const ttsConnectionProfileSchema = ttsSourceProfileSchema.omit({
+  baseUrl: true,
+  apiKey: true,
+  model: true,
+  elevenLabsGameSoundEffects: true,
+  elevenLabsGameMusic: true,
+});
+export type TTSConnectionProfile = z.infer<typeof ttsConnectionProfileSchema>;
 
 export const ttsConfigSchema = ttsConfigBaseSchema.extend({
   /** Encrypted-at-rest provider fields retained independently for each TTS source. */
   sourceProfiles: ttsSourceProfilesSchema,
+  /**
+   * The Audio connection chosen as the card's Source (#7848). Empty uses the source settings above.
+   * While one is chosen, the top-level voice and speech fields belong to it, and the top-level
+   * address, key and model keep the last source's values untouched.
+   */
+  connectionId: z.string().default(""),
+  /** Voices and speech settings kept separately for each Audio connection, by connection ID. */
+  connectionProfiles: z.record(z.string(), ttsConnectionProfileSchema).prefault({}),
 });
 
 export type TTSConfig = z.infer<typeof ttsConfigSchema>;
+
+export function ttsConnectionProfileFromConfig(config: TTSConfig): TTSConnectionProfile {
+  const {
+    baseUrl: _baseUrl,
+    apiKey: _apiKey,
+    model: _model,
+    elevenLabsGameSoundEffects: _soundEffects,
+    elevenLabsGameMusic: _music,
+    ...profile
+  } = ttsSourceProfileFromConfig(config);
+  return profile;
+}
 
 export function ttsSourceProfileFromConfig(config: TTSConfig): TTSSourceProfile {
   return {
@@ -270,6 +318,79 @@ export function ttsSourceProfileFromConfig(config: TTSConfig): TTSSourceProfile 
 
 export const TTS_SETTINGS_KEY = "tts";
 export const TTS_API_KEY_MASK = "••••••";
+
+const ELEVENLABS_TTS_MODEL_ALIASES: Record<string, string> = {
+  tts_v3: "eleven_v3",
+  elevenlabs_v3: "eleven_v3",
+  elevenlabs_tts_v3: "eleven_v3",
+};
+
+export function normalizeElevenLabsTtsModelId(model: string): string {
+  const trimmed = model.trim();
+  const key = trimmed.toLowerCase();
+  return Object.hasOwn(ELEVENLABS_TTS_MODEL_ALIASES, key) ? ELEVENLABS_TTS_MODEL_ALIASES[key]! : trimmed;
+}
+
+// Eleven v3 and v4 have no speed setting, so speech requests leave it out and the slider is off.
+const ELEVENLABS_MODELS_WITHOUT_SPEED = new Set(["eleven_v3", "eleven_v4", "eleven_v4_turbo"]);
+
+export function elevenLabsModelSupportsSpeed(model: string): boolean {
+  return !ELEVENLABS_MODELS_WITHOUT_SPEED.has(normalizeElevenLabsTtsModelId(model).toLowerCase());
+}
+
+// Eleven v3 and v4 act on bracketed audio tags (ElevenLabs' v3/v4 prompting guide). Every other ElevenLabs model reads
+// a bracket aloud as words. NanoGPT names Eleven v3 "Elevenlabs-V3".
+const ELEVENLABS_AUDIO_TAG_MODELS = new Set(["eleven_v3", "eleven_v4", "elevenlabs-v3"]);
+
+export function elevenLabsModelSupportsAudioTags(model: string): boolean {
+  return ELEVENLABS_AUDIO_TAG_MODELS.has(normalizeElevenLabsTtsModelId(model).toLowerCase());
+}
+
+/** The sprite expressions Game mode resolves each spoken line to (GameNarration sends one as the line's tone). */
+export const GAME_TTS_EMOTIONS = [
+  "neutral",
+  "happy",
+  "sad",
+  "angry",
+  "surprised",
+  "scared",
+  "disgusted",
+  "thinking",
+  "laughing",
+  "crying",
+  "blushing",
+  "smirk",
+  "embarrassed",
+  "determined",
+  "confused",
+  "sleepy",
+] as const;
+
+export type GameTtsEmotion = (typeof GAME_TTS_EMOTIONS)[number];
+
+/**
+ * The ElevenLabs audio tag each game expression is spoken with, or null when no documented tag means it. A game
+ * expression is a sprite name, not a delivery cue: an undocumented word in brackets is read aloud before the line
+ * ("neutral. Four thirty-one…", #8619). Tags are from ElevenLabs' v3/v4 prompting guide.
+ */
+export const ELEVENLABS_AUDIO_TAG_FOR_GAME_EMOTION: Record<GameTtsEmotion, string | null> = {
+  neutral: null,
+  happy: "happy",
+  sad: "sad",
+  angry: "angry",
+  surprised: "surprised",
+  scared: null,
+  disgusted: "appalled",
+  thinking: "thoughtful",
+  laughing: "laughs",
+  crying: "crying",
+  blushing: null,
+  smirk: "mischievously",
+  embarrassed: null,
+  determined: null,
+  confused: null,
+  sleepy: null,
+};
 
 export const ttsRoleplaySpeakerSegmentSchema = z.discriminatedUnion("kind", [
   z.object({
@@ -318,3 +439,38 @@ export interface TTSModelsResponse {
   fromProvider: boolean;
   source: TTSSource;
 }
+
+// ── Speech to text ──────────────────────────────
+
+/** App-settings key for the speech-to-text server that Calls can use instead of Local Whisper. */
+export const SPEECH_TO_TEXT_SETTINGS_KEY = "speech-to-text";
+/** Sent when no model is set: the name the OpenAI transcription API and most compatible servers accept. */
+export const SPEECH_TO_TEXT_DEFAULT_MODEL = "whisper-1";
+
+/**
+ * An OpenAI-compatible speech-to-text server (POST `<baseUrl>/audio/transcriptions`), such as a
+ * self-hosted faster-whisper, Speaches, whisper.cpp or LocalAI server. While it is off or has no
+ * address, Calls keep using Local Whisper.
+ */
+export const speechToTextConfigSchema = z.object({
+  enabled: z.boolean().default(false),
+  baseUrl: z.string().trim().max(2_000).default(""),
+  /**
+   * Encrypted at rest. Responses carry TTS_API_KEY_MASK instead; sending the mask back keeps the saved key.
+   * A line break or NUL is refused: fetch would reject that header with the whole key in its error.
+   */
+  apiKey: z
+    .string()
+    .max(4_000)
+    .regex(/^[^\0\r\n]*$/u)
+    .default(""),
+  model: z.string().trim().max(200).default(""),
+  /** Optional language code such as "pl"; blank lets the server detect the language. */
+  language: z
+    .string()
+    .trim()
+    .max(16)
+    .regex(/^[A-Za-z-]*$/u)
+    .default(""),
+});
+export type SpeechToTextConfig = z.infer<typeof speechToTextConfigSchema>;

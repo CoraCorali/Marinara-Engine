@@ -1,4 +1,16 @@
-import { normalizeGameDifficulty, rulesetRefSchema } from "@marinara-engine/shared";
+import { partialInput } from "@marinara-engine/shared";
+import { filterAudioGenerationConnections, matchesAudioGenerationConnectionId } from "./connection-filters";
+import {
+  worldGeneratorReads,
+  gameWorldSchema,
+  normalizeGameDifficulty,
+  parseWorldKit,
+  readWorldSnapshot,
+  rulesetRefSchema,
+  storyScriptSchema,
+  TACTICAL_BATTLEFIELD_SIZES,
+  type TacticalBattlefieldSize,
+} from "@marinara-engine/shared";
 import {
   ANIME_GAME_PROMPT_TEMPLATE_ID,
   COMIC_PAGE_GAME_VIDEO_PROMPT_TEMPLATE_ID,
@@ -17,6 +29,7 @@ import {
 
 import { isExperienceSeed } from "./game-experience-setup";
 import { translate } from "../localization/i18n";
+import { generationLevelLabel } from "./generation-level-label";
 
 export const GAME_SETUP_SHARE_FORMAT = "marinara-game-setup";
 export const GAME_SETUP_SHARE_VERSION = 1;
@@ -66,6 +79,9 @@ export interface GameSetupImportConnection {
   imageService?: string | null;
   videoService?: string | null;
   audioSource?: string | null;
+  audioGenerationSource?: string | null;
+  audioGenerationLegacyConnectionId?: string | null;
+  profileImportReviewRequired?: unknown;
 }
 
 export interface GameSetupImportContext {
@@ -101,13 +117,21 @@ export interface GameSetupSummarySection {
 
 const TACTICAL_BATTLEFIELD_SEED_MAX = 0xffffffff;
 const TACTICAL_BATTLEFIELD_INSTRUCTIONS_MAX = 4_000;
-const TACTICAL_BATTLEFIELD_SIZES = new Set(["small", "medium", "large"]);
+const TACTICAL_BATTLEFIELD_SIZE_SET = new Set<string>(TACTICAL_BATTLEFIELD_SIZES);
+const BATTLEFIELD_SIZE_SUMMARY_KEYS: Record<TacticalBattlefieldSize, string> = {
+  small: "ui.game.gamesetupsummary.sizeSmall",
+  medium: "ui.game.gamesetupsummary.sizeMedium",
+  large: "ui.game.gamesetupsummary.sizeLarge",
+  huge: "ui.game.gamesetupsummary.sizeHuge",
+  vast: "ui.game.gamesetupsummary.sizeVast",
+  colossal: "ui.game.gamesetupsummary.sizeColossal",
+};
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
-const importedGenerationParametersSchema = generationParametersSchema.partial().strict();
+const importedGenerationParametersSchema = partialInput(generationParametersSchema).strict();
 
 function parseGenerationParameters(value: unknown): Partial<GenerationParameters> | undefined {
   if (value === undefined) return undefined;
@@ -259,7 +283,7 @@ function parseShareConfig(value: unknown): GameSetupConfig {
     }
     if (
       battlefield.size !== undefined &&
-      (typeof battlefield.size !== "string" || !TACTICAL_BATTLEFIELD_SIZES.has(battlefield.size))
+      (typeof battlefield.size !== "string" || !TACTICAL_BATTLEFIELD_SIZE_SET.has(battlefield.size))
     ) {
       throw new Error(translate("ui.game.gamesetupshare.invalidTacticalBattlefieldSize"));
     }
@@ -303,6 +327,9 @@ function parseShareConfig(value: unknown): GameSetupConfig {
   ) {
     throw new Error("This file has an invalid Spatial Map Grounding Mode value.");
   }
+  if (value.gameStyle !== undefined && value.gameStyle !== "classic" && value.gameStyle !== "overworld") {
+    throw new Error(translate("ui.game.gamesetupshare.invalidGameStyle"));
+  }
   if (
     value.spotifySourceType !== undefined &&
     value.spotifySourceType !== "liked" &&
@@ -338,6 +365,29 @@ function parseShareConfig(value: unknown): GameSetupConfig {
   // A shared file is untrusted, so the pin is read through the same schema the server uses.
   const ruleset = value.ruleset == null ? undefined : rulesetRefSchema.safeParse(value.ruleset);
   if (ruleset && !ruleset.success) throw new Error(translate("game.ruleset.setup.invalidImport"));
+  // The setting kit is read the same way: a kit that does not hold together is refused, not half-used.
+  const worldKit = value.worldKit == null ? undefined : parseWorldKit(value.worldKit);
+  if (worldKit && !worldKit.ok) throw new Error(translate("game.worldKit.setup.invalidImport"));
+  // And its world: one without a kit, or one that is not one, refuses the file.
+  const world = value.world == null ? undefined : gameWorldSchema.safeParse(value.world);
+  if (world && (!world.success || !worldKit?.ok)) throw new Error(translate("game.world.setup.invalidImport"));
+  // A world another generator made comes with its snapshot (W11), checked whole; one without it would be
+  // made again by this generator as another world, so the file is refused instead.
+  const worldSnapshot = value.worldSnapshot == null ? undefined : readWorldSnapshot(value.worldSnapshot);
+  if (worldSnapshot && !worldSnapshot.ok) throw new Error(translate("game.world.setup.invalidImport"));
+  // The snapshot is the world of the file's own kit, or the file does not hold together.
+  if (
+    worldSnapshot?.ok &&
+    (!worldKit?.ok || JSON.stringify(worldSnapshot.snapshot.kit) !== JSON.stringify(worldKit.kit))
+  ) {
+    throw new Error(translate("game.world.setup.invalidImport"));
+  }
+  if (world?.success && !worldGeneratorReads(world.data.generatorVersion) && !worldSnapshot?.ok) {
+    throw new Error(translate("game.world.setup.otherGeneratorImport"));
+  }
+  // And its story (worldgen W10), only ever with its world; whether it fits that world is the wizard's check.
+  const story = value.story == null ? undefined : storyScriptSchema.safeParse(value.story);
+  if (story && (!story.success || !world?.success)) throw new Error(translate("game.world.setup.invalidImport"));
   const generationParameters = parseGenerationParameters(value.generationParameters);
   const spatialMapDraftOptions =
     value.spatialMapDraftSize !== undefined || value.spatialMapTargetLocationCount !== undefined
@@ -355,6 +405,13 @@ function parseShareConfig(value: unknown): GameSetupConfig {
     rating,
     partyCharacterIds: [...value.partyCharacterIds],
     ...(ruleset ? { ruleset: ruleset.data } : {}),
+    worldKit: worldKit?.ok ? worldKit.kit : undefined,
+    world: world?.success ? world.data : undefined,
+    worldSnapshot:
+      world?.success && !worldGeneratorReads(world.data.generatorVersion) && worldSnapshot?.ok
+        ? worldSnapshot.snapshot
+        : undefined,
+    story: story?.success ? story.data : undefined,
     generationParameters,
     ...(spatialMapDraftOptions
       ? {
@@ -516,9 +573,11 @@ function resolveConnectionId(
       if (model && normalizeLookupValue(connection.model) === model) score += 3;
       if (
         service &&
-        [connection.imageService, connection.videoService, connection.audioSource].some(
-          (candidate) => normalizeLookupValue(candidate) === service,
-        )
+        [
+          connection.imageService,
+          connection.videoService,
+          connection.audioGenerationSource ?? connection.audioSource,
+        ].some((candidate) => normalizeLookupValue(candidate) === service)
       ) {
         score += 2;
       }
@@ -587,6 +646,10 @@ export function resolveGameSetupImport(
     gameExperienceId: _experienceId,
     experienceConfig: _experienceConfig,
     ruleset: _ruleset,
+    worldKit: _worldKit,
+    world: _world,
+    story: _story,
+    worldSnapshot: _worldSnapshot,
     ...ordinaryConfig
   } = sourceConfig;
 
@@ -643,7 +706,11 @@ export function resolveGameSetupImport(
   const sceneConnectionId = resolveConnectionId(sourceConfig.sceneConnectionId, snapshots?.scene, context.connections);
   const imageConnectionId = resolveConnectionId(sourceConfig.imageConnectionId, snapshots?.image, context.connections);
   const videoConnectionId = resolveConnectionId(sourceConfig.videoConnectionId, snapshots?.video, context.connections);
-  const audioConnectionId = resolveConnectionId(sourceConfig.audioConnectionId, snapshots?.audio, context.connections);
+  const audioConnections = filterAudioGenerationConnections(context.connections);
+  const audioConnectionId =
+    audioConnections.find((connection) =>
+      matchesAudioGenerationConnectionId(connection, sourceConfig.audioConnectionId),
+    )?.id ?? resolveConnectionId(sourceConfig.audioConnectionId, snapshots?.audio, audioConnections);
   if ((sourceConfig.sceneConnectionId || snapshots?.scene) && !sceneConnectionId) {
     warnings.push(`${describeSavedResource(snapshots?.scene?.name, "The saved scene connection")} is unavailable.`);
   }
@@ -663,6 +730,15 @@ export function resolveGameSetupImport(
       ...ordinaryConfig,
       ...experienceSelection,
       ...rulesetSelection,
+      // Like a ruleset, a setting kit is chosen once, for a new game.
+      ...(context.isNewGame !== false && sourceConfig.worldKit ? { worldKit: sourceConfig.worldKit } : {}),
+      ...(context.isNewGame !== false && sourceConfig.worldKit && sourceConfig.world
+        ? {
+            world: sourceConfig.world,
+            ...(sourceConfig.story ? { story: sourceConfig.story } : {}),
+            ...(sourceConfig.worldSnapshot ? { worldSnapshot: sourceConfig.worldSnapshot } : {}),
+          }
+        : {}),
       gmMode,
       gmCharacterId,
       partyCharacterIds: [...new Set(partyCharacterIds)],
@@ -789,11 +865,12 @@ function tacticalBattlefieldRows(config: GameSetupConfig): GameSetupSummaryRow[]
       value:
         settings?.size == null
           ? translate("ui.game.gamesetupsummary.auto")
-          : settings.size === "small"
-            ? translate("ui.game.gamesetupsummary.sizeSmall")
-            : settings.size === "large"
-              ? translate("ui.game.gamesetupsummary.sizeLarge")
-              : translate("ui.game.gamesetupsummary.sizeMedium"),
+          : translate(
+              Object.hasOwn(BATTLEFIELD_SIZE_SUMMARY_KEYS, settings.size)
+                ? BATTLEFIELD_SIZE_SUMMARY_KEYS[settings.size]
+                : // An older or malformed value reads as the medium board it played as.
+                  BATTLEFIELD_SIZE_SUMMARY_KEYS.medium,
+            ),
     },
   ];
 }
@@ -801,7 +878,13 @@ function tacticalBattlefieldRows(config: GameSetupConfig): GameSetupSummaryRow[]
 function generationParameterRows(parameters: Partial<GenerationParameters> | null | undefined): GameSetupSummaryRow[] {
   const entries = Object.entries(parameters ?? {}).filter(([, value]) => value !== undefined);
   if (entries.length === 0) return [{ label: "Generation parameters", value: "Connection defaults (not captured)" }];
-  return entries.map(([key, value]) => ({ label: titleCaseToken(key), value: formatValue(value) }));
+  return entries.map(([key, value]) => ({
+    label: titleCaseToken(key),
+    value:
+      (key === "reasoningEffort" || key === "verbosity") && typeof value === "string"
+        ? generationLevelLabel(value, translate)
+        : formatValue(value),
+  }));
 }
 
 export function buildGameSetupSummarySections(source: GameSetupShareSource): GameSetupSummarySection[] {
@@ -852,6 +935,10 @@ export function buildGameSetupSummarySections(source: GameSetupShareSource): Gam
         { label: "Genre", value: config.genre },
         { label: "Setting", value: config.setting },
         { label: "Tone", value: config.tone },
+        ...(config.worldKit ? [{ label: translate("game.worldKit.setup.label"), value: config.worldKit.label }] : []),
+        ...(config.world
+          ? [{ label: translate("game.world.setup.summaryRow"), value: String(config.world.seed) }]
+          : []),
         { label: "Difficulty", value: titleCaseToken(config.difficulty) },
         { label: "Combat style", value: titleCaseToken(config.combatStyle ?? "classic") },
         ...tacticalBattlefieldRows(config),

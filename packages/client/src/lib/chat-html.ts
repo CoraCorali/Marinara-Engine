@@ -1,5 +1,9 @@
 import DOMPurify from "dompurify";
+import { ARTIFACT_SVG_ATTR, ARTIFACT_SVG_TAGS, scopeArtifactSvgAttribute } from "./artifact-svg";
+import { protectMarkdownCode } from "./markdown-code";
 import { sanitizeChatMessageCss } from "./chat-message-css";
+import { currentRemoteImagePolicy, holdRemoteImages } from "./remote-image-policy";
+import type { RemoteImagePolicy } from "./remote-images";
 
 const HTML_TAG_NAME_SOURCE =
   "div|span|style|table|p|br|img|a|ul|ol|li|h[1-6]|em|strong|b|i|pre|code|section|article|header|footer|nav|button|input|form|label|select|option|textarea|canvas|svg|video|audio|source|iframe|hr|blockquote|details|summary|figure|figcaption|main|aside|mark|small|sub|sup|del|ins|abbr|time|progress|meter|output|dialog|template|slot|ruby|rt|rp|bdi|bdo|wbr|area|map|track|embed|object|param|picture|portal|datalist|fieldset|legend|optgroup|caption|col|colgroup|thead|tbody|tfoot|th|td|dl|dt|dd|kbd|samp|var|cite|dfn|q|s|u|font|center";
@@ -23,7 +27,7 @@ export function decodeEncodedChatHtmlTags(value: string): string {
 }
 
 export function containsChatHtml(value: string): boolean {
-  return HTML_TAG_RE.test(decodeEncodedChatHtmlTags(value));
+  return HTML_TAG_RE.test(decodeEncodedChatHtmlTags(protectMarkdownCode(value).text));
 }
 
 const CHAT_HTML_ALLOWED_TAGS = [
@@ -113,27 +117,57 @@ const CHAT_HTML_ALLOWED_ATTR = [
   "title",
 ] as const;
 
-export function sanitizeChatHtml(html: string, options: { allowStyle?: boolean; allowLinks?: boolean } = {}): string {
+export type SanitizeChatHtmlOptions = {
+  allowStyle?: boolean;
+  allowLinks?: boolean;
+  /**
+   * Images and CSS sources on other websites. Defaults to the user's current setting and approvals.
+   * "keep" leaves them for a later pass over the same HTML; only use it when the result is
+   * sanitized again before display.
+   */
+  remoteImages?: RemoteImagePolicy | "keep";
+  /** Keep the drawing subset of SVG, with its ids under this prefix. Only for [html] artifacts; messages never set it. */
+  artifactSvgIdPrefix?: string;
+};
+
+export function sanitizeChatHtml(html: string, options: SanitizeChatHtmlOptions = {}): string {
+  const remoteImages = options.remoteImages === "keep" ? null : (options.remoteImages ?? currentRemoteImagePolicy());
   const allowedAttr = CHAT_HTML_ALLOWED_ATTR.filter(
     (attr) =>
       (options.allowStyle || attr !== "style") &&
       (options.allowLinks !== false || (attr !== "href" && attr !== "target")),
   );
+  const svgIdPrefix = options.artifactSvgIdPrefix;
+  const allowSvg = svgIdPrefix !== undefined;
   const clean = DOMPurify.sanitize(html, {
-    ALLOWED_TAGS: [...CHAT_HTML_ALLOWED_TAGS],
-    ALLOWED_ATTR: allowedAttr,
+    ALLOWED_TAGS: [...CHAT_HTML_ALLOWED_TAGS, ...(allowSvg ? ARTIFACT_SVG_TAGS : [])],
+    ALLOWED_ATTR: [...allowedAttr, ...(allowSvg ? ARTIFACT_SVG_ATTR : [])],
     ALLOW_DATA_ATTR: false,
     ALLOW_UNKNOWN_PROTOCOLS: false,
-    FORBID_TAGS: ["animate", "embed", "foreignObject", "iframe", "math", "object", "script", "svg", "style"],
+    FORBID_TAGS: ["animate", "embed", "foreignObject", "iframe", "math", "object", "script", "style"].concat(
+      allowSvg ? [] : ["svg"],
+    ),
     FORBID_ATTR: ["onerror", "onload", "onclick", "srcdoc"],
     RETURN_DOM_FRAGMENT: true,
   }) as DocumentFragment;
   for (const anchor of clean.querySelectorAll<HTMLAnchorElement>("a[href]")) {
     anchor.setAttribute("rel", "noopener noreferrer");
   }
+  if (allowSvg) {
+    for (const anchor of clean.querySelectorAll("svg a")) anchor.replaceWith(...anchor.childNodes);
+    for (const element of clean.querySelectorAll("svg, svg *")) {
+      for (const { name, value } of [...element.attributes]) {
+        const scoped = scopeArtifactSvgAttribute(name, value, svgIdPrefix);
+        if (scoped === null) element.removeAttribute(name);
+        else if (scoped !== value) element.setAttribute(name, scoped);
+      }
+    }
+  }
   if (options.allowStyle) {
     for (const element of clean.querySelectorAll<HTMLElement>("[style]")) {
-      const style = sanitizeChatMessageCss(element.getAttribute("style") ?? "");
+      const style = sanitizeChatMessageCss(element.getAttribute("style") ?? "", {
+        remoteUrls: remoteImages?.loadAll !== false,
+      });
       if (style) element.setAttribute("style", style);
       else element.removeAttribute("style");
     }
@@ -141,6 +175,7 @@ export function sanitizeChatHtml(html: string, options: { allowStyle?: boolean; 
       media.setAttribute("referrerpolicy", "no-referrer");
     }
   }
+  if (remoteImages) holdRemoteImages(clean, remoteImages);
   const container = clean.ownerDocument.createElement("div");
   container.append(clean);
   return container.innerHTML;

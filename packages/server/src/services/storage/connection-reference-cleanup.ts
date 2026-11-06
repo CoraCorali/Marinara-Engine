@@ -24,9 +24,17 @@
 // codebase, and stays correct as new *ConnectionId settings are added
 // without requiring this file to be updated in lockstep.
 
+import {
+  CHAT_MODEL_OVERRIDE_KEY,
+  type ChatModelOverride,
+  DEFAULT_EMBEDDING_CONNECTION_SETTINGS_KEY,
+  FEATURE_MODEL_CONNECTIONS_SETTINGS_KEY,
+} from "@marinara-engine/shared";
 import { eq } from "../../db/file-query.js";
 import type { DB } from "../../db/connection.js";
+import { readChatModelOverride } from "../generation/connection-resolution.js";
 import { apiConnections, chats, agentConfigs } from "../../db/schema/index.js";
+import { createAppSettingsStorage } from "./app-settings.storage.js";
 import { now } from "../../utils/id-generator.js";
 
 const CLEANUP_BATCH_SIZE = 250;
@@ -68,7 +76,7 @@ function serializeNullifiedConnectionIdReferences(raw: unknown, deletedConnectio
 /**
  * Clears every stored reference to `deletedConnectionId`: the direct
  * `connectionId` columns on chats and agent configs, `embeddingConnectionId`
- * on other connections, and any `*ConnectionId` key inside chat metadata or
+ * on other connections, the app-wide default embedding connection, and any `*ConnectionId` key inside chat metadata or
  * agent settings (however deeply nested). Call this once the connection
  * itself has been removed (or is about to be); it is a no-op if nothing
  * references the id.
@@ -76,6 +84,10 @@ function serializeNullifiedConnectionIdReferences(raw: unknown, deletedConnectio
 export async function sweepDanglingConnectionReferences(
   db: DB,
   deletedConnectionId: string,
+  /** Another chat Model of the deleted Model's Connection: a chat's catalog pick moves onto it. */
+  overrideCarrierId: string | null = null,
+  /** The deleted Model as a catalog pick: a chat that used it keeps it through the carrier (decision 30). */
+  keptPick: ChatModelOverride | null = null,
 ): Promise<ConnectionReferenceCleanupResult> {
   const result: ConnectionReferenceCleanupResult = { chatsUpdated: 0, agentsUpdated: 0, connectionsUpdated: 0 };
   if (!deletedConnectionId) return result;
@@ -92,17 +104,33 @@ export async function sweepDanglingConnectionReferences(
     result.connectionsUpdated = danglingEmbeddingRefs.length;
   }
 
+  const appSettings = createAppSettingsStorage(db);
+  if ((await appSettings.get(DEFAULT_EMBEDDING_CONNECTION_SETTINGS_KEY)) === deletedConnectionId) {
+    await appSettings.remove(DEFAULT_EMBEDDING_CONNECTION_SETTINGS_KEY);
+  }
+  const featureModels = serializeNullifiedConnectionIdReferences(
+    await appSettings.get(FEATURE_MODEL_CONNECTIONS_SETTINGS_KEY),
+    deletedConnectionId,
+  );
+  if (featureModels !== undefined) await appSettings.set(FEATURE_MODEL_CONNECTIONS_SETTINGS_KEY, featureModels);
+
   for (let offset = 0; ; offset += CLEANUP_BATCH_SIZE) {
     const chatRows = await db.select().from(chats).orderBy(chats.id).limit(CLEANUP_BATCH_SIZE).offset(offset);
     for (const chat of chatRows) {
-      const metadata = serializeNullifiedConnectionIdReferences(chat.metadata, deletedConnectionId);
+      let metadata = serializeNullifiedConnectionIdReferences(chat.metadata, deletedConnectionId);
       const directMatch = chat.connectionId === deletedConnectionId;
       if (metadata === undefined && !directMatch) continue;
+      const override = directMatch && overrideCarrierId ? (readChatModelOverride(chat) ?? keptPick) : null;
+      if (override) {
+        const moved = JSON.parse(metadata ?? chat.metadata ?? "{}") as Record<string, unknown>;
+        moved[CHAT_MODEL_OVERRIDE_KEY] = { ...override, connectionId: overrideCarrierId };
+        metadata = JSON.stringify(moved);
+      }
 
       await db
         .update(chats)
         .set({
-          connectionId: directMatch ? null : chat.connectionId,
+          connectionId: override ? overrideCarrierId : directMatch ? null : chat.connectionId,
           metadata: metadata ?? chat.metadata,
           updatedAt: now(),
         })

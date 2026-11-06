@@ -15,8 +15,10 @@ import {
   stripMapUpdateTag,
   stripDanglingTagClosers,
   stripEngineResultBlocks,
+  renderOocNotes,
 } from "./game-narration-text.js";
 import { stripGameBranchDelimiters } from "./dice-branch.js";
+import { stripClockCommandTags } from "./clock-command-tag.js";
 import { stripSheetCommandTags } from "./sheet-command-tag.js";
 import { readResolvedInventoryTagBody, type ResolvedInventoryTag } from "./inventory-command-tag.js";
 import type { DirectionCommand, DirectionEffect, WidgetUpdate } from "../types/game.js";
@@ -65,6 +67,10 @@ export interface SegmentInventoryUpdate {
 export interface PartyChangeTag {
   characterName: string;
   change: "add" | "remove";
+  /** Joins as a copy of this party member (5e's Simulacrum). */
+  copyOf?: string;
+  /** A condition of the game's ruleset the copy holds from the start. */
+  condition?: string;
 }
 
 export interface ReadableTag {
@@ -98,7 +104,7 @@ export interface ParsedGmTags {
   /** State transition command */
   stateChange: string | null;
   /** NPC reputation changes */
-  reputationActions: Array<{ npcName: string; action: string }>;
+  reputationActions: Array<{ npcName: string; action: string; id?: string }>;
   /** Combat encounter with enemy data */
   combatEncounter: CombatEncounterTag | null;
   /** Cinematic direction commands */
@@ -343,7 +349,7 @@ function parsePartyCharacterName(body: string): string {
   const unquoted = quoted ? null : /(?:character|name)\s*=\s*([^,\]]+)/i.exec(body);
   const rawName = quoted?.[1] ?? unquoted?.[1] ?? body;
   return rawName
-    .replace(/\s+change\s*=\s*"?(?:add|remove)"?.*$/i, "")
+    .replace(/\s+(?:change|copy_of|condition)\s*=.*$/i, "")
     .trim()
     .replace(/^["']|["']$/g, "");
 }
@@ -353,7 +359,12 @@ function parsePartyChangeTagBody(body: string, fallbackChange?: "add" | "remove"
   const change = (changeMatch?.[1]?.toLowerCase() as "add" | "remove" | undefined) ?? fallbackChange;
   if (!change) return null;
   const characterName = parsePartyCharacterName(body);
-  return characterName ? { characterName, change } : null;
+  if (!characterName) return null;
+  const attribute = (name: string) =>
+    (new RegExp(`${name}\\s*=\\s*"([^"]+)"`, "i").exec(body)?.[1] ?? "").trim() || undefined;
+  const copyOf = change === "add" ? attribute("copy_of") : undefined;
+  const condition = copyOf ? attribute("condition") : undefined;
+  return { characterName, change, ...(copyOf ? { copyOf } : {}), ...(condition ? { condition } : {}) };
 }
 
 /** Match a legacy flat-tag body with one forward scan, including malformed input. */
@@ -394,6 +405,7 @@ export function parseSegmentInventoryUpdates(content: string): SegmentInventoryU
   source = extractFlatTags(source, /\[ambient:/gi).remaining;
   source = extractFlatTags(source, /\[qte:/gi).remaining;
   source = extractFlatTags(source, /\[state:/gi).remaining;
+  source = extractFlatTags(source, /\[map:/gi).remaining;
   source = extractFlatTags(source, /\[reputation:/gi).remaining;
   source = extractFlatTags(source, /\[combat:/gi).remaining;
   source = extractFlatTags(source, /\[direction:/gi).remaining;
@@ -409,7 +421,7 @@ export function parseSegmentInventoryUpdates(content: string): SegmentInventoryU
   source = source.replace(/\[party-chat\]/gi, "");
   source = extractFlatTags(source, /\[dice:/gi).remaining;
 
-  source = stripSheetCommandTags(source);
+  source = stripClockCommandTags(stripSheetCommandTags(source));
   source = stripMapUpdateTag(source);
   source = stripBalancedTag(source, "[choices:");
 
@@ -539,7 +551,8 @@ export function parseSegmentInventoryUpdates(content: string): SegmentInventoryU
 
 /** Extract all command tags from GM narration and return clean content. */
 export function parseGmTags(content: string): ParsedGmTags {
-  let text = content;
+  // An OOC answer is shown, not stripped as an unknown tag.
+  let text = renderOocNotes(content);
   const result: ParsedGmTags = {
     cleanContent: "",
     music: null,
@@ -629,19 +642,12 @@ export function parseGmTags(content: string): ParsedGmTags {
   }
 
   // [reputation: npc="Name" action="helped"] — can appear multiple times
-  const repRegex = /\[reputation:\s*npc="([^"]+)"\s*action="([^"]+)"\]/gi;
-  let repMatch: RegExpExecArray | null;
-  while ((repMatch = repRegex.exec(text)) !== null) {
-    result.reputationActions.push({
-      npcName: repMatch[1]!.trim(),
-      action: repMatch[2]!.trim(),
-    });
-  }
-  text = text.replace(/\[reputation:\s*npc="[^"]+"\s*action="[^"]+"\]/gi, "");
+  result.reputationActions.push(...readReputationTags(text));
+  text = stripReputationTags(text);
 
   // The Engine resolves every sheet command and rewrites it with the outcome it actually
   // applied, so the bookkeeping is never narration.
-  text = stripSheetCommandTags(text);
+  text = stripClockCommandTags(stripSheetCommandTags(text));
 
   // [combat: enemies="Goblin:5:40:8:5:6, Skeleton:3:25:6:3:4" allies="Dottore, Nasira"]
   // Format: Name:Level:HP:ATK:DEF:SPD — comma separated for multiple enemies
@@ -722,7 +728,8 @@ export function parseGmTags(content: string): ParsedGmTags {
         const v = pair.slice(colonIdx + 1).trim();
         const stripped = v.replace(/^["']|["']$/g, "");
         if (k === "value") {
-          const parsed = parseFloat(stripped);
+          // A number only when that is all it is: "44/44" keeps its maximum (laptop 2026-10-25).
+          const parsed = /^[-+]?\d+(?:\.\d+)?%?$/.test(stripped) ? parseFloat(stripped) : NaN;
           changes.value = isNaN(parsed) ? stripped : parsed;
         } else if (k === "stat") changes.statName = stripped;
         else if (k === "add") changes.add = stripped;
@@ -745,6 +752,8 @@ export function parseGmTags(content: string): ParsedGmTags {
   // [map_update: ...] is persisted in message history, but canonical map
   // changes are applied on the backend.
   text = stripMapUpdateTag(text);
+  // [map: ...] opens or leaves a dungeon map; the Engine carries it out when the reply is saved.
+  text = extractFlatTags(text, /\[map:/gi).remaining;
   // [dialogue: npc="..."]
   text = text.replace(/\[dialogue:\s*npc="[^"]*"\]/gi, "");
   // [session_end: ...]
@@ -833,7 +842,7 @@ export function parseGmTags(content: string): ParsedGmTags {
 
 /** Strip all GM command tags from text, returning clean display content. */
 export function stripGmTags(content: string): string {
-  let text = stripEngineResultBlocks(content);
+  let text = renderOocNotes(stripEngineResultBlocks(content));
   text = extractFlatTags(text, /\[music:/gi).remaining;
   text = extractFlatTags(text, /\[sfx:/gi).remaining;
   text = extractFlatTags(text, /\[bg:/gi).remaining;
@@ -844,6 +853,7 @@ export function stripGmTags(content: string): string {
   text = extractFlatTags(text, /\[combat:/gi).remaining;
   text = extractFlatTags(text, /\[direction:/gi).remaining;
   text = extractFlatTags(text, /\[widget:/gi).remaining;
+  text = extractFlatTags(text, /\[map:/gi).remaining;
   text = text.replace(/\[dialogue:\s*npc="[^"]*"\]/gi, "");
   text = extractFlatTags(text, /\[session_end:/gi, false, true).remaining;
   text = extractFlatTags(text, /\[skill_check:/gi).remaining;
@@ -863,7 +873,7 @@ export function stripGmTags(content: string): string {
   // the player already read would be the worse failure.
   // The Engine resolves every sheet command and rewrites it with the outcome it actually
   // applied, so the bookkeeping is never narration.
-  text = stripSheetCommandTags(text);
+  text = stripClockCommandTags(stripSheetCommandTags(text));
   text = stripGameBranchDelimiters(text);
   // Quote-aware catch-all for any remaining [tag: ...] the model may invent
   text = stripUnknownBracketTags(text);
@@ -914,4 +924,40 @@ export function resolveMessageWeatherAction(state: string, content: string): "tr
   const tags = parseGmTags(content);
   if (state === "combat" || tags.stateChange === "combat" || tags.combatEncounter) return null;
   return state === "travel_rest" ? "travel" : state === "exploration" ? "explore" : "turn";
+}
+
+// Unbounded in length, as the tag always was, so a long action is still read and stripped rather than
+// left in the narration; a body never holds "[", so "[reputation:" repeated without a "]" cannot make
+// every start scan to the end of the text.
+const REPUTATION_TAG = /\[reputation:([^[\]]*)\]/gi;
+
+/**
+ * Every `[reputation: npc="Name" action="helped"]` tag in a text, its attributes in any order. A
+ * world's person may also be named by `id="..."` (worldgen W2), which wins over the name when two
+ * tracked people share one. A tag without an action, or with neither a name nor an id, is skipped.
+ */
+export function readReputationTags(text: string): Array<{ npcName: string; action: string; id?: string }> {
+  const tags: Array<{ npcName: string; action: string; id?: string }> = [];
+  for (const match of text.matchAll(REPUTATION_TAG)) {
+    const values = new Map(
+      readGmTagAttributes(match[1] ?? "").map((attribute) => [
+        attribute.key.trim().toLowerCase(),
+        attribute.rawValue
+          .trim()
+          .replace(/^["']|["']$/g, "")
+          .trim(),
+      ]),
+    );
+    const npcName = values.get("npc") ?? "";
+    const id = values.get("id");
+    const action = values.get("action");
+    if (!action || (!npcName && !id)) continue;
+    tags.push({ npcName, action, ...(id ? { id } : {}) });
+  }
+  return tags;
+}
+
+/** The text without its reputation tags. */
+export function stripReputationTags(text: string): string {
+  return text.replace(REPUTATION_TAG, "");
 }

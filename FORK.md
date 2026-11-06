@@ -193,6 +193,15 @@ Markup is stripped and every part is length-capped before it is sent.
   > and trust. `note` is one short line on where it stands. Only include a relationship the scene
   > actually said something about, and leave out any field you are not sure changed.
 
+### Synced with Marinara 2.5.2 (2026-11-05)
+
+Merged upstream v2.5.2. Six files conflicted, all where fork additions sat beside new upstream code, and
+both sides were kept: `ChatArea.tsx`, `ChatMessage.tsx` and `ChatRoleplaySurface.tsx` (fork props beside the
+new failed-reply and reply-checkup props), `CyoaChoices.tsx` (the larger send/impersonate button now also hides
+while choices go to the message box), `prompts.routes.ts` (imports), and `generate.routes.ts`. In that last one,
+the bonds and outfit note now goes just before a user-message rewrite instruction instead of after it, since
+upstream expects that instruction to stay last.
+
 ## Upstream files touched
 
 Fork-only code lives in `packages/client/src/lib/fork/`, `packages/server/src/services/import/fork/`

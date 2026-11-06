@@ -1,6 +1,8 @@
 // ──────────────────────────────────────────────
 // Game: Narration Area (VN-style segmented box)
 // ──────────────────────────────────────────────
+import { artPortraitFor } from "@marinara-engine/shared";
+import { ArtIcon } from "./ArtIcon";
 import {
   useEffect,
   useLayoutEffect,
@@ -46,8 +48,10 @@ import { useRenderTimer } from "../../lib/perf-diagnostics";
 import { findNamedMapValue } from "../../lib/game-character-name-match";
 import type { GameSegmentEdit } from "../../lib/game-segment-edits";
 import { hasVisibleGameNarrationText, parseGmTags, stripGmTagsKeepReadables } from "../../lib/game-tag-parser";
+import { truncateMessageContentAtSegment } from "../../lib/narration-truncation";
 import { audioManager } from "../../lib/game-audio";
 import { normalizeSpriteExpressionKey, resolveSpriteExpression } from "../../lib/sprite-expression-match";
+import { normalizeGameTtsEmotion } from "../../lib/game-tts-emotion";
 import type { SpriteInfo } from "../../hooks/use-characters";
 import { useTranslate } from "../../hooks/use-translate";
 import { useGenerationStatus } from "../../hooks/use-chats";
@@ -65,6 +69,7 @@ import { useGameModeStore } from "../../stores/game-mode.store";
 import { getDefaultChatTextColor, useUIStore } from "../../stores/ui.store";
 import { useChatStore } from "../../stores/chat.store";
 import { parseChatMetadata } from "../../lib/chat-display";
+import { CHARACTER_COLOR_CLASS, GAME_SECTION_CLASS } from "../../lib/chat-widget-colors";
 import { parseMessageExtraRecord } from "../../lib/chat-message-extra";
 import { isVisibleGameMessage } from "../../lib/chat-message-visibility";
 import { readDiceRollResults } from "../../lib/dice-roll-result";
@@ -72,8 +77,17 @@ import { estimateGameSessionHistoryTokens } from "../../lib/game-session-history
 import { createMessageMacroResolver, findCharacterByName } from "../../lib/chat-macros";
 import { animateTextHtml } from "./AnimatedText";
 import { ttsService } from "../../lib/tts-service";
+import { TTS_AUTOPLAY_VOICE_EVENT, type TTSAutoplayVoiceDetail } from "../../lib/tts-autoplay";
 import { getOrCreateCachedTTSAudioBlob } from "../../lib/tts-audio-cache";
-import { resolveTTSNarratorVoice, resolveTTSVoiceForSpeaker, splitTTSChunks } from "../../lib/tts-dialogue";
+import {
+  findTTSCharacterIdBySpeakerName,
+  isTTSSpeakerAmbiguous,
+  getTTSPersonaVoice,
+  resolveTTSNarratorVoice,
+  resolveTTSVoiceForSpeaker,
+  splitTTSChunks,
+  type TTSVoicePersona,
+} from "../../lib/tts-dialogue";
 import {
   buildGameTranslationSource,
   formatGameTranslationSegment,
@@ -83,6 +97,7 @@ import {
   type PartyDialogueLine,
   type Message,
   type TTSConfig,
+  type GameTtsEmotion,
   type GameNpc,
   type SkillCheckResult,
   type GameDicePlaceholderRecord,
@@ -92,8 +107,13 @@ import {
 import { applyGameDiceMarkers, formatGameDiceModifier, formatGameDiceRolls } from "../../lib/game-dice-markers";
 import type { CharacterMap, PersonaInfo } from "../chat/chat-area.types";
 import { MESSAGE_SELECTION_SURFACE_CLASS } from "../chat/message-selection-styles";
+import { HISTORY_PAGER_BUTTON_CLASS } from "../chat/TranscriptWindowControls";
 import { useTranslation as useUiTranslation } from "react-i18next";
 import { formatNarration } from "./game-narration-format";
+import { createNarrationHtmlCache } from "./narration-html-cache";
+import { MessageMemo } from "./message-memo";
+import { publishAvatarGameLine } from "../../features/avatars/director/game-line-feed";
+import { prepareAvatarAudioBlob, setGameVoicePlayback } from "../../features/avatars/audio/avatar-audio";
 import {
   CroppedAvatar,
   ExpressionReaction,
@@ -104,84 +124,8 @@ import {
 
 const GamePeekPromptButton = lazy(() => import("./GamePeekPromptButton"));
 
-const GAME_TTS_EMOTIONS = [
-  "neutral",
-  "happy",
-  "sad",
-  "angry",
-  "surprised",
-  "scared",
-  "disgusted",
-  "thinking",
-  "laughing",
-  "crying",
-  "blushing",
-  "smirk",
-  "embarrassed",
-  "determined",
-  "confused",
-  "sleepy",
-] as const;
-
-type GameTtsEmotion = (typeof GAME_TTS_EMOTIONS)[number];
-
-const GAME_TTS_EMOTION_SET = new Set<string>(GAME_TTS_EMOTIONS);
 const SIDE_VOICE_AUTOPLAY_MAX_FAILURES = 3;
 const SIDE_VOICE_AUTOPLAY_RETRY_DELAY_MS = 350;
-
-const GAME_TTS_EMOTION_ALIASES: Record<string, GameTtsEmotion> = {
-  afraid: "scared",
-  anger: "angry",
-  amused: "laughing",
-  blush: "blushing",
-  confused_look: "confused",
-  confusion: "confused",
-  cry: "crying",
-  determined_look: "determined",
-  disgust: "disgusted",
-  drowsy: "sleepy",
-  embarrassed_smile: "embarrassed",
-  fear: "scared",
-  fearful: "scared",
-  flustered: "blushing",
-  focused: "determined",
-  grin: "happy",
-  joyful: "happy",
-  laugh: "laughing",
-  nervous: "scared",
-  pensive: "thinking",
-  puzzled: "confused",
-  sad_look: "sad",
-  sadness: "sad",
-  serious: "determined",
-  shocked: "surprised",
-  shy: "blushing",
-  sleep: "sleepy",
-  sleepy_eyes: "sleepy",
-  smile: "happy",
-  smirking: "smirk",
-  sobbing: "crying",
-  startled: "surprised",
-  surprise: "surprised",
-  think: "thinking",
-  tired: "sleepy",
-  worried: "scared",
-};
-
-function normalizeGameTtsEmotion(value?: string | null): GameTtsEmotion | null {
-  const normalized = value ? normalizeSpriteExpressionKey(value) : "";
-  if (!normalized) return null;
-  if (GAME_TTS_EMOTION_SET.has(normalized)) return normalized as GameTtsEmotion;
-  if (GAME_TTS_EMOTION_ALIASES[normalized]) return GAME_TTS_EMOTION_ALIASES[normalized];
-
-  const parts = normalized.split("_").filter(Boolean);
-  for (const part of parts) {
-    if (GAME_TTS_EMOTION_SET.has(part)) return part as GameTtsEmotion;
-    if (GAME_TTS_EMOTION_ALIASES[part]) return GAME_TTS_EMOTION_ALIASES[part];
-  }
-
-  return null;
-}
 
 function resolveGameSegmentTtsEmotion(segment: NarrationSegment): GameTtsEmotion {
   return normalizeGameTtsEmotion(segment.sprite) ?? (segment.partyType === "thought" ? "thinking" : "neutral");
@@ -207,6 +151,8 @@ type NarrationMessage = Pick<
 > & {
   characterName?: string;
 };
+
+type LogEntry = { messageId: string; segments: NarrationSegment[] };
 
 function formatTokenEstimate(tokens: number): string {
   if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(tokens >= 10_000_000 ? 0 : 1).replace(/\.0$/, "")}m`;
@@ -245,7 +191,15 @@ function narrationSegmentAnchorKey(segment: NarrationSegment): string {
 
 type GameSegmentVoiceEntry =
   | { status: "loading"; speaker?: string; tone?: string; voice?: string; chunks: string[] }
-  | { status: "ready"; speaker?: string; tone?: string; voice?: string; chunks: string[]; urls: string[] }
+  | {
+      status: "ready";
+      speaker?: string;
+      tone?: string;
+      voice?: string;
+      chunks: string[];
+      urls: string[];
+      blobs: Blob[];
+    }
   | { status: "error"; speaker?: string; tone?: string; voice?: string; chunks: string[] };
 
 const GAME_VOICE_CACHE_MAX_ENTRIES = 80;
@@ -341,6 +295,15 @@ const GAME_TTS_CHUNK_ATTEMPTS = 2;
 function GameGenerationStatus() {
   const { t: localizeUi } = useUiTranslation();
   const narrationSaved = useChatStore((s) => (s.activeChatId ? s.narrationSavedChatIds.has(s.activeChatId) : false));
+  // How long the turn has been waiting, so a slow or stalled provider is not five silent minutes
+  // (playtest 2026-10-26). Shown once the wait is long enough to wonder about.
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  useEffect(() => {
+    const startedAt = Date.now();
+    const timer = window.setInterval(() => setElapsedSeconds(Math.floor((Date.now() - startedAt) / 1000)), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+  const elapsed = `${Math.floor(elapsedSeconds / 60)}:${String(elapsedSeconds % 60).padStart(2, "0")}`;
 
   return (
     <div className="mt-2 flex items-center gap-1 text-xs text-[var(--foreground)]/50">
@@ -348,13 +311,18 @@ function GameGenerationStatus() {
       <span>
         {narrationSaved
           ? localizeUi("ui.game.gamenarration.preparingScene")
-          : localizeUi("ui.game.gamenarration.theGameMasterIsWritingTheNextSegment")}
+          : elapsedSeconds >= 60
+            ? localizeUi("ui.game.gamenarration.stillWaitingOnTheModel")
+            : localizeUi("ui.game.gamenarration.theGameMasterIsWritingTheNextSegment")}
       </span>
+      {elapsedSeconds >= 15 && <span className="tabular-nums">· {elapsed}</span>}
     </div>
   );
 }
 
 interface GameNarrationProps {
+  /** Clicks on its empty space reach what is drawn beneath it (the overworld, worldgen W8). */
+  passThrough?: boolean;
   messages: NarrationMessage[];
   isStreaming: boolean;
   characterMap: CharacterMap;
@@ -425,6 +393,10 @@ interface GameNarrationProps {
   combatStarting?: boolean;
   /** Whether combat state generation failed for the current combat beat. */
   combatGenerationFailed?: boolean;
+  /** The failed setup was cut off before it finished, rather than refused or malformed. */
+  combatGenerationCutOff?: boolean;
+  /** What the failed setup said went wrong, shown beside the failure. */
+  combatGenerationReason?: string | null;
   /** Retry combat state generation. */
   onRetryCombatGeneration?: () => void;
   /** Open the standard delete-message flow for a backing chat message. */
@@ -584,15 +556,23 @@ function slicePreservingEffects(content: string, maxVisible: number): string {
   return result;
 }
 
+const DEFAULT_LOG_PAGE_SIZE = 20;
+
+// A Session Log row, a settled segment and a translation show the same text on every render of
+// this component. Formatting and sanitizing it again each time made opening, closing and jumping
+// through a long log slow on phones, so the finished HTML is kept. It depends on the text, the
+// text-effects setting and the loaded translations (the item-used badge); the cache clears itself
+// when translations change.
+const formattedNarrationHtml = createNarrationHtmlCache((content, textEffectsEnabled) =>
+  animateTextHtml(formatNarration(content, false), textEffectsEnabled),
+);
+
 function getGameTranslationHtml(
   message: NarrationMessage,
   translatedText: string,
   textEffectsEnabled: boolean,
 ): string {
-  return animateTextHtml(
-    formatNarration(getGameTranslationSource({ ...message, content: translatedText }), false),
-    textEffectsEnabled,
-  );
+  return formattedNarrationHtml(getGameTranslationSource({ ...message, content: translatedText }), textEffectsEnabled);
 }
 
 function hasGameSegmentOverrides(
@@ -684,10 +664,15 @@ function hashVoiceKey(value: string): string {
 function buildVoiceConfigSignature(config?: TTSConfig | null): string {
   if (!config) return "tts:none";
   return [
+    config.connectionId,
     config.source,
     config.baseUrl,
     config.model,
     config.voice,
+    config.skipTagContent ? "skip-tags" : "read-tags",
+    config.skipCodeBlocks !== false ? "skip-code" : "read-code",
+    config.skipBracketedText ? "skip-brackets" : "read-brackets",
+    config.roleplaySpeakerExtractorEmotionsEnabled ? "emotions" : "no-emotions",
     config.narratorVoiceEnabled ? "narrator-voice" : "narrator-global",
     config.narratorVoice,
     config.voiceMode,
@@ -711,6 +696,7 @@ function buildVoiceLineTextCacheKey(
   job: Omit<GameVoiceAudioJob, "cacheKey" | "textCacheKey">,
 ): string {
   const rawKey = [
+    config.connectionId,
     config.source,
     config.baseUrl,
     config.model,
@@ -834,6 +820,9 @@ function findNpcVoiceHint(speaker: string | null | undefined, gameNpcs: GameNpc[
 
 type GameSegmentVoiceOptions = {
   playerSpeakerNames?: ReadonlySet<string>;
+  persona?: TTSVoicePersona | null;
+  /** The speaker fits several active cards, so no card outside the game may voice them (#8638). */
+  isAmbiguousSpeaker?: (speaker?: string | null) => boolean;
 };
 
 function normalizeGameVoiceSpeakerName(value: string | null | undefined): string {
@@ -865,11 +854,17 @@ function isGameVoicePlayerTaggedNarration(
   return isGameVoicePlayerSpeaker(speakerMatch[1], playerSpeakerNames);
 }
 
-function shouldSkipGameVoiceSegment(segment: NarrationSegment, options: GameSegmentVoiceOptions): boolean {
+function shouldSkipGameVoiceSegment(
+  segment: NarrationSegment,
+  options: GameSegmentVoiceOptions,
+  config: TTSConfig,
+): boolean {
   if (segment.sourceRole === "user" || segment.sourceRole === "system") return true;
   if (segment.partyType === "thought") return true;
-  if (isGameVoicePlayerSpeaker(segment.speaker, options.playerSpeakerNames)) return true;
-  return segment.type === "narration" && isGameVoicePlayerTaggedNarration(segment.content, options.playerSpeakerNames);
+  const playerSpeaker =
+    isGameVoicePlayerSpeaker(segment.speaker, options.playerSpeakerNames) ||
+    (segment.type === "narration" && isGameVoicePlayerTaggedNarration(segment.content, options.playerSpeakerNames));
+  return playerSpeaker && !getTTSPersonaVoice(config, options.persona);
 }
 
 function getGameSegmentVoiceRequest(
@@ -878,23 +873,29 @@ function getGameSegmentVoiceRequest(
   gameNpcs: GameNpc[] = [],
   options: GameSegmentVoiceOptions = {},
 ): GameSegmentVoiceRequest | null {
-  if (shouldSkipGameVoiceSegment(segment, options)) return null;
+  if (shouldSkipGameVoiceSegment(segment, options, config)) return null;
   if (segment.type !== "dialogue" && segment.type !== "narration") return null;
 
-  if (segment.type === "dialogue") {
+  const playerSpeaker =
+    isGameVoicePlayerSpeaker(segment.speaker, options.playerSpeakerNames) ||
+    (segment.type === "narration" && isGameVoicePlayerTaggedNarration(segment.content, options.playerSpeakerNames));
+  if (segment.type === "dialogue" || playerSpeaker) {
     const chunks = splitTTSChunks(segment.content, config);
     if (chunks.length === 0) return null;
     const tone = resolveGameSegmentTtsEmotion(segment);
-    const voice = resolveTTSVoiceForSpeaker(
-      config,
-      segment.speaker,
-      undefined,
-      findNpcVoiceHint(segment.speaker, gameNpcs),
-    );
+    const voice = playerSpeaker
+      ? getTTSPersonaVoice(config, options.persona)
+      : resolveTTSVoiceForSpeaker(
+          config,
+          segment.speaker,
+          undefined,
+          findNpcVoiceHint(segment.speaker, gameNpcs),
+          Boolean(options.isAmbiguousSpeaker?.(segment.speaker)),
+        );
     if (config.source === "elevenlabs" && !voice) return null;
     return {
       chunks,
-      speaker: segment.speaker,
+      speaker: playerSpeaker ? options.persona?.name || segment.speaker : segment.speaker,
       tone,
       voice,
     };
@@ -1080,11 +1081,16 @@ function formatSkillCheckLogContent(
   const checkSegments: NarrationSegment[] = skillChecks.map((skillCheck, index) => {
     const result = skillCheck.resolvedResult;
     // Not rolled because the character could not attempt it: said as that, never as a check still owed.
-    if (!result && skillCheck.reason === "untrained") {
+    if (!result && skillCheck.reason) {
       return {
         id: `${message.id}-skill-check-log-${index}`,
         type: "system",
-        content: localizeUi("game.narration.skillCheckUntrained", { skill: skillCheck.skill }),
+        content: localizeUi(
+          skillCheck.reason === "untrained"
+            ? "game.narration.skillCheckUntrained"
+            : "game.narration.skillCheckUnknownRoller",
+          { skill: skillCheck.skill },
+        ),
       };
     }
     if (!result) {
@@ -1113,6 +1119,7 @@ function formatSkillCheckLogContent(
 }
 
 export function GameNarration({
+  passThrough = false,
   messages,
   isStreaming,
   characterMap,
@@ -1149,6 +1156,8 @@ export function GameNarration({
   onRequestCombatStart,
   combatStarting,
   combatGenerationFailed,
+  combatGenerationCutOff,
+  combatGenerationReason,
   onRetryCombatGeneration,
   onDeleteMessage,
   onPeekPrompt,
@@ -1186,7 +1195,7 @@ export function GameNarration({
   const { t: localizeUi } = useUiTranslation();
   useRenderTimer("game-narration"); // [#3104 diagnostic]
   const { translate, translations, translationSources, translating, config: translationConfig } = useTranslate();
-  const { applyToAIOutput } = useApplyRegex();
+  const { applyToAIOutput, usesDepthRange } = useApplyRegex();
   // Parse the chat metadata in a memo (not the store selector) so streaming ticks
   // don't re-parse the whole metadata object on every update.
   const activeChatMetadata = useChatStore((s) => s.activeChat?.metadata);
@@ -1207,6 +1216,11 @@ export function GameNarration({
   const fallbackDialogueColor = defaultDialogueColor || getDefaultChatTextColor(theme);
   const personaDialogueColor =
     personaInfo?.dialogueColor || fallbackDialogueColor || personaInfo?.nameColor || "#a5b4fc";
+  // Speaker colors are a card's own dialogue color or the fallback. Only an own color outranks
+  // Apply preset colors (chat-widget-surfaces.css); the fallback follows the preset text.
+  // ponytail: an own color identical to the fallback follows the preset too; track own colors per speaker if that matters.
+  const dialogueColorClass = (color?: string) =>
+    color && color !== fallbackDialogueColor ? CHARACTER_COLOR_CLASS : undefined;
   const useStackedLogDisplay = gameDialogueDisplayMode === "stacked";
   const showLogsButton = !useStackedLogDisplay;
   const [editingContent, setEditingContent] = useState<string | null>(null);
@@ -1358,6 +1372,9 @@ export function GameNarration({
     }
     return byName;
   }, [activeCharacterEntries, personaInfo, speakerAvatarMap]);
+  // Name colors fall back to the line's dialogue color; only a speaker's own color outranks Apply preset colors.
+  const nameColorClass = (speaker?: string | null) =>
+    speaker && findNamedMapValue(speakerNameColors, speaker) ? CHARACTER_COLOR_CLASS : undefined;
 
   const gameNpcs = useGameModeStore((s) => s.npcs);
   const sourceMessagesById = useMemo(() => new Map(messages.map((message) => [message.id, message])), [messages]);
@@ -1511,16 +1528,20 @@ export function GameNarration({
     return null;
   }, [messages]);
 
-  const gameTranslationSources = useMemo(
-    () =>
-      new Map(
-        messages.map((message) => [
-          message.id,
+  const [gameTranslationSourceMemo] = useState(() => new MessageMemo<NarrationMessage, string>());
+  const gameTranslationSources = useMemo(() => {
+    gameTranslationSourceMemo.begin([segmentEdits, segmentDeletes, speakerColors]);
+    const sources = new Map(
+      messages.map((message) => [
+        message.id,
+        gameTranslationSourceMemo.get(message, [], () =>
           getGameTranslationSource(message, segmentEdits, segmentDeletes, speakerColors),
-        ]),
-      ),
-    [messages, segmentEdits, segmentDeletes, speakerColors],
-  );
+        ),
+      ]),
+    );
+    gameTranslationSourceMemo.end();
+    return sources;
+  }, [gameTranslationSourceMemo, messages, segmentEdits, segmentDeletes, speakerColors]);
   const gameTranslationMatchesMessage = useCallback(
     (message: NarrationMessage, source: string | undefined) =>
       source !== undefined &&
@@ -1618,8 +1639,10 @@ export function GameNarration({
     return `${entry.messageId}:0`;
   }, []);
 
+  const [flatLogEntryMemo] = useState(() => new MessageMemo<NarrationMessage, FlatLogEntry[]>());
   const flatLogEntries = useMemo<FlatLogEntry[]>(() => {
     const out: FlatLogEntry[] = [];
+    flatLogEntryMemo.begin([speakerColors, segmentDeletes]);
     for (const msg of messages) {
       if (msg.role === "system") continue;
       if (msg.role === "user") {
@@ -1645,16 +1668,22 @@ export function GameNarration({
       }
       if (msg.role !== "assistant" && msg.role !== "narrator") continue;
       if (!isVisibleGameMessage(msg)) continue;
-      const segs = parseNarrationSegments(msg, speakerColors);
-      for (let si = 0; si < segs.length; si++) {
-        const seg = segs[si]!;
-        if (isDeletedSegment(segmentDeletes, msg.id, si)) continue;
-        if (seg.partyType === "side" || seg.partyType === "extra") continue;
-        out.push({ kind: "assistant", messageId: msg.id, segmentIndex: si, segment: seg, role: msg.role });
-      }
+      const messageEntries = flatLogEntryMemo.get(msg, [], () => {
+        const entries: FlatLogEntry[] = [];
+        const segs = parseNarrationSegments(msg, speakerColors);
+        for (let si = 0; si < segs.length; si++) {
+          const seg = segs[si]!;
+          if (isDeletedSegment(segmentDeletes, msg.id, si)) continue;
+          if (seg.partyType === "side" || seg.partyType === "extra") continue;
+          entries.push({ kind: "assistant", messageId: msg.id, segmentIndex: si, segment: seg, role: msg.role });
+        }
+        return entries;
+      });
+      out.push(...messageEntries);
     }
+    flatLogEntryMemo.end();
     return out;
-  }, [messages, personaDialogueColor, personaInfo, speakerColors, segmentDeletes]);
+  }, [flatLogEntryMemo, messages, personaDialogueColor, personaInfo, speakerColors, segmentDeletes]);
 
   // Past-review entry the player is currently looking at. Each wheel-up bumps
   // `messageOffset`; we step back that many entries from the most recent log entry.
@@ -1723,31 +1752,36 @@ export function GameNarration({
     [fallbackMacroCharacter, macroCharacters],
   );
 
-  const applyOutputRegexForSource = useCallback(
+  // The text steps take a message's depth and character as values rather than reading them from
+  // per-message maps, so the Session Log can keep finished text for messages that did not change.
+  const applyOutputRegexAt = useCallback(
     (
       text: string,
-      sourceMessageId: string | null | undefined,
       sourceRole: Message["role"] | null | undefined,
+      depth: number | undefined,
+      characterId: string | null | undefined,
       resolveMacrosForText: (value: string) => string,
     ) => {
       if (sourceRole !== "assistant" && sourceRole !== "narrator") return text;
       return applyToAIOutput(text, {
-        depth: sourceMessageId ? messageDepthById.get(sourceMessageId) : undefined,
+        depth,
         resolveMacros: resolveMacrosForText,
         scopedMode: scopedRegexMode,
-        characterId: sourceMessageId ? messageCharacterById.get(sourceMessageId) : undefined,
+        characterId,
       });
     },
-    [applyToAIOutput, messageDepthById, messageCharacterById, scopedRegexMode],
+    [applyToAIOutput, scopedRegexMode],
   );
 
-  const prepareSegmentText = useCallback(
+  const prepareSegmentTextAt = useCallback(
     (
       text: string,
       speaker: string | null | undefined,
       sourceMessageId: string | null | undefined,
       sourceRole: Message["role"] | null | undefined,
       seedKey: string | number,
+      depth: number | undefined,
+      characterId: string | null | undefined,
     ) => {
       const macroContext = {
         userName: personaInfo?.name || "You",
@@ -1760,37 +1794,75 @@ export function GameNarration({
       // chunk (visible churn) and on every edit.
       const macroRandomSeed = `${sourceMessageId ?? "game-segment"}:${seedKey}`;
       const resolveMacrosForText = createMessageMacroResolver(macroContext, { randomSeed: macroRandomSeed });
-      const regexApplied = applyOutputRegexForSource(text, sourceMessageId, sourceRole, resolveMacrosForText);
+      const regexApplied = applyOutputRegexAt(text, sourceRole, depth, characterId, resolveMacrosForText);
       return formatTextQuotes(resolveMacrosForText(regexApplied), quoteFormat);
     },
-    [applyOutputRegexForSource, macroCharacters, personaInfo, quoteFormat, resolveMacroCharacter],
+    [applyOutputRegexAt, macroCharacters, personaInfo, quoteFormat, resolveMacroCharacter],
   );
 
-  const prepareDisplaySegment = useCallback(
-    (segment: NarrationSegment): NarrationSegment => {
+  const prepareSegmentText = useCallback(
+    (
+      text: string,
+      speaker: string | null | undefined,
+      sourceMessageId: string | null | undefined,
+      sourceRole: Message["role"] | null | undefined,
+      seedKey: string | number,
+    ) =>
+      prepareSegmentTextAt(
+        text,
+        speaker,
+        sourceMessageId,
+        sourceRole,
+        seedKey,
+        sourceMessageId ? messageDepthById.get(sourceMessageId) : undefined,
+        sourceMessageId ? messageCharacterById.get(sourceMessageId) : undefined,
+      ),
+    [messageCharacterById, messageDepthById, prepareSegmentTextAt],
+  );
+
+  const prepareDisplaySegmentAt = useCallback(
+    (
+      segment: NarrationSegment,
+      depth: number | undefined,
+      characterId: string | null | undefined,
+    ): NarrationSegment => {
       const regexSourceRole = segment.type === "system" ? "system" : segment.sourceRole;
-      const content = prepareSegmentText(
+      const content = prepareSegmentTextAt(
         segment.content,
         segment.speaker,
         segment.sourceMessageId,
         regexSourceRole,
         segment.sourceSegmentIndex ?? 0,
+        depth,
+        characterId,
       );
       const readableContent =
         segment.readableContent == null
           ? segment.readableContent
-          : prepareSegmentText(
+          : prepareSegmentTextAt(
               segment.readableContent,
               segment.speaker,
               segment.sourceMessageId,
               regexSourceRole,
               `${segment.sourceSegmentIndex ?? 0}:readable`,
+              depth,
+              characterId,
             );
 
       if (content === segment.content && readableContent === segment.readableContent) return segment;
       return { ...segment, content, readableContent };
     },
-    [prepareSegmentText],
+    [prepareSegmentTextAt],
+  );
+
+  const prepareDisplaySegment = useCallback(
+    (segment: NarrationSegment): NarrationSegment =>
+      prepareDisplaySegmentAt(
+        segment,
+        segment.sourceMessageId ? messageDepthById.get(segment.sourceMessageId) : undefined,
+        segment.sourceMessageId ? messageCharacterById.get(segment.sourceMessageId) : undefined,
+      ),
+    [messageCharacterById, messageDepthById, prepareDisplaySegmentAt],
   );
 
   // segmentOriginalIndices[i] = the unfiltered parseNarrationSegments index for segments[i],
@@ -2256,7 +2328,27 @@ export function GameNarration({
   const gameVoiceEnabled = Boolean(ttsConfig?.enabled && ttsConfig.autoplayGame);
   const gameVoiceConfigSignature = useMemo(() => buildVoiceConfigSignature(ttsConfig), [ttsConfig]);
   const normalizedGameVoiceVolume = Math.max(0, Math.min(1, gameVoiceVolume));
-  const gameVoicePlaybackBlocked = voicePlaybackBlocked ?? autoPlayBlocked;
+  const [pendingPersonaReadings, setPendingPersonaReadings] = useState<Set<string>>(() => new Set());
+  const voiceChatId = latestAssistant?.chatId ?? messages[0]?.chatId;
+  useEffect(() => {
+    setPendingPersonaReadings(new Set());
+    const onReading = (event: Event) => {
+      const detail = (event as CustomEvent<TTSAutoplayVoiceDetail>).detail;
+      if (!detail || detail.chatId !== voiceChatId) return;
+      setPendingPersonaReadings((current) => {
+        const next = new Set(current);
+        if (detail.pending) next.add(detail.readingId);
+        else next.delete(detail.readingId);
+        return next;
+      });
+    };
+    window.addEventListener(TTS_AUTOPLAY_VOICE_EVENT, onReading);
+    return () => {
+      window.removeEventListener(TTS_AUTOPLAY_VOICE_EVENT, onReading);
+    };
+  }, [voiceChatId]);
+  const gameVoiceExternallyBlocked = voicePlaybackBlocked ?? autoPlayBlocked;
+  const gameVoicePlaybackBlocked = gameVoiceExternallyBlocked || pendingPersonaReadings.size > 0;
 
   const cacheGameVoiceEntry = useCallback(
     (key: string, entry: GameSegmentVoiceEntry) => {
@@ -2299,6 +2391,7 @@ export function GameNarration({
     // Tear down every live voice element, not just the current ref — interleaved
     // playback attempts can orphan earlier elements off the single ref (#2647).
     for (const audio of gameVoiceActiveAudiosRef.current) {
+      setGameVoicePlayback(null, audio);
       audio.pause();
       audio.onended = null;
       audio.onerror = null;
@@ -2331,6 +2424,7 @@ export function GameNarration({
           queueLogScrollTopRestore();
           setGameVoicePlayingKey(null);
           setGameVoicePausedKey(null);
+          if (gameVoiceAudioRef.current) setGameVoicePlayback(null, gameVoiceAudioRef.current);
           gameVoiceAudioRef.current = null;
           return;
         }
@@ -2360,6 +2454,15 @@ export function GameNarration({
         audio.muted = normalizedGameVoiceVolume <= 0;
         gameVoiceActiveAudiosRef.current.add(audio);
         gameVoiceAudioRef.current = audio;
+        const blob = entry.blobs[urlIndex];
+        if (blob)
+          setGameVoicePlayback({
+            element: audio,
+            blob,
+            chatId: latestAssistant?.chatId ?? null,
+            characterId: findTTSCharacterIdBySpeakerName(entry.speaker, activeCharacterEntries, personaInfo),
+            text: entry.chunks[urlIndex] ?? "",
+          });
 
         let started = false;
         const markStarted = () => {
@@ -2368,6 +2471,7 @@ export function GameNarration({
           options?.onStarted?.(key);
         };
         const markFailed = () => {
+          setGameVoicePlayback(null, audio);
           gameVoiceActiveAudiosRef.current.delete(audio);
           if (gameVoiceSequenceRef.current !== sequence || gameVoiceAudioRef.current !== audio) return;
           queueLogScrollTopRestore();
@@ -2379,6 +2483,7 @@ export function GameNarration({
 
         audio.onplaying = markStarted;
         audio.onended = () => {
+          setGameVoicePlayback(null, audio);
           gameVoiceActiveAudiosRef.current.delete(audio);
           if (gameVoiceSequenceRef.current !== sequence || gameVoiceAudioRef.current !== audio) return;
           urlIndex += 1;
@@ -2406,7 +2511,14 @@ export function GameNarration({
 
       playNext();
     },
-    [normalizedGameVoiceVolume, queueLogScrollTopRestore, stopGameVoicePlayback],
+    [
+      activeCharacterEntries,
+      latestAssistant?.chatId,
+      normalizedGameVoiceVolume,
+      personaInfo,
+      queueLogScrollTopRestore,
+      stopGameVoicePlayback,
+    ],
   );
 
   const playGameVoiceKey = useCallback(
@@ -2446,6 +2558,9 @@ export function GameNarration({
     setGameVoicePausedKey(null);
     void audio.play().catch(() => {
       if (gameVoiceAudioRef.current !== audio) return;
+      // An interrupted play() promise can reject while the resumed clip is genuinely playing (#2647).
+      if (!audio.paused && !audio.ended) return;
+      setGameVoicePlayback(null, audio);
       setGameVoicePlayingKey(null);
       setGameVoicePausedKey(null);
       gameVoiceAudioRef.current = null;
@@ -2508,6 +2623,11 @@ export function GameNarration({
     [queueLogScrollTopRestore, stopGameVoicePlayback],
   );
 
+  const isAmbiguousGameSpeaker = useCallback(
+    (speaker?: string | null) => isTTSSpeakerAmbiguous(speaker, activeCharacterEntries, personaInfo),
+    [activeCharacterEntries, personaInfo],
+  );
+
   const getVoiceRequestsForSegment = useCallback(
     (segment: NarrationSegment): GameSegmentVoiceRequest[] => {
       if (!ttsConfig) return [];
@@ -2515,12 +2635,14 @@ export function GameNarration({
       const requests: GameSegmentVoiceRequest[] = [];
       const baseRequest = getGameSegmentVoiceRequest(segment, ttsConfig, gameNpcs, {
         playerSpeakerNames: playerVoiceSpeakerNames,
+        persona: personaInfo,
+        isAmbiguousSpeaker: isAmbiguousGameSpeaker,
       });
       if (baseRequest) requests.push(baseRequest);
 
       return requests;
     },
-    [gameNpcs, playerVoiceSpeakerNames, ttsConfig],
+    [gameNpcs, isAmbiguousGameSpeaker, personaInfo, playerVoiceSpeakerNames, ttsConfig],
   );
 
   const getVoiceRequestForSideLine = useCallback(
@@ -2540,10 +2662,12 @@ export function GameNarration({
       };
       const request = getGameSegmentVoiceRequest(sideSegment, ttsConfig, gameNpcs, {
         playerSpeakerNames: playerVoiceSpeakerNames,
+        persona: personaInfo,
+        isAmbiguousSpeaker: isAmbiguousGameSpeaker,
       });
       return request ? [request] : [];
     },
-    [gameNpcs, playerVoiceSpeakerNames, ttsConfig],
+    [gameNpcs, isAmbiguousGameSpeaker, personaInfo, playerVoiceSpeakerNames, ttsConfig],
   );
 
   const getVoiceKeyForSegment = useCallback(
@@ -2743,8 +2867,83 @@ export function GameNarration({
   // Build log entries from the LAST scene — includes party chat & player action.
   // Entries are stored chronologically (oldest first, newest last).
   // The modal auto-scrolls to the bottom so the user sees the most recent content.
+  // Past messages do not depend on the reading position, so their finished entries are kept per message
+  // and only a changed message is parsed, edited and run through macros and regex scripts again. Only
+  // the current scene and the party chat are rebuilt as the player steps through it.
+  const [logEntryMemo] = useState(() => new MessageMemo<NarrationMessage, LogEntry | null>());
   const logEntries = useMemo(() => {
-    const entries: Array<{ messageId: string; segments: NarrationSegment[] }> = [];
+    const entries: LogEntry[] = [];
+    const prepareEntry = (msg: NarrationMessage, segments: NarrationSegment[]): LogEntry | null => {
+      if (segments.length === 0) return null;
+      const depth = messageDepthById.get(msg.id);
+      return {
+        messageId: msg.id,
+        segments: segments.map((segment) => prepareDisplaySegmentAt(segment, depth, msg.characterId ?? null)),
+      };
+    };
+    const buildPastEntry = (msg: NarrationMessage): LogEntry | null => {
+      // Include user messages as player dialogue in logs
+      if (msg.role === "user") {
+        const playerName = personaInfo?.name || "You";
+        const color = personaDialogueColor;
+        return prepareEntry(msg, [
+          {
+            id: `${msg.id}-player-log`,
+            type: "dialogue",
+            speaker: playerName,
+            content: msg.content,
+            color,
+            sourceMessageId: msg.id,
+            sourceSegmentIndex: 0,
+            sourceRole: msg.role,
+          },
+        ]);
+      }
+
+      if (msg.role === "system") {
+        return prepareEntry(msg, [
+          {
+            id: `${msg.id}-system-log`,
+            type: "system",
+            content: msg.content,
+            sourceMessageId: msg.id,
+            sourceSegmentIndex: 0,
+            sourceRole: msg.role,
+          },
+        ]);
+      }
+
+      // Past scenes: include ALL segments (narration, dialogue, party chat)
+      const segs = parseNarrationSegments(msg, speakerColors);
+      const skillCheckSegs = formatSkillCheckLogContent(msg, localizeUi);
+      // Apply segment edit overlays
+      if (segmentEdits) {
+        for (let si = 0; si < segs.length; si++) {
+          const edited = segmentEdits.get(`${msg.id}:${si}`);
+          if (edited) segs[si] = applySegmentEditOverlay(segs[si]!, edited, speakerColors);
+        }
+      }
+      const visibleSegs: NarrationSegment[] = [];
+      for (const seg of skillCheckSegs) {
+        visibleSegs.push({ ...seg, sourceMessageId: msg.id, sourceRole: msg.role });
+      }
+      for (let si = 0; si < segs.length; si++) {
+        if (isDeletedSegment(segmentDeletes, msg.id, si)) continue;
+        visibleSegs.push(withSegmentSource(segs[si]!, msg.id, si, msg.role));
+      }
+      return prepareEntry(msg, visibleSegs);
+    };
+
+    logEntryMemo.begin([
+      prepareDisplaySegmentAt,
+      speakerColors,
+      segmentEdits,
+      segmentDeletes,
+      personaInfo,
+      personaDialogueColor,
+      localizeUi,
+      usesDepthRange,
+    ]);
     for (let i = 0; i < messages.length; i++) {
       const msg = messages[i]!;
       if (!isVisibleGameMessage(msg)) continue;
@@ -2762,47 +2961,14 @@ export function GameNarration({
       )
         continue;
 
-      // Include user messages as player dialogue in logs
-      if (showUserMessages && msg.role === "user" && msg.content.trim()) {
+      if (msg.role === "user") {
+        if (!showUserMessages || !msg.content.trim()) continue;
         if (isSyntheticGameStartMessage(msg)) continue;
-        const playerName = personaInfo?.name || "You";
-        const color = personaDialogueColor;
-        entries.push({
-          messageId: msg.id,
-          segments: [
-            {
-              id: `${msg.id}-player-log`,
-              type: "dialogue",
-              speaker: playerName,
-              content: msg.content,
-              color,
-              sourceMessageId: msg.id,
-              sourceSegmentIndex: 0,
-              sourceRole: msg.role,
-            },
-          ],
-        });
+      } else if (msg.role === "system") {
+        if (!msg.content.trim()) continue;
+      } else if (msg.role !== "assistant" && msg.role !== "narrator") {
         continue;
       }
-
-      if (msg.role === "system" && msg.content.trim()) {
-        entries.push({
-          messageId: msg.id,
-          segments: [
-            {
-              id: `${msg.id}-system-log`,
-              type: "system",
-              content: msg.content,
-              sourceMessageId: msg.id,
-              sourceSegmentIndex: 0,
-              sourceRole: msg.role,
-            },
-          ],
-        });
-        continue;
-      }
-
-      if (msg.role !== "assistant" && msg.role !== "narrator") continue;
 
       if (latestAssistant && msg.id === latestAssistant.id) {
         // Current scene: include already-read segments + current active segment
@@ -2838,29 +3004,17 @@ export function GameNarration({
           if (isDeletedSegment(segmentDeletes, msg.id, si)) continue;
           currentSegs.push(withSegmentSource(allSegs[si]!, msg.id, si, msg.role));
         }
-        if (currentSegs.length > 0) entries.push({ messageId: msg.id, segments: currentSegs });
-      } else {
-        // Past scenes: include ALL segments (narration, dialogue, party chat)
-        const segs = parseNarrationSegments(msg, speakerColors);
-        const skillCheckSegs = formatSkillCheckLogContent(msg, localizeUi);
-        // Apply segment edit overlays
-        if (segmentEdits) {
-          for (let si = 0; si < segs.length; si++) {
-            const edited = segmentEdits.get(`${msg.id}:${si}`);
-            if (edited) segs[si] = applySegmentEditOverlay(segs[si]!, edited, speakerColors);
-          }
-        }
-        const visibleSegs: NarrationSegment[] = [];
-        for (const seg of skillCheckSegs) {
-          visibleSegs.push({ ...seg, sourceMessageId: msg.id, sourceRole: msg.role });
-        }
-        for (let si = 0; si < segs.length; si++) {
-          if (isDeletedSegment(segmentDeletes, msg.id, si)) continue;
-          visibleSegs.push(withSegmentSource(segs[si]!, msg.id, si, msg.role));
-        }
-        if (visibleSegs.length > 0) entries.push({ messageId: msg.id, segments: visibleSegs });
+        const entry = prepareEntry(msg, currentSegs);
+        if (entry) entries.push(entry);
+        continue;
       }
+
+      const entry = logEntryMemo.get(msg, usesDepthRange ? [messageDepthById.get(msg.id)] : [], () =>
+        buildPastEntry(msg),
+      );
+      if (entry) entries.push(entry);
     }
+    logEntryMemo.end();
 
     // Append party dialogue lines (separate party-chat call) as their own entry at the end (newest)
     if (partyDialogue?.length || partyChatInput) {
@@ -2960,14 +3114,11 @@ export function GameNarration({
 
       if (visiblePartySegs.length > 0) {
         const pcMsgId = partyChatMessageId ?? "party-chat";
-        entries.push({ messageId: pcMsgId, segments: visiblePartySegs });
+        entries.push({ messageId: pcMsgId, segments: visiblePartySegs.map(prepareDisplaySegment) });
       }
     }
 
-    return entries.map((entry) => ({
-      ...entry,
-      segments: entry.segments.map(prepareDisplaySegment),
-    }));
+    return entries;
   }, [
     messages,
     latestAssistant,
@@ -2982,13 +3133,19 @@ export function GameNarration({
     partyChatMessageId,
     partyDialogue,
     prepareDisplaySegment,
+    prepareDisplaySegmentAt,
+    messageDepthById,
+    usesDepthRange,
+    logEntryMemo,
     segmentEdits,
     segmentDeletes,
     sourceMessagesById,
     doneTyping,
     localizeUi,
   ]);
-  const logPageSize = Math.max(1, messagesPerPage > 0 ? messagesPerPage : logEntries.length || 20);
+  // Messages per page 0 loads a chat's whole history, but a Session Log built on every entry at once
+  // took seconds on a long game. It opens on the newest page; Older, All and scrolling up reach the rest.
+  const logPageSize = Math.max(1, messagesPerPage > 0 ? messagesPerPage : DEFAULT_LOG_PAGE_SIZE);
   const [visibleLogCount, setVisibleLogCount] = useState(logPageSize);
   useEffect(() => {
     if (!logsOpen) return;
@@ -3171,6 +3328,28 @@ export function GameNarration({
     lastReportedSpeakerRef.current = nextKey;
     onActiveSpeakerChange(next);
   }, [active, speakerAvatarInfos, spriteMap, onActiveSpeakerChange]);
+
+  // Avatars show the line on screen with the Game Master's expression for it (not while reviewing past turns).
+  useEffect(() => {
+    if (messageOffset !== 0) return;
+    const key = active ? getVoiceKeyForSegment(active) : null;
+    const entry = key ? gameVoiceCacheRef.current.get(key) : null;
+    publishAvatarGameLine(latestAssistant?.chatId ?? null, active, {
+      expected:
+        gameVoiceEnabled &&
+        !!key &&
+        (entry?.status === "ready" || (!disableVoiceGeneration && entry?.status !== "error")),
+      pending: gameVoiceEnabled && !!key && (!entry || entry.status === "loading") && !disableVoiceGeneration,
+    });
+  }, [
+    active,
+    disableVoiceGeneration,
+    gameVoiceEnabled,
+    gameVoiceVersion,
+    getVoiceKeyForSegment,
+    latestAssistant?.chatId,
+    messageOffset,
+  ]);
 
   // How many segments are prepended before the actual GM narration segments
   const playerSegmentOffset = latestUserMessage?.content && latestAssistant ? 1 : 0;
@@ -3370,6 +3549,7 @@ export function GameNarration({
           if (controller.signal.aborted) break;
           try {
             const blob = await generateGameVoiceJobBlob(job, controller);
+            prepareAvatarAudioBlob(blob);
             blobs.push(blob);
           } catch (err) {
             if (controller.signal.aborted || (err instanceof Error && err.name === "AbortError")) break;
@@ -3390,6 +3570,7 @@ export function GameNarration({
               tone: audioJobs[0]?.tone,
               voice: audioJobs[0]?.voice,
               urls,
+              blobs,
             });
           } else {
             for (const url of urls) URL.revokeObjectURL(url);
@@ -3476,10 +3657,16 @@ export function GameNarration({
   useEffect(() => {
     if (gameVoiceEnabled && !isStreaming && !scenePreparing && !directionsActive && !gameVoicePlaybackBlocked) return;
     if (isStreaming || scenePreparing || directionsActive || gameVoicePlaybackBlocked) {
-      lastAutoPlayedVoiceKeyRef.current = null;
+      if (isStreaming || scenePreparing || directionsActive || gameVoiceExternallyBlocked) {
+        lastAutoPlayedVoiceKeyRef.current = null;
+        autoPlayedSideVoiceKeysRef.current.clear();
+      } else if (gameVoiceAudioRef.current && !gameVoiceAudioRef.current.ended) {
+        // Persona speech only restarts the Game line it actually interrupted.
+        if (lastAutoPlayedVoiceKeyRef.current === gameVoicePlayingKey) lastAutoPlayedVoiceKeyRef.current = null;
+        if (gameVoicePlayingKey) autoPlayedSideVoiceKeysRef.current.delete(gameVoicePlayingKey);
+      }
       autoPlayInFlightVoiceKeyRef.current = null;
       autoPlayInFlightSideVoiceKeysRef.current.clear();
-      autoPlayedSideVoiceKeysRef.current.clear();
       sideVoiceAutoPlayFailuresRef.current.clear();
       clearSideVoiceAutoPlayRetry();
     }
@@ -3488,7 +3675,9 @@ export function GameNarration({
     clearSideVoiceAutoPlayRetry,
     directionsActive,
     gameVoiceEnabled,
+    gameVoiceExternallyBlocked,
     gameVoicePlaybackBlocked,
+    gameVoicePlayingKey,
     isStreaming,
     scenePreparing,
     stopGameVoicePlayback,
@@ -3602,9 +3791,7 @@ export function GameNarration({
       }
       pendingRequests.clear();
       for (const entry of cachedVoices.values()) {
-        if (entry.status === "ready") {
-          for (const url of entry.urls) URL.revokeObjectURL(url);
-        }
+        revokeGameVoiceEntry(entry);
       }
       cachedVoices.clear();
     };
@@ -3636,8 +3823,14 @@ export function GameNarration({
     const TICK_MS = 33; // ~30 fps
     const charsPerTick = Math.max(1, Math.round((cps * TICK_MS) / 1000));
 
+    // Read off the clock as well as counted per tick: a browser slows the timers of a tab it hides
+    // to one a second, and counted alone a turn then took minutes to type out (the 2026-10-23
+    // playtest's fight that waited 6.5 minutes on the narration).
+    const startedAt = performance.now();
+    const from = tw.pos;
     const interval = setInterval(() => {
-      tw.pos = Math.min(dispLen, tw.pos + charsPerTick);
+      const byClock = from + Math.floor((performance.now() - startedAt) / msPerChar);
+      tw.pos = Math.min(dispLen, Math.max(tw.pos + charsPerTick, byClock));
       setVisibleChars(tw.pos);
       if (tw.pos >= dispLen) clearInterval(interval);
     }, TICK_MS);
@@ -3901,7 +4094,7 @@ export function GameNarration({
   const NARRATION_META_BTN =
     "mari-chat-style-control mari-game-meta flex min-h-7 items-center gap-1 rounded-lg border border-[var(--border)] bg-[var(--muted)]/20 px-2.5 py-1 text-xs text-[var(--foreground)]/75 transition-colors hover:bg-[var(--muted)]/40 dark:border-white/10 dark:bg-white/5 dark:text-white/75 dark:hover:bg-white/10";
   const NARRATION_COUNT_BADGE =
-    "absolute -right-1.5 -top-1.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-[var(--foreground)] px-0.5 text-[0.55rem] font-bold text-[var(--background)] ring-1 ring-[var(--background)]/20 dark:bg-white/90 dark:text-black dark:ring-black/20";
+    "absolute -right-1.5 -top-1.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-[var(--foreground)] px-0.5 text-[0.55rem] font-bold text-[var(--background)] ring-1 ring-[var(--background)]/20 [-webkit-text-fill-color:currentColor] dark:bg-white/90 dark:text-black dark:ring-black/20";
   const ACTIVE_SEGMENT_ACTION_BTN =
     "mari-chat-style-control mari-game-active-action inline-flex items-center justify-center rounded p-1 text-[var(--muted-foreground)]/40 transition-colors hover:bg-[var(--muted)]/30 hover:text-[var(--muted-foreground)] dark:text-white/20 dark:hover:bg-white/10 dark:hover:text-white/60";
   const LOG_SEGMENT_ACTION_BTN =
@@ -3950,7 +4143,13 @@ export function GameNarration({
           <span>
             {combatStarting
               ? localizeUi("ui.game.gamenarration.combatStartingPleaseWait")
-              : localizeUi("ui.game.gamenarration.combatGenerationFailed")}
+              : combatGenerationCutOff
+                ? localizeUi("ui.game.gamenarration.combatGenerationCutOff")
+                : combatGenerationReason?.trim()
+                  ? localizeUi("ui.game.gamenarration.combatGenerationFailedWithReason", {
+                      value1: combatGenerationReason.trim(),
+                    })
+                  : localizeUi("ui.game.gamenarration.combatGenerationFailed")}
           </span>
         </span>
         {combatGenerationFailed && onRetryCombatGeneration && (
@@ -4808,7 +5007,7 @@ export function GameNarration({
           <div className="min-w-0 flex-1">
             <div className="flex min-w-0 flex-wrap items-center">
               <span
-                className="min-w-0 truncate text-[0.6875rem] font-bold"
+                className={cn("min-w-0 truncate text-[0.6875rem] font-bold", nameColorClass(seg.speaker))}
                 style={
                   nameColorStyle(findNamedMapValue(speakerNameColors, seg.speaker ?? "") ?? seg.color) ?? {
                     color: "rgb(186 230 253)",
@@ -4830,10 +5029,11 @@ export function GameNarration({
                 className={cn(
                   "mt-0.5 text-xs leading-relaxed text-[var(--foreground)]/80 dark:text-white/80",
                   seg.partyType === "thought" ? "italic opacity-80" : "font-semibold",
+                  dialogueColorClass(seg.color),
                 )}
                 style={seg.color ? { ...narrationFontStyle, color: seg.color } : narrationFontStyle}
                 dangerouslySetInnerHTML={{
-                  __html: animateTextHtml(formatNarration(segmentDisplayContent, false), gameTextEffectsEnabled),
+                  __html: formattedNarrationHtml(segmentDisplayContent, gameTextEffectsEnabled),
                 }}
               />
             )}
@@ -4861,7 +5061,7 @@ export function GameNarration({
               className="whitespace-pre-wrap break-words text-xs leading-relaxed"
               style={narrationFontStyle}
               dangerouslySetInnerHTML={{
-                __html: animateTextHtml(formatNarration(segmentDisplayContent, false), gameTextEffectsEnabled),
+                __html: formattedNarrationHtml(segmentDisplayContent, gameTextEffectsEnabled),
               }}
             />
           )}
@@ -4888,7 +5088,7 @@ export function GameNarration({
               className="text-xs italic leading-relaxed text-amber-200/70"
               style={narrationFontStyle}
               dangerouslySetInnerHTML={{
-                __html: animateTextHtml(formatNarration(segmentDisplayContent, false), gameTextEffectsEnabled),
+                __html: formattedNarrationHtml(segmentDisplayContent, gameTextEffectsEnabled),
               }}
             />
           )}
@@ -4917,7 +5117,7 @@ export function GameNarration({
             className="text-xs leading-relaxed text-[var(--foreground)]/80 dark:text-white/80"
             style={narrationStyle}
             dangerouslySetInnerHTML={{
-              __html: animateTextHtml(formatNarration(segmentDisplayContent, false), gameTextEffectsEnabled),
+              __html: formattedNarrationHtml(segmentDisplayContent, gameTextEffectsEnabled),
             }}
           />
         )}
@@ -4928,7 +5128,12 @@ export function GameNarration({
   };
 
   return (
-    <div className="relative flex min-h-0 flex-1 items-end px-3 pb-[max(0.75rem,var(--mari-safe-area-inset-bottom,env(safe-area-inset-bottom)))] pt-20 md:pt-24 sm:px-6 md:pb-4">
+    <div
+      className={cn(
+        "relative flex min-h-0 flex-1 items-end px-3 pb-[max(0.75rem,var(--mari-safe-area-inset-bottom,env(safe-area-inset-bottom)))] pt-20 md:pt-24 sm:px-6 md:pb-4",
+        passThrough && "pointer-events-none",
+      )}
+    >
       {/* Readability scrim. It darkens the whole scene, not just the panel, so it has to fade
           out with the panel — otherwise collapsing hides the text but keeps the art dimmed. */}
       <div
@@ -4940,9 +5145,17 @@ export function GameNarration({
 
       <div
         data-tour="game-dialogue"
-        className="relative z-10 mx-auto flex h-full max-h-[calc(100svh-7rem)] min-h-0 w-full max-w-4xl flex-col justify-end md:max-h-[calc(100svh-8rem)]"
+        className={cn(
+          "relative z-10 mx-auto flex h-full max-h-[calc(100svh-7rem)] min-h-0 w-full max-w-4xl flex-col justify-end md:max-h-[calc(100svh-8rem)]",
+          passThrough && "pointer-events-none",
+        )}
       >
-        <div className="min-h-0 flex flex-1 flex-col justify-end overflow-hidden">
+        <div
+          className={cn(
+            "min-h-0 flex flex-1 flex-col justify-end overflow-hidden",
+            passThrough && "pointer-events-none [&>*]:pointer-events-auto",
+          )}
+        >
           {/* Stacked mode parks a second log card above the panel, so it collapses with it —
               otherwise "collapse" leaves stacked users looking at most of the same wall of text. */}
           {!effectiveCollapsed &&
@@ -4956,7 +5169,7 @@ export function GameNarration({
               >
                 <div
                   ref={stackedLogRef}
-                  className="flex max-h-[22svh] min-h-0 flex-col gap-1.5 overflow-y-auto pr-1 [overflow-anchor:none] sm:max-h-[26svh] md:max-h-[32svh]"
+                  className="flex max-h-[22svh] min-h-0 flex-col gap-1.5 overflow-y-auto pr-1 [overflow-anchor:none] [overflow-wrap:anywhere] sm:max-h-[26svh] md:max-h-[32svh]"
                   onScroll={(e) => {
                     const el = e.currentTarget;
                     setStackedLogPinned(el.scrollHeight - el.scrollTop - el.clientHeight < 32);
@@ -5080,6 +5293,7 @@ export function GameNarration({
                       line={displayedLine}
                       avatar={charAvatar}
                       color={charColor}
+                      colorClassName={dialogueColorClass(charColor)}
                       nameColor={charNameColor}
                       voiceControl={voiceControl}
                       translation={translationPanel}
@@ -5118,13 +5332,17 @@ export function GameNarration({
             nothing — GameSurface measures its bounding rect and ResizeObserves it to decide
             the HUD widget layout, and a null rect flips that layout to compact. */}
         {effectiveCollapsed ? (
-          collapsedNarrationHandle
+          passThrough ? (
+            <div className="pointer-events-auto contents">{collapsedNarrationHandle}</div>
+          ) : (
+            collapsedNarrationHandle
+          )
         ) : (
           <div
             ref={activePanelRef}
             data-game-skip-bg-nav="true"
             data-component="GameNarration.ActivePanel"
-            className="mari-chat-style-surface mari-game-narration-surface shrink-0 rounded-2xl border border-[var(--border)] bg-[var(--card)]/90 p-3 shadow-[0_16px_38px_rgba(0,0,0,0.45)] backdrop-blur-md dark:border-white/15 dark:bg-black/50"
+            className="pointer-events-auto mari-chat-style-surface mari-game-narration-surface shrink-0 rounded-2xl border border-[var(--border)] bg-[var(--card)]/90 p-3 shadow-[0_16px_38px_rgba(0,0,0,0.45)] backdrop-blur-md dark:border-white/15 dark:bg-black/50"
           >
             {/* Scene preparation gate: wait for effects before showing narration */}
             {scenePreparing && (
@@ -5228,13 +5446,21 @@ export function GameNarration({
                                   }
                                 />
                               ) : (
-                                <img
-                                  src="/npc-silhouette.svg"
-                                  alt={active.speaker || "?"}
-                                  className={cn(
-                                    GAME_DIALOGUE_AVATAR_CLASS,
-                                    "object-cover transition-colors hover:border-white/30",
-                                  )}
+                                <ArtIcon
+                                  kind="portraits"
+                                  ids={[artPortraitFor(active.speaker ?? "", active.sprite)]}
+                                  label={active.speaker || undefined}
+                                  className={GAME_DIALOGUE_AVATAR_CLASS}
+                                  fallback={
+                                    <img
+                                      src="/npc-silhouette.svg"
+                                      alt={active.speaker || "?"}
+                                      className={cn(
+                                        GAME_DIALOGUE_AVATAR_CLASS,
+                                        "object-cover transition-colors hover:border-white/30",
+                                      )}
+                                    />
+                                  }
                                 />
                               )}
                             </button>
@@ -5274,10 +5500,18 @@ export function GameNarration({
                             }
                           />
                         ) : (
-                          <img
-                            src="/npc-silhouette.svg"
-                            alt={active.speaker || "?"}
-                            className={cn(GAME_DIALOGUE_AVATAR_CLASS, "object-cover")}
+                          <ArtIcon
+                            kind="portraits"
+                            ids={[artPortraitFor(active.speaker ?? "", active.sprite)]}
+                            label={active.speaker || undefined}
+                            className={GAME_DIALOGUE_AVATAR_CLASS}
+                            fallback={
+                              <img
+                                src="/npc-silhouette.svg"
+                                alt={active.speaker || "?"}
+                                className={cn(GAME_DIALOGUE_AVATAR_CLASS, "object-cover")}
+                              />
+                            }
                           />
                         )}
                         <ExpressionReaction expression={active.sprite} />
@@ -5286,11 +5520,14 @@ export function GameNarration({
                       {/* Right: Name + Dialogue text */}
                       <div className="flex min-w-0 flex-1 flex-col">
                         <div className="mb-1.5 flex items-center justify-between">
-                          <div className="flex items-center gap-1.5">
+                          <div className="flex min-w-0 items-center gap-1.5">
                             {/* Inert theming hook. The inner span lets a skewed name plate counter-skew its
                               text; unstyled it collapses to plain inline text. */}
                             <span
-                              className="experience-dialogue-speaker text-sm font-bold"
+                              className={cn(
+                                "experience-dialogue-speaker text-sm font-bold [overflow-wrap:anywhere]",
+                                nameColorClass(active.speaker),
+                              )}
                               style={
                                 nameColorStyle(
                                   findNamedMapValue(speakerNameColors, active.speaker ?? "") ?? active.color,
@@ -5352,6 +5589,7 @@ export function GameNarration({
                                 className={cn(
                                   "text-sm leading-relaxed",
                                   active.partyType === "thought" ? "italic opacity-80" : "font-semibold",
+                                  dialogueColorClass(active.color),
                                   doneTyping
                                     ? ""
                                     : "after:ml-0.5 after:inline-block after:h-4 after:w-[1px] after:animate-pulse after:bg-[var(--foreground)]/60 after:align-middle dark:after:bg-white/60",
@@ -5604,14 +5842,18 @@ export function GameNarration({
       {/* Logs modal */}
       {logsOpen && showLogsButton && (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80"
+          className="pointer-events-auto fixed inset-0 z-50 flex items-center justify-center bg-black/80"
           data-game-skip-bg-nav="true"
           role="dialog"
           aria-modal="true"
           {...logsBackdropDismiss}
         >
           <div
-            className="relative mx-4 flex max-h-[80vh] w-full max-w-2xl flex-col rounded-2xl border border-white/15 bg-[var(--card)] shadow-2xl"
+            data-game-section="logs"
+            className={cn(
+              GAME_SECTION_CLASS,
+              "relative mx-4 flex max-h-[80vh] w-full max-w-2xl flex-col rounded-2xl border border-white/15 bg-[var(--card)] shadow-2xl",
+            )}
             onClick={(e) => e.stopPropagation()}
           >
             <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/10 px-4 py-3">
@@ -5638,7 +5880,7 @@ export function GameNarration({
                     <button
                       type="button"
                       onClick={loadOlderLogs}
-                      className="rounded-md border border-white/10 bg-white/5 px-2.5 py-1 text-[0.65rem] font-medium text-white/65 transition-colors hover:bg-white/10 hover:text-white"
+                      className={HISTORY_PAGER_BUTTON_CLASS}
                       title={localizeUi("ui.game.gamenarration.loadOlderLogs")}
                     >
                       {localizeUi("ui.game.gamenarration.older")}
@@ -5647,7 +5889,7 @@ export function GameNarration({
                     <button
                       type="button"
                       onClick={showAllLogs}
-                      className="rounded-md border border-white/10 bg-white/5 px-2.5 py-1 text-[0.65rem] font-medium text-white/65 transition-colors hover:bg-white/10 hover:text-white"
+                      className={HISTORY_PAGER_BUTTON_CLASS}
                       title={localizeUi("ui.game.gamenarration.loadTheEntireSessionLog")}
                     >
                       {localizeUi("ui.noodle.stageprofilesourcepicker.all")}
@@ -5668,7 +5910,7 @@ export function GameNarration({
               </div>
             </div>
             <div
-              className="flex-1 overflow-y-auto px-4 py-3 space-y-4"
+              className="flex-1 overflow-y-auto px-4 py-3 space-y-4 [overflow-wrap:anywhere]"
               onScroll={(e) => {
                 if (hiddenLogCount <= 0) return;
                 if (e.currentTarget.scrollTop <= 8) loadOlderLogs();
@@ -5697,7 +5939,7 @@ export function GameNarration({
                       logScrolledRef.current = true;
                       loadOlderLogs();
                     }}
-                    className="rounded-md border border-white/10 bg-black/55 px-3 py-1.5 text-xs font-medium text-white/70 shadow-lg transition-colors hover:bg-white/10 hover:text-white"
+                    className={HISTORY_PAGER_BUTTON_CLASS}
                   >
                     {localizeUi("ui.game.gamesurfacecomponent.showMoreOlderLogs")}
                     {hiddenLogCount})
@@ -6225,7 +6467,7 @@ export function GameNarration({
                             <div className="min-w-0 flex-1">
                               <div className="flex items-center">
                                 <span
-                                  className="text-[0.6875rem] font-bold"
+                                  className={cn("text-[0.6875rem] font-bold", nameColorClass(seg.speaker))}
                                   style={
                                     nameColorStyle(
                                       findNamedMapValue(speakerNameColors, seg.speaker ?? "") ?? seg.color,
@@ -6247,13 +6489,11 @@ export function GameNarration({
                                   className={cn(
                                     "mt-0.5 text-xs leading-relaxed text-[var(--foreground)]/80 dark:text-white/80",
                                     seg.partyType === "thought" ? "italic opacity-80" : "font-semibold",
+                                    dialogueColorClass(seg.color),
                                   )}
                                   style={seg.color ? { ...narrationFontStyle, color: seg.color } : narrationFontStyle}
                                   dangerouslySetInnerHTML={{
-                                    __html: animateTextHtml(
-                                      formatNarration(segmentDisplayContent, false),
-                                      gameTextEffectsEnabled,
-                                    ),
+                                    __html: formattedNarrationHtml(segmentDisplayContent, gameTextEffectsEnabled),
                                   }}
                                 />
                               )}
@@ -6291,10 +6531,7 @@ export function GameNarration({
                               className="whitespace-pre-wrap break-words pr-6 text-xs leading-relaxed text-[var(--foreground)]/80 dark:text-cyan-50/80"
                               style={narrationFontStyle}
                               dangerouslySetInnerHTML={{
-                                __html: animateTextHtml(
-                                  formatNarration(segmentDisplayContent, false),
-                                  gameTextEffectsEnabled,
-                                ),
+                                __html: formattedNarrationHtml(segmentDisplayContent, gameTextEffectsEnabled),
                               }}
                             />
                           </div>
@@ -6328,10 +6565,7 @@ export function GameNarration({
                                 className="text-xs italic leading-relaxed text-amber-200/70"
                                 style={narrationFontStyle}
                                 dangerouslySetInnerHTML={{
-                                  __html: animateTextHtml(
-                                    formatNarration(segmentDisplayContent, false),
-                                    gameTextEffectsEnabled,
-                                  ),
+                                  __html: formattedNarrationHtml(segmentDisplayContent, gameTextEffectsEnabled),
                                 }}
                               />
                             )}
@@ -6371,10 +6605,7 @@ export function GameNarration({
                               className="text-xs leading-relaxed text-[var(--foreground)]/80 dark:text-white/80"
                               style={narrationStyle}
                               dangerouslySetInnerHTML={{
-                                __html: animateTextHtml(
-                                  formatNarration(segmentDisplayContent, false),
-                                  gameTextEffectsEnabled,
-                                ),
+                                __html: formattedNarrationHtml(segmentDisplayContent, gameTextEffectsEnabled),
                               }}
                             />
                           )}
@@ -6400,125 +6631,6 @@ export function GameNarration({
   );
 }
 
-type TruncationLine = {
-  text: string;
-  originalStart: number;
-  originalEnd: number;
-};
-
-function findReadableBlockEnd(source: string, start: number): number {
-  let depth = 0;
-  for (let i = start; i < source.length; i++) {
-    if (source[i] === "[") depth++;
-    else if (source[i] === "]") {
-      depth--;
-      if (depth === 0) return i;
-    }
-  }
-  return -1;
-}
-
-function splitTextIntoBoundedLines(text: string, originalStart: number): TruncationLine[] {
-  const lines: TruncationLine[] = [];
-  let lineStart = 0;
-
-  for (let i = 0; i <= text.length; i++) {
-    if (i < text.length && text[i] !== "\n") continue;
-    const rawLine = text.slice(lineStart, i);
-    const lineText = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
-    lines.push({
-      text: lineText,
-      originalStart: originalStart + lineStart,
-      originalEnd: originalStart + lineStart + lineText.length,
-    });
-    lineStart = i + 1;
-  }
-
-  return lines;
-}
-
-function splitInlineVnDialogueLineMetadata(line: TruncationLine): TruncationLine[] {
-  const headerRe = /\[[^\]]+\]\s*\[(?:main|side|extra|action|thought|whisper(?::[^\]]+)?)\]\s*(?:\[[^\]]+\])?\s*:/gi;
-  const pieces: TruncationLine[] = [];
-  let chunkStart = 0;
-  let match: RegExpExecArray | null;
-
-  while ((match = headerRe.exec(line.text))) {
-    if (match.index > chunkStart && /\s/.test(line.text[match.index - 1] ?? "")) {
-      pieces.push({
-        text: line.text.slice(chunkStart, match.index),
-        originalStart: line.originalStart + chunkStart,
-        originalEnd: line.originalStart + match.index,
-      });
-      chunkStart = match.index;
-    }
-  }
-  pieces.push({
-    text: line.text.slice(chunkStart),
-    originalStart: line.originalStart + chunkStart,
-    originalEnd: line.originalEnd,
-  });
-
-  return pieces.flatMap((piece) => {
-    const splitRe =
-      /^(\s*\[[^\]]+\]\s*\[(?:main|side|extra|whisper(?::[^\]]+)?)\]\s*(?:\[[^\]]+\])?\s*:\s*(?:"[^"]*"|“[^”]*”|«[^»]*»))\s+(?=\S)/i;
-    const split = splitRe.exec(piece.text);
-    if (!split || split[1].length >= piece.text.length) return [piece];
-
-    const splitAt = split[1].length;
-    return [
-      {
-        text: piece.text.slice(0, splitAt),
-        originalStart: piece.originalStart,
-        originalEnd: piece.originalStart + splitAt,
-      },
-      {
-        text: piece.text.slice(splitAt).trimStart(),
-        originalStart: piece.originalStart + splitAt + (piece.text.slice(splitAt).match(/^\s*/)?.[0].length ?? 0),
-        originalEnd: piece.originalEnd,
-      },
-    ];
-  });
-}
-
-function buildTruncationLines(rawContent: string): TruncationLine[] {
-  const chunks: TruncationLine[] = [];
-  const readableTagRe = /\[(?:Note|Book):/gi;
-  let cursor = 0;
-  let placeholderIndex = 0;
-  let match: RegExpExecArray | null;
-
-  while ((match = readableTagRe.exec(rawContent))) {
-    const start = match.index;
-    const end = findReadableBlockEnd(rawContent, start);
-    if (end < 0) continue;
-
-    if (start > cursor) {
-      chunks.push(...splitTextIntoBoundedLines(rawContent.slice(cursor, start), cursor));
-    }
-    chunks.push({
-      text: `__READABLE_${placeholderIndex}__`,
-      originalStart: start,
-      originalEnd: end + 1,
-    });
-    placeholderIndex += 1;
-    cursor = end + 1;
-    readableTagRe.lastIndex = cursor;
-  }
-
-  if (cursor < rawContent.length) {
-    chunks.push(...splitTextIntoBoundedLines(rawContent.slice(cursor), cursor));
-  }
-
-  return chunks.flatMap((chunk) => {
-    if (/^__READABLE_\d+__$/.test(chunk.text)) return [chunk];
-    return splitInlineVnDialogueLineMetadata(chunk).map((line) => ({
-      ...line,
-      text: stripGmTagsKeepReadables(line.text),
-    }));
-  });
-}
-
 export function parseNarrationSegments(
   message: NarrationMessage,
   speakerColors: Map<string, string>,
@@ -6527,66 +6639,4 @@ export function parseNarrationSegments(
   return parseGameNarrationSegments(message, extractInlineDialogue).map((segment) =>
     segment.speaker ? { ...segment, color: findNamedMapValue(speakerColors, segment.speaker) } : segment,
   );
-}
-
-/**
- * Truncate an assistant message's raw content so that it ends just after the
- * Nth segment (inclusive) that `parseNarrationSegments` would emit. Used by
- * the Interrupt feature so the model on the next turn can't see narration
- * the player never read.
- *
- * The parser-facing text is normalized for segment detection, but the returned
- * string is always a byte-for-byte prefix of the original raw content.
- */
-function truncateMessageContentAtSegment(rawContent: string, segmentIndexInclusive: number): string {
-  if (segmentIndexInclusive < 0) return "";
-
-  const lines = buildTruncationLines(rawContent || "");
-  const readablePlaceholderRe = /^__READABLE_(\d+)__$/;
-  const narrationRegex = /^\s*Narration\s*:\s*(.+)$/i;
-  const legacyDialogueRegex = /^\s*Dialogue\s*\[([^\]]+)\]\s*(?:\[([^\]]+)\])?\s*:\s*(.+)$/i;
-  const compactDialogueRegex = /^\s*\[([^\]]+)\](?:\s*\[[^\]]+\])*?\s*(?:\[([^\]]+)\])?\s*:\s*(.+)$/;
-  const partyLineRegex =
-    /^\s*\[([^\]]+)\]\s*\[(main|side|extra|action|thought|whisper(?::([^\]]+))?)\]\s*(?:\[([^\]]+)\])?\s*:\s*(.+)$/i;
-
-  const target = segmentIndexInclusive + 1;
-  let segmentCount = 0;
-  let pendingFallback = false;
-  let lastIncludedLineIdx = -1;
-
-  for (let i = 0; i < lines.length; i++) {
-    if (segmentCount >= target) break;
-    const line = lines[i]!.text.trim();
-
-    if (!line) {
-      if (pendingFallback) {
-        segmentCount++;
-        pendingFallback = false;
-      }
-      continue;
-    }
-
-    const isSpecial =
-      readablePlaceholderRe.test(line) ||
-      partyLineRegex.test(line) ||
-      narrationRegex.test(line) ||
-      legacyDialogueRegex.test(line) ||
-      compactDialogueRegex.test(line);
-
-    if (isSpecial) {
-      if (pendingFallback) {
-        segmentCount++;
-        pendingFallback = false;
-        if (segmentCount >= target) break;
-      }
-      segmentCount++;
-      lastIncludedLineIdx = i;
-    } else {
-      pendingFallback = true;
-      lastIncludedLineIdx = i;
-    }
-  }
-
-  if (lastIncludedLineIdx < 0) return rawContent;
-  return rawContent.slice(0, lines[lastIncludedLineIdx]!.originalEnd);
 }

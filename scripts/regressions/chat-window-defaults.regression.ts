@@ -19,7 +19,19 @@ process.env.LOG_LEVEL = "silent";
 
 const { default: Fastify } = await import("../../packages/server/node_modules/fastify/fastify.js");
 const { getDB, closeDB } = await import("../../packages/server/src/db/connection.js");
-const { chatsRoutes } = await import("../../packages/server/src/routes/chats.routes.js");
+const { chatsRoutes, withoutPromptOnlyExtra } = await import("../../packages/server/src/routes/chats.routes.js");
+
+// Slice 70: the message list leaves out Mari's prompt-only continuity, string or object extra; nothing else changes.
+{
+  const [asObject, asString, plain] = withoutPromptOnlyExtra([
+    { id: "a", extra: { mariWorkspaceContinuity: "long prompt-only text", thinking: "kept" } },
+    { id: "b", extra: JSON.stringify({ mariWorkspaceContinuity: "x", mariSuggestions: [1] }) },
+    { id: "c", extra: '{"thinking":"kept"}' },
+  ]);
+  assert.deepEqual(asObject!.extra, { thinking: "kept" });
+  assert.deepEqual(JSON.parse(asString!.extra as string), { mariSuggestions: [1] });
+  assert.equal(plain!.extra, '{"thinking":"kept"}', "an extra without it passes through untouched");
+}
 const { chatPresetsRoutes } = await import("../../packages/server/src/routes/chat-presets.routes.js");
 const { appSettingsRoutes } = await import("../../packages/server/src/routes/app-settings.routes.js");
 const { createAppSettingsStorage } = await import("../../packages/server/src/services/storage/app-settings.storage.js");
@@ -98,6 +110,16 @@ try {
     );
   }
 
+  // #8676: the star keeps the Scoped Regex Scripts choice for new chats of its mode; without one they follow the preset.
+  const scopedFavorite = { ...favorite("roleplay"), scopedRegexMode: "exclusive" };
+  assert.equal((await saveDefault("roleplay", scopedFavorite)).statusCode, 200);
+  assert.deepEqual(await readDefault("roleplay"), scopedFavorite);
+  assert.equal((await metadata(await createChat("roleplay"))).scopedRegexMode, "exclusive");
+  assert.equal((await metadata(await createChat("conversation"))).scopedRegexMode, undefined, "only its own mode");
+  assert.equal((await saveDefault("roleplay", { ...favorite("roleplay"), scopedRegexMode: null })).statusCode, 200);
+  assert.deepEqual(await readDefault("roleplay"), favorite("roleplay"), "a preset-following choice is not stored");
+  assert.equal((await metadata(await createChat("roleplay"))).scopedRegexMode, undefined);
+
   const profile = await app.inject({
     method: "POST",
     url: "/api/chat-presets",
@@ -151,6 +173,7 @@ try {
     JSON.stringify({ windowLayout: { version: 2, windows: {} }, chatSettingsHintDismissed: true }),
     JSON.stringify({ windowLayout: { version: 1, windows: [] }, chatSettingsHintDismissed: true }),
     JSON.stringify({ windowLayout: { version: 1, windows: {}, detached: [42] }, chatSettingsHintDismissed: true }),
+    JSON.stringify({ windowLayout: null, chatSettingsHintDismissed: true, scopedRegexMode: "always" }),
   ];
   for (const value of invalidValues) {
     assert.equal(parseChatWindowDefault(value), null);

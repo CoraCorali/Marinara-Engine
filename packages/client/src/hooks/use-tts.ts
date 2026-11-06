@@ -12,11 +12,17 @@ import type {
   TTSSource,
 } from "@marinara-engine/shared";
 import { TTS_API_KEY_MASK } from "@marinara-engine/shared";
+import type { ConnectionModelRow } from "../lib/connection-groups";
+import { voiceRowOf } from "../lib/connection-jobs";
+import { useConnections } from "./use-connections";
 
 const KEYS = {
   config: ["tts", "config"] as const,
-  voices: (source: TTSSource, baseUrl: string) => ["tts", "voices", source, baseUrl] as const,
-  models: (source: TTSSource, baseUrl: string) => ["tts", "models", source, baseUrl] as const,
+  // The Audio connection ID keeps two connections on the same adapter and address apart.
+  voices: (source: TTSSource, baseUrl: string, connectionId: string) =>
+    ["tts", "voices", source, baseUrl, connectionId] as const,
+  models: (source: TTSSource, baseUrl: string, connectionId: string) =>
+    ["tts", "models", source, baseUrl, connectionId] as const,
 };
 
 // ── Config ───────────────────────────────────────
@@ -43,6 +49,28 @@ export function useUpdateTTSConfig() {
   });
 }
 
+/**
+ * Text to speech uses the TTS card's chosen Audio connection before the audio default (tts.routes.ts), so setting
+ * the Voice job moves a card choice along. Returns an undo, or null when the card follows the default already.
+ */
+export function useFollowVoiceJob() {
+  const { data: config } = useTTSConfig();
+  const update = useUpdateTTSConfig();
+  return async (connectionId: string | null) => {
+    const previous = config?.connectionId;
+    if (!config || !previous || previous === connectionId) return null;
+    await update.mutateAsync({ ...config, connectionId: connectionId ?? "" });
+    return () => void update.mutateAsync({ ...config, connectionId: previous }).catch(() => {});
+  };
+}
+
+/** The id of the audio row Text to speech really uses (`voiceRowOf`), for the Voice badge. */
+export function useVoiceRowId() {
+  const { data: tts } = useTTSConfig();
+  const { data: rows } = useConnections();
+  return voiceRowOf((rows ?? []) as ConnectionModelRow[], tts?.connectionId).row?.id ?? null;
+}
+
 /** Sets or clears one character's voice on the server, leaving every other TTS setting as stored. */
 export function useUpdateTTSVoiceAssignment() {
   const qc = useQueryClient();
@@ -63,9 +91,10 @@ export function useUpdateTTSVoiceMode() {
 
 // ── Voices ───────────────────────────────────────
 
-export function useTTSVoices(source: TTSSource, baseUrl: string, enabled: boolean) {
+/** The voices of the card's saved choice: its source settings, or its Audio connection when `connectionId` is set. */
+export function useTTSVoices(source: TTSSource, baseUrl: string, enabled: boolean, connectionId = "") {
   return useQuery({
-    queryKey: KEYS.voices(source, baseUrl),
+    queryKey: KEYS.voices(source, baseUrl, connectionId),
     queryFn: () => api.get<TTSVoicesResponse>("/tts/voices"),
     enabled: enabled && Boolean(baseUrl),
     staleTime: 5 * 60_000,
@@ -73,9 +102,9 @@ export function useTTSVoices(source: TTSSource, baseUrl: string, enabled: boolea
   });
 }
 
-export function useTTSModels(source: TTSSource, baseUrl: string, enabled: boolean) {
+export function useTTSModels(source: TTSSource, baseUrl: string, enabled: boolean, connectionId = "") {
   return useQuery({
-    queryKey: KEYS.models(source, baseUrl),
+    queryKey: KEYS.models(source, baseUrl, connectionId),
     queryFn: () => api.get<TTSModelsResponse>("/tts/models"),
     enabled: enabled && source === "elevenlabs" && Boolean(baseUrl),
     staleTime: 5 * 60_000,

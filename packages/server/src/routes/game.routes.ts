@@ -8,45 +8,140 @@ import {
 import { rejectGenerationOutput, type GenerationOutput } from "./generate/sse.js";
 import { resolveStoredChatOptions, resolveStoredMaxTokens } from "../services/generation/generation-parameters.js";
 import {
+  SYMBOL_DICE_NOTATION_MAX_LENGTH,
+  TTS_SETTINGS_KEY,
   normalizeGameDifficulty,
+  rollDieSecurely,
+  rollSymbolDiceNotation,
   normalizeWeatherType,
   combatWeatherSchema,
   readImageAppearanceOverride,
+  applyRulesetSheetOp,
+  type RulesetLiveStates,
+  type RulesetSheetEnvelope,
+  buildChatImageGenerationRecord,
+  type ChatImageGenerationRecord,
+  type MacroContext,
+} from "@marinara-engine/shared";
+import {
+  gameCardTemperament,
+  checkStoryScript,
+  compileGameWorld,
+  gameStoryFromMetadata,
+  readStoryLedger,
+  storyClocks,
+  experienceTrackHere,
+  storyEndingOf,
+  storyObjectives,
+  storyScriptSchema,
+  gameIntroChoiceSchema,
+  type GameIntro,
+  storyPlaceSeasons,
+  storyState,
+  type StoryScript,
+  worldEditsEmpty,
+  worldEditsVersioned,
+  worldEditIssues,
+  worldTownEditIssues,
+  worldEditsSchema,
+  worldFile,
+  worldKitFile,
+  readWorldKitFile,
+  parseWorldKit,
+  WORLD_STARTER_KITS,
+  WORLD_SHARE_FILE_MAX_BYTES,
+  worldKitArtFamily,
 } from "@marinara-engine/shared";
 import { resolveCombatWeather } from "../services/game/weather.service.js";
-import { resolveGameConnection } from "../services/game/connection.service.js";
+import { resolveGameConnection, type GameChatModel } from "../services/game/connection.service.js";
 import { combatAiHintsSchema, combatTacticsSchema, combatInterruptFields } from "@marinara-engine/shared";
+import { findRulesetCreature, type RulesetCatalogEntriesById } from "@marinara-engine/shared";
+import { loadRulesetCatalogEntries } from "../services/game/ruleset-catalog.service.js";
+import { gameDataEditRequestSchema, type GameDataEditIssue } from "@marinara-engine/shared";
+import { buildGameDataEditPatch, sameGameDataValue } from "../services/game/game-data-edit.service.js";
 // ──────────────────────────────────────────────
 // Routes: Game Mode
 // ──────────────────────────────────────────────
 import type { FastifyInstance, FastifyReply } from "fastify";
+import type { DB } from "../db/connection.js";
+import { validationDetails } from "../middleware/error-handler.js";
 import { createHash, randomInt, randomUUID } from "crypto";
 import { existsSync, readFileSync } from "fs";
 import { basename, extname, join } from "path";
 import { z } from "zod";
+import { partialInput } from "@marinara-engine/shared";
 import { estimateTextTokens, sliceTextToTokenBudget } from "@marinara-engine/shared";
 import { carryGameInventory, rulesetInventedItemRef } from "@marinara-engine/shared";
 import { eq } from "../db/file-query.js";
 import { IMPORTED_GAME_ENGINE_ANCHOR_PREFIX } from "../db/file-backed-store.js";
 import { chats as chatsTable } from "../db/schema/index.js";
-import { logger, logDebugOverride } from "../lib/logger.js";
+import { capabilityPackageManager } from "../services/capability-packages/package-manager.service.js";
+import {
+  checkMapPack,
+  mapPackLockIssue,
+  readMapPack,
+  type MapPack,
+  type MapPackCheckInput,
+} from "../services/game/map-pack.service.js";
+import {
+  companionNames,
+  companionPartyLevel,
+  companionSheetEnvelope,
+  gameCompanionNamed,
+  gameCompanions,
+} from "../services/game/experience-companions.service.js";
+import {
+  editsStoryRefusal,
+  storyNamesOf,
+  worldForEditor,
+  worldPeopleOf,
+  worldTownForEditor,
+  worldInteriorForEditor,
+} from "../services/game/world-editor.service.js";
+import { debugJson, logger, logDebugOverride } from "../lib/logger.js";
+import {
+  buildWorldKitWritingPrompt,
+  readWrittenWorldKit,
+  worldKitRepairPrompt,
+} from "../services/game/world-kit-writer.js";
+import {
+  buildWorldBriefPrompt,
+  buildWorldCanonPrompt,
+  loreBatches,
+  mergeWorldCanon,
+  readWrittenWorldBrief,
+  worldBriefRepairPrompt,
+} from "../services/game/world-brief-writer.js";
 import { registerSequentialGameTasks, retainSequentialGameTask } from "../services/game/sequential-tasks.js";
 import { readImageDimensionsFromFile } from "../utils/image-metadata.js";
-import { createChatsStorage, METADATA_WRITE_ORDINALS_KEY } from "../services/storage/chats.storage.js";
+import {
+  createChatsStorage,
+  METADATA_WRITE_ORDINALS_KEY,
+  withChatMetadataPatchQueue,
+} from "../services/storage/chats.storage.js";
+import { createGameWorldSnapshotsStorage } from "../services/storage/game-world-snapshots.storage.js";
+import { loadGameWorld, saveGameWorldSnapshot } from "../services/game/game-world.service.js";
 import { createConnectionsStorage } from "../services/storage/connections.storage.js";
 import { createCharactersStorage } from "../services/storage/characters.storage.js";
+import { buildFallbackGameCharacterCard } from "../services/game/game-party-cards.js";
+import { withCardTemperament } from "../services/game/party-temperament.service.js";
 import { createCharacterGalleryStorage } from "../services/storage/character-gallery.storage.js";
 import { createPersonaGalleryStorage } from "../services/storage/persona-gallery.storage.js";
 import { createGalleryStorage } from "../services/storage/gallery.storage.js";
 import { createGameSceneVideosStorage } from "../services/storage/game-scene-videos.storage.js";
 import { createGameStoryboardsStorage } from "../services/storage/game-storyboards.storage.js";
-import { createGameStateStorage, parseStoredRulesetLive } from "../services/storage/game-state.storage.js";
+import {
+  createGameStateStorage,
+  parseStoredRulesetLive,
+  parseStoredRulesetClocks,
+} from "../services/storage/game-state.storage.js";
 import {
   createGameEngineStateStorage,
   EXPERIENCE_GAME_TYPE_PREFIX,
 } from "../services/storage/game-engine-state.storage.js";
 import { createSpatialContextStorage } from "../services/storage/spatial-context.storage.js";
 import { formatOwnerSpatialBreadcrumb, resolveOwnerSpatialProjection } from "../services/spatial-context/projection.js";
+import { gameBattlefieldHere } from "../services/game/made-battlefield.service.js";
 import {
   parseStoredSpatialDefinition,
   resolveEffectiveSpatialState,
@@ -66,11 +161,10 @@ import {
   type ChatMessage,
   type ChatOptions,
 } from "../services/llm/base-provider.js";
-import { isDiceNotation, rollDice } from "../services/game/dice.service.js";
+import { isRollableDiceNotation, rollDice, symbolDiceResolution } from "../services/game/dice.service.js";
 import { jsonishLooksTruncated, parseGameJsonish } from "../services/game/jsonish.js";
 import {
   formatInitialGameGmConnectionError,
-  GAME_SETUP_GENERATION_TIMEOUT_MS,
   resolveInitialGameGmConnectionId,
 } from "../services/game/initial-game-setup.js";
 import { validateTransition } from "../services/game/state-machine.service.js";
@@ -85,6 +179,10 @@ import { normalizeNextSessionCampaignPlan, normalizeNextSessionNpcs } from "../s
 import { normalizeCharacterLookupName } from "../services/game/name-normalization.js";
 import {
   buildPromptMacroContext,
+  normalizeChatMacroVariables,
+  resolveCharacterMacroData,
+  resolveMacrosForPreview,
+  scopePromptMacroContextToCharacter,
   resolveMacrosWithVariableSnapshot,
   setLorebookEntryCounts,
 } from "../services/prompt/index.js";
@@ -114,8 +212,10 @@ import {
 } from "../services/game/world-map-mode.js";
 import { resolveCombatRound, type CombatantStats } from "../services/game/combat.service.js";
 import {
+  addMinutes,
   advanceTime,
   formatGameTime,
+  gameTimeMinutes,
   createInitialTime,
   setTimeOfDay,
   type GameTime,
@@ -134,6 +234,9 @@ import {
   sanitizeGameNpcAvatarUrls,
 } from "../services/game/npc-avatar-utils.js";
 import {
+  buildCheckpointGameMetadataRestore,
+  buildCheckpointWorldEditsRestore,
+  readCheckpointCharacterIds,
   createCheckpointService,
   type CapturedEngineState,
   type CheckpointTrigger,
@@ -147,9 +250,11 @@ import { getCustomAgentImportPolicy } from "../services/agents/custom-agent-impo
 import {
   resolveChatSkillCheck,
   SkillCheckDifficultyError,
+  SkillCheckRollerError,
   SkillCheckUntrainedError,
 } from "../services/game/skill-check-resolution.service.js";
 import { applyAllSegmentEdits, stripGmCommandTags } from "../services/game/segment-edits.js";
+import { withoutSessionAdvancedMemory } from "../services/advanced-memory.js";
 import { processLorebooks, type LorebookScanResult } from "../services/lorebook/index.js";
 import {
   GAME_LOREBOOK_KEEPER_SOURCE_ID,
@@ -201,8 +306,81 @@ import {
   normalizeRpgStatPools,
   copyRulesetSheetForGame,
   isCommunityRulesetId,
+  GAME_COMBAT_STYLE_ID_PATTERN,
   rulesetLayerSelectionIssues,
+  rulesetAllowsCombatStyle,
+  rulesetCombatStyles,
   rulesetRefSchema,
+  worldKitSchema,
+  gameWorldKitFromMetadata,
+  gameWorldElementSet,
+  worldElementSetSchema,
+  WORLD_DEFAULT_BATTLEFIELDS,
+  gameWorldBattlefields,
+  worldSceneLike,
+  gameArtFamily,
+  WORLD_ART_FAMILIES,
+  worldAssetsForFamily,
+  gameWorldSchema,
+  gameWorldFromMetadata,
+  worldMadeByThisGenerator,
+  worldFold,
+  worldSnapshot,
+  readWorldSnapshot,
+  gameWorldFromSnapshot,
+  type WorldSnapshot,
+  type WorldKit,
+  lastGamePlace,
+  carryWorldLedger,
+  worldLedgerCarry,
+  worldJournal,
+  worldPlaceInForce,
+  worldPresent,
+  worldOverworldSpot,
+  worldTrip,
+  worldIsSite,
+  worldSettlementOf,
+  worldSeason,
+  worldSiteLocks,
+  worldWalkFromMetadata,
+  worldWalkJoined,
+  worldTown,
+  worldTownDoor,
+  worldTownMinutes,
+  worldTownPath,
+  WORLD_WALK_STEPS_MAX,
+  worldTownSpotFromMetadata,
+  worldTownVisitFromMetadata,
+  dungeonSetFor,
+  dungeonSetForPlace,
+  gameDungeonMapFromPlaceMap,
+  gameDungeonMapSchema,
+  gameDungeonOnWayOut,
+  worldPlaceMap,
+  worldCast,
+  generateDungeonMap,
+  gameDungeonSeed,
+  gameDungeonMapFromDungeon,
+  dungeonFromGameDungeonMap,
+  dungeonPath,
+  dungeonWalkMinutes,
+  gameDungeonMapFromMetadata,
+  gameDungeonWalkFromMetadata,
+  type GameDungeonMap,
+  type GameDungeonWalk,
+  worldInterior,
+  worldPlaceByName,
+  worldAddedPlace,
+  type WorldTownVisit,
+  type GameWorld,
+  type WorldWalk,
+  worldBriefSchema,
+  WORLD_GROUNDINGS,
+  readReputationTags,
+  stripReputationTags,
+  checkWorldBrief,
+  WORLD_GENERATOR_VERSION,
+  worldGeneratorReads,
   RULESET_REF_MAX_OPTIONS,
   type RulesetDefinition,
   type RulesetRef,
@@ -214,10 +392,16 @@ import {
   STORYBOARD_AGENT_ID,
   SPOTIFY_RECENT_TRACK_HISTORY_LIMIT,
   createTacticalCombat,
+  runInitiativeTurns,
   applyTacticalTurn,
   TERRAIN_DATA,
   extractLeadingThinkingBlocks,
   gameInventoryNameKey,
+  createLorebookEntrySchema,
+  experiencePeopleLore,
+  experienceDressedNpc,
+  storyPerson,
+  worldPersonNpc,
   type RPGStatsConfig,
 } from "@marinara-engine/shared";
 import {
@@ -243,11 +427,13 @@ import {
   getChatGenerationTimeoutMs,
   getGameDynamicImagePromptTimeoutMs,
   isDebugAgentsEnabled,
+  isOverworldGamesEnabled,
 } from "../config/runtime-config.js";
 import type {
   GameActiveState,
   GameInitialSetupConnectionSnapshot,
   GameSetupConfig,
+  GameStyle,
   GameCampaignPlan,
   GameMap,
   GameNpc,
@@ -268,6 +454,7 @@ import type {
   HudWidget,
   Combatant,
   TacticalCombatState,
+  TacticalEvent,
   TacticalAction,
   StoryboardAnimationSuitability,
 } from "@marinara-engine/shared";
@@ -297,6 +484,7 @@ import {
   type VideoReferenceImage,
 } from "../services/video/video-generation.js";
 import { resolveGameVideoRuntime, type GameVideoRuntime } from "../services/video/game-video-runtime.js";
+import { toVideoReferenceImage } from "../services/video/chat-video-generation.js";
 import {
   buildStoryboardAnimationRefinementMessages,
   compactStoryboardAnimationPrompt,
@@ -333,6 +521,7 @@ import {
   type PromptOverridesStorage,
 } from "../services/storage/prompt-overrides.storage.js";
 import { createAppSettingsStorage } from "../services/storage/app-settings.storage.js";
+import { gameTtsEmotionIndicatorsEnabled } from "../services/tts-emotion-guidance.js";
 import { applyStoryboardAgentSettings } from "../services/game/storyboard-agent-settings.js";
 import {
   STORYBOARD_FALLBACK_BEAT_MAX_CHARS,
@@ -375,8 +564,15 @@ import {
   getGameSpotifyErrorStatus,
   playGameSpotifyTrack,
 } from "../services/spotify/game-spotify-music.service.js";
-import { loadGameFightItems, loadGameInventoryItemBook } from "../services/game/game-inventory.service.js";
+import {
+  loadGameFightItems,
+  loadGameFightUseEffects,
+  loadGameInventoryItemBook,
+  passGameInventoryTime,
+} from "../services/game/game-inventory.service.js";
+import { gameRepliesBefore, isGameMasterReply } from "../services/game/game-market.service.js";
 import { rollGameFightItemGate } from "../services/game/game-item-use.service.js";
+import { gameSetupBlueprintSchema } from "../services/game/game-setup-blueprint.js";
 import {
   normalizeIllustratorAppearance,
   readIllustratorAppearance,
@@ -454,6 +650,17 @@ type IllustrationCharacterAssetMaps = {
   charReferenceSourceByName: Map<string, "character-sheet" | "avatar" | "sprite">;
   charAvatarByName: Map<string, string>;
   charDescriptionByName: Map<string, string>;
+  /**
+   * Reference image (base64) or avatar path -> "character:<id>" / "persona:<id>", keyed by the image itself
+   * so a fuzzy name match records whoever owns the image that was actually sent (#7767).
+   */
+  charOwnerByReference: Map<string, ReferenceOwner>;
+};
+
+type ReferenceOwner = {
+  kind: "character" | "persona";
+  id: string;
+  source: "character-sheet" | "avatar" | "sprite";
 };
 
 type IllustrationCharacterAssetDetail = {
@@ -469,6 +676,9 @@ type IllustrationCharacterAssets = {
   referenceDetails: IllustrationCharacterAssetDetail[];
   maxReferenceImages: number;
   requestedNames: string[];
+  referenceCharacterIds: string[];
+  referencePersonaId: string | null;
+  referencePersonaSource: ReferenceOwner["source"] | null;
 };
 
 type StoryboardCharacterContext = IllustrationCharacterAssetMaps & {
@@ -483,7 +693,13 @@ function emptyIllustrationCharacterAssetMaps(): IllustrationCharacterAssetMaps {
     charReferenceSourceByName: new Map<string, "character-sheet" | "avatar" | "sprite">(),
     charAvatarByName: new Map<string, string>(),
     charDescriptionByName: new Map<string, string>(),
+    charOwnerByReference: new Map<string, ReferenceOwner>(),
   };
+}
+
+function addReferenceOwner(maps: IllustrationCharacterAssetMaps, reference: string, owner: ReferenceOwner): void {
+  // First owner wins: two cards sharing one image can't be told apart, and either re-reads the same picture.
+  if (!maps.charOwnerByReference.has(reference)) maps.charOwnerByReference.set(reference, owner);
 }
 
 function addUniqueCharacterName(target: string[], seen: Set<string>, name: unknown): void {
@@ -499,10 +715,66 @@ function readStringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.map((item) => (typeof item === "string" ? item.trim() : "")).filter(Boolean) : [];
 }
 
+type IllustrationAppearanceResolver = (appearance: string, characterId?: string) => Promise<string>;
+
+/** Resolve selected image text in its owner's chat scope without persisting macro writes. */
+function createIllustrationAppearanceResolver(args: {
+  db: DB;
+  chat: { id: string; characterIds?: unknown; personaId?: string | null };
+  meta: Record<string, unknown>;
+  setupConfig: Record<string, unknown> | null;
+  worldState?: MacroContext["worldState"];
+}): IllustrationAppearanceResolver {
+  const characters = createCharactersStorage(args.db);
+  const partyIds = getStoryboardLibraryCharacterIds(
+    args.meta,
+    args.setupConfig,
+    parseChatCharacterIds(args.chat.characterIds),
+  );
+  const personaId = args.chat.personaId || readTrimmedString(args.setupConfig?.personaId);
+  let personaPromise: ReturnType<typeof characters.getPersona> | undefined;
+  return async (appearance, characterId) => {
+    if (!appearance.includes("{{")) return appearance;
+    personaPromise ??= personaId ? characters.getPersona(personaId, args.chat.id) : Promise.resolve(null);
+    const persona = await personaPromise;
+    const owner = characterId
+      ? (await resolveCharacterMacroData(args.db, [characterId], args.chat.id)).profilesById.get(characterId)
+      : undefined;
+    // A removed or unreadable card must not borrow the first party member's fields.
+    if (characterId && !owner) return "";
+    // ponytail: macro-heavy libraries rebuild party context per card; cache those reads if profiling requires it.
+    const macroContext = await buildPromptMacroContext({
+      db: args.db,
+      chatId: args.chat.id,
+      worldState: args.worldState,
+      characterIds: partyIds,
+      personaName: persona?.name ?? "User",
+      personaDescription: persona?.description ?? "",
+      personaFields: {
+        example: persona?.mes_example ?? "",
+        personality: persona?.personality ?? "",
+        backstory: persona?.backstory ?? "",
+        appearance: persona?.appearance ?? "",
+        scenario: persona?.scenario ?? "",
+      },
+      localVariables: normalizeChatMacroVariables(args.meta.macroVariables),
+      macroSources: [
+        appearance,
+        ...Object.values(owner ?? {}).filter((value): value is string => typeof value === "string"),
+      ],
+    });
+    return resolveMacrosForPreview(
+      appearance,
+      owner ? { ...scopePromptMacroContextToCharacter(macroContext, owner), characterProfiles: [owner] } : macroContext,
+    );
+  };
+}
+
 async function addCharacterRowIllustrationAssets(
   maps: IllustrationCharacterAssetMaps,
   character: { id: string; data: string; avatarPath?: string | null },
   characterGallery: ReturnType<typeof createCharacterGalleryStorage>,
+  resolveAppearance?: IllustrationAppearanceResolver,
 ): Promise<string | null> {
   try {
     const parsed = JSON.parse(character.data) as Record<string, unknown> & { name?: string };
@@ -524,10 +796,21 @@ async function addCharacterRowIllustrationAssets(
     if (preferredReference) {
       addNameLookupEntry(maps.charReferenceByName, name, preferredReference.base64);
       addNameLookupEntry(maps.charReferenceSourceByName, name, preferredReference.source);
+      addReferenceOwner(maps, preferredReference.base64, {
+        kind: "character",
+        id: character.id,
+        source: preferredReference.source,
+      });
     }
-    if (character.avatarPath) addNameLookupEntry(maps.charAvatarByName, name, character.avatarPath);
+    if (character.avatarPath) {
+      addNameLookupEntry(maps.charAvatarByName, name, character.avatarPath);
+      addReferenceOwner(maps, character.avatarPath, { kind: "character", id: character.id, source: "avatar" });
+    }
 
-    const appearanceText = extractCharacterAppearanceText(parsed);
+    const selectedAppearance = extractCharacterAppearanceText(parsed);
+    const appearanceText = resolveAppearance
+      ? await resolveAppearance(selectedAppearance, character.id)
+      : selectedAppearance;
     if (appearanceText) addNameLookupEntry(maps.charDescriptionByName, name, appearanceText);
     return name;
   } catch {
@@ -539,12 +822,13 @@ async function addCharacterRowsIllustrationAssets(
   maps: IllustrationCharacterAssetMaps,
   characters: Array<{ id: string; data: string; avatarPath?: string | null }>,
   characterGallery: ReturnType<typeof createCharacterGalleryStorage>,
+  resolveAppearance?: IllustrationAppearanceResolver,
 ): Promise<void> {
   let nextIndex = 0;
   const runWorker = async () => {
     while (nextIndex < characters.length) {
       const character = characters[nextIndex++];
-      if (character) await addCharacterRowIllustrationAssets(maps, character, characterGallery);
+      if (character) await addCharacterRowIllustrationAssets(maps, character, characterGallery, resolveAppearance);
     }
   };
   const workerCount = Math.min(GAME_ASSET_REFERENCE_LOOKUP_CONCURRENCY, characters.length);
@@ -568,6 +852,7 @@ export async function addPersonaIllustrationAssets(
     | null
     | undefined,
   personaGallery: ReturnType<typeof createPersonaGalleryStorage>,
+  resolveAppearance?: IllustrationAppearanceResolver,
 ): Promise<string | null> {
   const name = typeof persona?.name === "string" && persona.name.trim() ? persona.name.trim() : null;
   if (!persona || !name) return null;
@@ -583,19 +868,28 @@ export async function addPersonaIllustrationAssets(
   if (preferredReference) {
     addNameLookupEntry(maps.charReferenceByName, name, preferredReference.base64);
     addNameLookupEntry(maps.charReferenceSourceByName, name, preferredReference.source);
+    addReferenceOwner(maps, preferredReference.base64, {
+      kind: "persona",
+      id: persona.id,
+      source: preferredReference.source,
+    });
   }
-  if (persona.avatarPath) addNameLookupEntry(maps.charAvatarByName, name, persona.avatarPath);
+  if (persona.avatarPath) {
+    addNameLookupEntry(maps.charAvatarByName, name, persona.avatarPath);
+    addReferenceOwner(maps, persona.avatarPath, { kind: "persona", id: persona.id, source: "avatar" });
+  }
 
   // #7053: the persona row carries the image-prompt override as TOP-LEVEL text
   // columns (no extensions bag), so feed them through the shared helper. Without
   // this the override reached conversation image prompts but not Game mode.
-  const appearanceText = readImageAppearanceOverride(
+  const selectedAppearance = readImageAppearanceOverride(
     {
       imageAppearanceEnabled: persona.imageAppearanceEnabled === "true",
       imageAppearance: persona.imageAppearance,
     },
     normalizeIllustratorAppearance(persona.appearance),
   );
+  const appearanceText = resolveAppearance ? await resolveAppearance(selectedAppearance ?? "") : selectedAppearance;
   if (appearanceText) addNameLookupEntry(maps.charDescriptionByName, name, appearanceText);
   return name;
 }
@@ -612,14 +906,15 @@ export async function addChatPersonaIllustrationAssets(args: {
   maps: IllustrationCharacterAssetMaps;
   characters: ReturnType<typeof createCharactersStorage>;
   personaGallery: ReturnType<typeof createPersonaGalleryStorage>;
-  chat: { personaId?: string | null } | null | undefined;
+  chat: { id?: string; personaId?: string | null } | null | undefined;
   setupConfig: Record<string, unknown> | null | undefined;
+  resolveAppearance?: IllustrationAppearanceResolver;
 }): Promise<string | null> {
   const personaId = args.chat?.personaId || readTrimmedString(args.setupConfig?.personaId);
   if (!personaId) return null;
   try {
-    const persona = await args.characters.getPersona(personaId);
-    return await addPersonaIllustrationAssets(args.maps, persona, args.personaGallery);
+    const persona = await args.characters.getPersona(personaId, args.chat?.id);
+    return await addPersonaIllustrationAssets(args.maps, persona, args.personaGallery, args.resolveAppearance);
   } catch {
     // An unresolvable persona must not break illustration generation.
     return null;
@@ -656,8 +951,9 @@ function storyboardTrackedNpcsFromState(latestState: unknown): Array<Record<stri
 }
 
 async function buildStoryboardCharacterContext(args: {
+  db: DB;
   characters: ReturnType<typeof createCharactersStorage>;
-  chat: { characterIds?: unknown; personaId?: string | null };
+  chat: { id: string; characterIds?: unknown; personaId?: string | null };
   meta: Record<string, unknown>;
   setupConfig: Record<string, unknown> | null;
   latestState: unknown;
@@ -665,6 +961,10 @@ async function buildStoryboardCharacterContext(args: {
   personaGallery: ReturnType<typeof createPersonaGalleryStorage>;
 }): Promise<StoryboardCharacterContext> {
   const maps = emptyIllustrationCharacterAssetMaps();
+  const resolveAppearance = createIllustrationAppearanceResolver({
+    ...args,
+    worldState: args.latestState == null ? null : asStoryboardRecord(args.latestState),
+  });
   const allowedCharacterNames: string[] = [];
   const seenAllowedNames = new Set<string>();
   const chatCharacterIds = parseChatCharacterIds(args.chat.characterIds);
@@ -673,9 +973,9 @@ async function buildStoryboardCharacterContext(args: {
 
   for (const id of libraryCharacterIds) {
     try {
-      const character = await args.characters.getById(id);
+      const character = await args.characters.getById(id, args.chat.id);
       if (!character) continue;
-      const name = await addCharacterRowIllustrationAssets(maps, character, args.characterGallery);
+      const name = await addCharacterRowIllustrationAssets(maps, character, args.characterGallery, resolveAppearance);
       addUniqueCharacterName(allowedCharacterNames, seenAllowedNames, name);
     } catch {
       /* skip unresolvable game character */
@@ -685,8 +985,8 @@ async function buildStoryboardCharacterContext(args: {
   const personaId = args.chat.personaId || readTrimmedString(args.setupConfig?.personaId);
   if (personaId) {
     try {
-      const persona = await args.characters.getPersona(personaId);
-      const name = await addPersonaIllustrationAssets(maps, persona, args.personaGallery);
+      const persona = await args.characters.getPersona(personaId, args.chat?.id);
+      const name = await addPersonaIllustrationAssets(maps, persona, args.personaGallery, resolveAppearance);
       personaName = name;
       addUniqueCharacterName(allowedCharacterNames, seenAllowedNames, name);
     } catch {
@@ -728,6 +1028,7 @@ function collectIllustrationCharacterAssets(opts: {
   charReferenceSourceByName: Map<string, "character-sheet" | "avatar" | "sprite">;
   charAvatarByName: Map<string, string>;
   charDescriptionByName: Map<string, string>;
+  charOwnerByReference?: Map<string, ReferenceOwner>;
   includeReferenceImages?: boolean;
   includeCharacterDescriptions?: boolean;
   maxReferenceImages?: number;
@@ -764,6 +1065,18 @@ function collectIllustrationCharacterAssets(opts: {
   const referenceDetails: IllustrationCharacterAssetDetail[] = [];
   const seen = new Set<string>();
   const described = new Set<string>();
+  const referenceCharacterIds: string[] = [];
+  let referencePersonaId: string | null = null;
+  let referencePersonaSource: ReferenceOwner["source"] | null = null;
+  // Only library characters and the persona can be re-read later; NPC avatars are not recorded.
+  const recordReferenceOwner = (reference: string) => {
+    const owner = opts.charOwnerByReference?.get(reference);
+    if (owner?.kind === "character") referenceCharacterIds.push(owner.id);
+    else if (owner?.kind === "persona" && !referencePersonaId) {
+      referencePersonaId = owner.id;
+      referencePersonaSource = owner.source;
+    }
+  };
   const includeReferenceImages = opts.includeReferenceImages !== false;
   const includeCharacterDescriptions = opts.includeCharacterDescriptions !== false;
   for (const name of uniqueNames) {
@@ -775,6 +1088,7 @@ function collectIllustrationCharacterAssets(opts: {
         seen.add(preferredReference);
         references.push(preferredReference);
         referenceAttached = true;
+        recordReferenceOwner(preferredReference);
         const storedReferenceSource = findCharAvatarFuzzy(name, opts.charReferenceSourceByName);
         referenceSource =
           storedReferenceSource === "character-sheet" || storedReferenceSource === "avatar"
@@ -789,6 +1103,7 @@ function collectIllustrationCharacterAssets(opts: {
           references.push(base64);
           referenceAttached = true;
           referenceSource = "avatar";
+          recordReferenceOwner(avatarPath);
         }
       }
     }
@@ -816,6 +1131,9 @@ function collectIllustrationCharacterAssets(opts: {
     referenceDetails,
     maxReferenceImages,
     requestedNames: uniqueNames,
+    referenceCharacterIds: Array.from(new Set(referenceCharacterIds)),
+    referencePersonaId,
+    referencePersonaSource,
   };
 }
 
@@ -862,16 +1180,28 @@ function formatIllustrationAssetDebug(assets: IllustrationCharacterAssets): stri
     .join(", ");
 }
 
-function generatedBackgroundSlug(value: string): string {
+// A full tag such as backgrounds:wuxia:teahouse names an existing background: every art family's
+// folder, and the game's own family when its kit names one, is stripped like the folders before it,
+// so its slug is never doubled.
+const GENERATED_BACKGROUND_PREFIX = new RegExp(
+  `^(?:backgrounds|${WORLD_ART_FAMILIES.map((family) => family.replace(/_/g, "-")).join("|")}|user|generated|illustrations|q-[a-z0-9]{6,})-+`,
+);
+
+function generatedBackgroundSlug(value: string, family?: string): string {
+  const ownFamily = family
+    ?.toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
   let slug = value
     .trim()
     .toLowerCase()
     .replace(/:/g, "-")
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
-  const prefixPattern = /^(?:backgrounds|fantasy|modern|scifi|user|generated|illustrations|q-[a-z0-9]{6,})-+/;
-  while (prefixPattern.test(slug)) {
-    slug = slug.replace(prefixPattern, "");
+  for (;;) {
+    if (GENERATED_BACKGROUND_PREFIX.test(slug)) slug = slug.replace(GENERATED_BACKGROUND_PREFIX, "");
+    else if (ownFamily && slug.startsWith(`${ownFamily}-`)) slug = slug.slice(ownFamily.length + 1);
+    else break;
   }
   return slug || "scene";
 }
@@ -1121,7 +1451,7 @@ async function summarizeIllustrationFromNarration(args: {
     const { conn, baseUrl, defaultGenerationParameters } = await resolveConnection(
       args.connections,
       sceneConnId,
-      args.chat.connectionId,
+      args.chat,
     );
     const parameters = resolveStoredGameGenerationParameters(args.meta, defaultGenerationParameters, {
       includeChatParameters: inheritsChatGenerationParameters({
@@ -1154,7 +1484,7 @@ async function summarizeIllustrationFromNarration(args: {
       narration.length,
       args.illustration.prompt.length,
     );
-    args.debugLog?.("[debug/game/illustration-summarizer] prompt messages:\n%s", JSON.stringify(messages, null, 2));
+    args.debugLog?.("[debug/game/illustration-summarizer] prompt messages:\n%s", debugJson(messages));
 
     const result = await runGameChatComplete(
       provider,
@@ -1202,14 +1532,14 @@ function gameDynamicImagePromptKindLabel(kind: GameDynamicImagePromptKind): stri
   }
 }
 
-function compactDynamicPromptText(value: unknown, maxLength: number): string {
+function compactDynamicPromptText(value: unknown, maxLength?: number): string {
   if (typeof value !== "string") return "";
-  return value
+  const clean = value
     .replace(/\r\n/g, "\n")
     .replace(/\n{3,}/g, "\n\n")
     .replace(/\s+$/gm, "")
-    .trim()
-    .slice(0, maxLength);
+    .trim();
+  return maxLength === undefined ? clean : clean.slice(0, maxLength);
 }
 
 function compactDynamicPromptLine(value: unknown, maxLength = 500): string {
@@ -1224,7 +1554,7 @@ function dynamicPromptBlock(tag: string, lines: string[]): string {
   return clean.length ? `<${tag}>\n${clean.join("\n")}\n</${tag}>` : "";
 }
 
-function sanitizeDynamicGameImagePromptResponse(raw: string, maxCharacters: number): string | null {
+export function sanitizeDynamicGameImagePromptResponse(raw: string): string | null {
   const stripped = raw
     .trim()
     .replace(/^```(?:json|text)?/i, "")
@@ -1241,9 +1571,9 @@ function sanitizeDynamicGameImagePromptResponse(raw: string, maxCharacters: numb
       parsedObject = true;
       const record = parsed as Record<string, unknown>;
       candidate =
-        compactDynamicPromptText(record.prompt, maxCharacters) ||
-        compactDynamicPromptText(record.positivePrompt, maxCharacters) ||
-        compactDynamicPromptText(record.imagePrompt, maxCharacters);
+        compactDynamicPromptText(record.prompt) ||
+        compactDynamicPromptText(record.positivePrompt) ||
+        compactDynamicPromptText(record.imagePrompt);
     }
   } catch {
     const promptMatch = stripped.match(
@@ -1254,12 +1584,12 @@ function sanitizeDynamicGameImagePromptResponse(raw: string, maxCharacters: numb
 
   if (parsedObject && !candidate) return null;
 
-  candidate = compactDynamicPromptText(candidate || stripped, maxCharacters)
+  candidate = compactDynamicPromptText(candidate || stripped)
     .replace(/^(?:positive\s+prompt|prompt|image\s+prompt)\s*:\s*/i, "")
     .trim();
 
   if (candidate.length < 20) return null;
-  return candidate.slice(0, maxCharacters).trim() || null;
+  return candidate;
 }
 
 export async function buildDynamicGameImagePromptMessages(args: {
@@ -1340,7 +1670,6 @@ export async function buildDynamicGameImagePromptMessages(args: {
           latestTurnBlock
             ? "Treat the latest GM turn as the primary source for the visible environment. Use the draft prompt only as supporting context, and keep the result background-only."
             : "",
-          `Maximum length: ${args.request.maxCharacters} characters.`,
         ]
           .filter(Boolean)
           .join("\n"),
@@ -1485,7 +1814,7 @@ async function createDynamicGameImagePromptGenerator(args: {
         request.sourcePrompt.length,
         request.maxCharacters,
       );
-      args.debugLog?.("[debug/game/dynamic-image-prompt] prompt messages:\n%s", JSON.stringify(messages, null, 2));
+      args.debugLog?.("[debug/game/dynamic-image-prompt] prompt messages:\n%s", debugJson(messages));
 
       const result = await runGameChatComplete(
         provider,
@@ -1502,7 +1831,7 @@ async function createDynamicGameImagePromptGenerator(args: {
       const extraction = extractLeadingThinkingBlocks(result.content || "", parameters?.customThinkingTags);
       const raw = extraction.content.trim();
       args.debugLog?.("[debug/game/dynamic-image-prompt] raw response kind=%s:\n%s", request.kind, raw);
-      const prompt = sanitizeDynamicGameImagePromptResponse(raw, request.maxCharacters);
+      const prompt = sanitizeDynamicGameImagePromptResponse(raw);
       if (prompt) {
         args.debugLog?.(
           "[debug/game/dynamic-image-prompt] selected prompt kind=%s chars=%d:\n%s",
@@ -1541,6 +1870,8 @@ async function addGeneratedIllustrationToGallery(opts: {
   illustration: SceneIllustrationRequest;
   model: string;
   prompt?: string | null;
+  /** Game NPC portraits are not recorded as references; library characters, persona and location are. */
+  generation?: ChatImageGenerationRecord | null;
 }): Promise<ChatGalleryImageRow | null> {
   const prefix = "backgrounds:illustrations:";
   if (!opts.tag.startsWith(prefix)) return null;
@@ -1570,6 +1901,7 @@ async function addGeneratedIllustrationToGallery(opts: {
       provider: "game_scene_illustration",
       model: opts.model || "unknown",
       ...(dimensions ?? {}),
+      generation: opts.generation ?? null,
     });
   } catch (err) {
     opts.app.log.warn({ err, chatId: opts.chatId, tag: opts.tag }, "Failed to add game illustration to gallery");
@@ -1622,17 +1954,8 @@ function resolveGeneratedIllustrationAssetPath(tag: unknown): string | null {
   );
 }
 
-function imageMimeTypeForPath(path: string): VideoReferenceImage["mimeType"] | null {
-  const ext = extname(path).toLowerCase();
-  if (ext === ".png") return "image/png";
-  if (ext === ".jpg" || ext === ".jpeg") return "image/jpeg";
-  return null;
-}
-
-function readOmniReferenceImage(path: string, url?: string | null): VideoReferenceImage {
-  const mimeType = imageMimeTypeForPath(path);
-  if (!mimeType) throw new Error("Scene videos require a PNG or JPEG scene illustration");
-  return { base64: readFileSync(path).toString("base64"), mimeType, url };
+async function readOmniReferenceImage(path: string, url?: string | null): Promise<VideoReferenceImage> {
+  return toVideoReferenceImage(readFileSync(path).toString("base64"), url);
 }
 
 function titleCaseSlug(value: string): string {
@@ -1856,18 +2179,32 @@ const hudWidgetSchema = z.object({
   icon: z.string().trim().max(16).optional(),
   position: z.enum(["hud_left", "hud_right"]),
   accent: z.string().trim().max(32).optional(),
-  config: z.record(z.unknown()).default({}),
+  config: z.record(z.string(), z.unknown()).prefault({}),
 });
+
+/**
+ * A combat style: a built-in one or the id of a style a client registered (issue #8109). The server
+ * cannot know a client's registrations, so it checks the shape only; a client plays an id it does not
+ * know as classic, and so does the server's own prompting.
+ */
+const gameCombatStyleIdSchema = z.string().regex(GAME_COMBAT_STYLE_ID_PATTERN);
 
 const gameSetupConfigSchema = z.object({
   genre: z.string().min(1).max(200),
   setting: z.string().min(1),
   tone: z.string().min(1).max(200),
   difficulty: z.string().min(1).max(100).transform(normalizeGameDifficulty),
-  combatStyle: z.enum(["classic", "tactical"]).optional(),
+  gameStyle: z.enum(["classic", "overworld"]).optional(),
+  /** The Game Master's intro message (1.339). */
+  gameIntro: gameIntroChoiceSchema.optional(),
+  combatStyle: gameCombatStyleIdSchema.optional(),
   combatDirector: z.boolean().optional(),
   gmBossControl: z.boolean().optional(),
+  gmNamedControl: z.boolean().optional(),
+  cruelOpponents: z.boolean().optional(),
+  playerRunsCompanions: z.boolean().optional(),
   tacticalBattlefield: tacticalBattlefieldSetupSchema.optional(),
+  tacticalTurnOrder: z.enum(["side", "initiative"]).optional(),
   spatialMapInstructions: z.string().max(4000).optional(),
   gameWorldMapMode: z.enum(["standard", "hierarchical"]).optional(),
   spatialMapDraftSize: z.enum(["small", "medium", "large"]).optional(),
@@ -1890,6 +2227,13 @@ const gameSetupConfigSchema = z.object({
       message: `A ruleset choice carries at most ${RULESET_REF_MAX_OPTIONS} options`,
     })
     .optional(),
+  worldKit: worldKitSchema.optional(),
+  world: gameWorldSchema.optional(),
+  /** The world as it was made (W11), for a world another generator made: checked whole when read, kept
+   *  as the game's snapshot, and never stored in the game's metadata. */
+  worldSnapshot: z.unknown().optional(),
+  /** The world's story script (worldgen W10): read here, checked against the world once it is read. */
+  story: storyScriptSchema.optional(),
   /** Opaque config owned by that experience — persisted verbatim, never read by the host. */
   experienceConfig: z
     .record(z.string().max(120), z.unknown())
@@ -1937,7 +2281,7 @@ const gameSetupConfigSchema = z.object({
   language: z.string().min(1).max(100).optional(),
   autoTranslate: z.boolean().optional(),
   translationOutputTargetLang: z.string().trim().min(1).max(100).optional(),
-  generationParameters: generationParametersSchema.partial().optional(),
+  generationParameters: partialInput(generationParametersSchema).optional(),
   promptPresetId: z.string().nullable().optional(),
   gameSystemPrompt: z.string().max(50_000).nullable().optional(),
   gameSpecialInstructions: z.string().max(2000).nullable().optional(),
@@ -2016,7 +2360,14 @@ const jsonRepairApplySchema = z.object({
 const recruitPartyMemberSchema = z.object({
   chatId: z.string().min(1),
   characterName: z.string().min(1).max(200),
+  /** The player's pick when several characters share the name: a library card id, or null for the game's own. */
+  characterId: z.string().min(1).max(500).nullable().optional(),
   connectionId: z.string().optional(),
+  /** A copy of this party member joins instead (5e's Simulacrum): their card and sheet, under the new name;
+   *  or, naming none, a copy of a creature of the ruleset's bestiaries, fighting as that creature. */
+  copyOf: z.string().min(1).max(200).optional(),
+  /** A condition of the pinned ruleset the copy holds from the start: Simulacrum's halved health. */
+  condition: z.string().min(1).max(80).optional(),
 });
 
 const regenerateCharacterSheetSchema = z.object({
@@ -2033,14 +2384,61 @@ const removePartyMemberSchema = z.object({
 });
 
 const diceRollSchema = z.object({
-  chatId: z.string().min(1),
-  notation: z.string().min(1).max(50).refine(isDiceNotation, "Invalid dice notation"),
+  /** The game it is rolled for; a sheet editor outside any game (a rolled list column) has none. */
+  chatId: z.string().min(1).optional(),
+  /** NdM or a keep/drop pool; in a game whose ruleset throws symbol dice, also those dice by name. */
+  notation: z.string().trim().min(1).max(SYMBOL_DICE_NOTATION_MAX_LENGTH),
   context: z.string().max(500).optional(),
 });
 
 const stateTransitionSchema = z.object({
   chatId: z.string().min(1),
   newState: z.enum(["exploration", "dialogue", "combat", "travel_rest"]),
+});
+
+const worldKitWriteSchema = z.object({
+  connectionId: z.string().min(1).optional(),
+  genre: z.string().min(1).max(200),
+  // As long as a game's own setting may be (`gameSetupConfigSchema`), so a setting the game accepts
+  // is never refused here.
+  setting: z.string().min(1),
+  tone: z.string().min(1).max(200),
+  /** The kit the player has chosen so far, written over to fit their setting. */
+  start: worldKitSchema.optional(),
+  language: z.string().max(100).optional(),
+  /** The generation settings the game's setup chose (its reasoning effort among them), over the connection's
+   *  own (cheap-GM playtest 2026-10-26: a world written at the connection's maximum effort, not the Medium
+   *  the wizard was set to, stalled the game). */
+  generationParameters: z.unknown().optional(),
+  debugMode: z.boolean().optional(),
+});
+
+const worldBriefWriteSchema = z.object({
+  connectionId: z.string().min(1).optional(),
+  kit: worldKitSchema,
+  genre: z.string().min(1).max(200),
+  setting: z.string().min(1),
+  tone: z.string().min(1).max(200),
+  playerGoals: z.string().max(2000).optional(),
+  language: z.string().max(100).optional(),
+  /** Places read from the player's lore (`/game/world-canon`), kept exactly. */
+  canon: worldBriefSchema.shape.places.optional(),
+  /** Dated events read from the player's lore, kept exactly. */
+  canonEvents: worldBriefSchema.shape.events.optional(),
+  grounding: z.enum(WORLD_GROUNDINGS).default("expand"),
+  generationParameters: z.unknown().optional(),
+  debugMode: z.boolean().optional(),
+});
+
+/** At most this many lore batches are read for one world, about 96,000 characters of lore. */
+const WORLD_CANON_MAX_BATCHES = 8;
+const worldCanonReadSchema = z.object({
+  connectionId: z.string().min(1),
+  kit: worldKitSchema,
+  lorebookIds: z.array(z.string().min(1)).min(1).max(20),
+  entryIds: z.array(z.string().min(1)).max(1000).optional(),
+  generationParameters: z.unknown().optional(),
+  debugMode: z.boolean().optional(),
 });
 
 const mapGenerateSchema = z.object({
@@ -2444,13 +2842,120 @@ export function removeMemberFromGameMetadata(input: RemoveMemberInput): RemoveMe
 function findGameNpcByName(npcs: GameNpc[], requestedName: string): GameNpc | null {
   const requestedLookup = normalizeCharacterLookupName(requestedName);
   let matches = npcs.filter((npc) => normalizeCharacterLookupName(npc.name) === requestedLookup);
-  if (matches.length === 0 && requestedLookup.length >= 3) {
-    matches = npcs.filter((npc) => {
-      const lookup = normalizeCharacterLookupName(npc.name);
-      return lookup.includes(requestedLookup) || (lookup.length >= 3 && requestedLookup.includes(lookup));
-    });
+  if (matches.length === 0) {
+    // Whole words only: an NPC named Sam is not the game's Samantha (#7324).
+    matches = npcs.filter((npc) => characterNamesLikelyMatch(npc.name, requestedName));
   }
   return matches.length === 1 ? matches[0]! : null;
+}
+
+/**
+ * A copy of a party member joins the party (5e's Simulacrum): a game character of the new name whose
+ * card is the member's, with the member's sheet in a game on a ruleset, fresh but for `condition`, a
+ * condition of that ruleset it holds from the start. Nothing is generated: the copy is the member.
+ */
+async function recruitPartyCopy(args: {
+  chats: ReturnType<typeof createChatsStorage>;
+  stateStore: ReturnType<typeof createGameStateStorage>;
+  chat: NonNullable<StoredChatRecord>;
+  meta: Record<string, unknown>;
+  setupConfig: GameSetupConfig;
+  chatCharacterIds: string[];
+  currentPartyIds: string[];
+  requestedName: string;
+  trackedNpc: GameNpc | null;
+  copyOf: string;
+  condition: string | undefined;
+}) {
+  const { chats, stateStore, chat, meta, setupConfig, chatCharacterIds, currentPartyIds, requestedName } = args;
+  const currentCards = (meta.gameCharacterCards as Array<Record<string, unknown>>) ?? [];
+  const sourceIndex = findExistingGameCharacterCardIndex(currentCards, args.copyOf);
+  const pinned = meta.gameRuleset != null ? resolveGameRuleset(meta, await loadRulesetRegistry()) : null;
+  const definition = pinned?.status === "ok" ? pinned.definition : null;
+  // Naming no party member, a creature of the ruleset's bestiaries: a beast or a stranger copied, who
+  // fights as that creature.
+  let creature: { catalogId: string; entryId: string; label: string } | null = null;
+  if (sourceIndex < 0 && definition && pinned?.status === "ok") {
+    const bestiary: RulesetCatalogEntriesById = {};
+    for (const catalog of definition.catalogs ?? []) {
+      if (catalog.holds !== "creatures") continue;
+      const read = await loadRulesetCatalogEntries(pinned.packageId, definition, catalog).catch(() => null);
+      if (read?.ok) bestiary[catalog.id] = read.entries;
+    }
+    const found = findRulesetCreature(bestiary, args.copyOf);
+    if (found) creature = { catalogId: found.catalogId, entryId: found.entry.id, label: found.entry.label };
+  }
+  if (sourceIndex < 0 && !creature) throw new Error(`No party member or creature named "${args.copyOf}" to copy.`);
+  const source: Record<string, unknown> = creature
+    ? { name: creature.label, rulesetCreature: { catalogId: creature.catalogId, entryId: creature.entryId } }
+    : currentCards[sourceIndex]!;
+  const condition = args.condition;
+  if (condition && !definition?.sheet.live.conditions.some((one) => one.id === condition)) {
+    throw new Error(`The game's ruleset has no condition "${condition}".`);
+  }
+  const npc = args.trackedNpc ?? buildFallbackTrackedGameNpc(requestedName);
+  const recruitId = buildPartyNpcId(npc.name);
+  // Its own card by its exact name only: "Lia's Simulacrum" is never Lia.
+  const exactCardIndex = (cards: Array<Record<string, unknown>>) =>
+    cards.findIndex(
+      (card) =>
+        typeof card.name === "string" &&
+        normalizeCharacterLookupName(card.name) === normalizeCharacterLookupName(npc.name),
+    );
+  const existingCardIndex = exactCardIndex(currentCards);
+  if (currentPartyIds.includes(recruitId) && existingCardIndex >= 0) {
+    return { sessionChat: chat, added: false, characterName: npc.name, cardCreated: false };
+  }
+  const sourceName = typeof source.name === "string" ? source.name.trim() : args.copyOf;
+  const sheet = source.rulesetSheet as RulesetSheetEnvelope | undefined;
+  const nextCard: Record<string, unknown> = {
+    ...structuredClone(source),
+    name: npc.name,
+    shortDescription: `${npc.name}, a copy of ${sourceName}.`,
+    ...(sheet ? { rulesetSheet: { v: sheet.v, build: structuredClone(sheet.build) } } : {}),
+  };
+  let added = false;
+  const updatedSession = await chats.patchMetadataWithCharacterIds(chat.id, (current) => {
+    const merged = mergeRecruitIntoGameMetadata({
+      current,
+      recruitId,
+      recruitName: npc.name,
+      nextCard,
+      existingCardIndex,
+      fallbackSetupConfig: setupConfig,
+      chatCharacterIds,
+      npcToTrack: args.trackedNpc ? null : npc,
+    });
+    // Written over its own card, if it has one, and never over the member's.
+    const freshCards = (current.gameCharacterCards as Array<Record<string, unknown>>) ?? [];
+    const own = exactCardIndex(freshCards);
+    merged.patch.gameCharacterCards = own >= 0 ? freshCards : [...freshCards, nextCard];
+    added = merged.added;
+    return { metadata: merged.patch, characterIds: merged.mergedChatCharacterIds };
+  });
+  if (!updatedSession) throw new Error("Failed to update game session");
+  // Fresh, but for what it holds from the start.
+  if (definition && (sheet || creature)) {
+    const key = normalizeCharacterLookupName(npc.name);
+    const held = !condition
+      ? null
+      : sheet
+        ? applyRulesetSheetOp(definition, sheet.build, {}, { op: "condition", condition, active: true })
+        : { ok: true as const, live: { conditions: [condition] } };
+    await withChatMetadataPatchQueue(chat.id, async () => {
+      const visibleAnchor = resolveVisibleGameStateAnchor(await chats.listMessages(chat.id));
+      const row = await stateStore.getForGeneration(chat.id, { preferLatestVisible: true, visibleAnchor });
+      if (!row) return;
+      const stored: RulesetLiveStates = parseStoredRulesetLive(row.rulesetLive) ?? {};
+      const next: RulesetLiveStates = { ...stored, [key]: held?.ok ? held.live : {} };
+      (visibleAnchor
+        ? await stateStore.updateByMessage(visibleAnchor.messageId, visibleAnchor.swipeIndex, chat.id, {
+            rulesetLive: next,
+          })
+        : null) ?? (await stateStore.updateLatest(chat.id, { rulesetLive: next }));
+    });
+  }
+  return { sessionChat: updatedSession, added, characterName: npc.name, cardCreated: existingCardIndex < 0 };
 }
 
 function buildFallbackTrackedGameNpc(name: string): GameNpc {
@@ -2603,50 +3108,30 @@ export function applyGeneratedGameCharacterCards(
     const normalizedCard = normalizeGeneratedGameCharacterCard(generatedCard, existingName);
     // The generated card is rebuilt from an allow-list. What the model never writes and the game
     // owns rides along: the RPG stats and this game's copy of the ruleset sheet.
-    return {
-      ...normalizedCard,
-      ...(existingCard.rpgStats ? { rpgStats: existingCard.rpgStats } : {}),
-      ...(existingCard.rulesetSheet ? { rulesetSheet: existingCard.rulesetSheet } : {}),
-    };
+    // Its temperament changes only where the model says the story changed it, and the one it started
+    // the game with never does.
+    return withCardTemperament(
+      {
+        ...normalizedCard,
+        ...(existingCard.rpgStats ? { rpgStats: existingCard.rpgStats } : {}),
+        ...(existingCard.rulesetSheet ? { rulesetSheet: existingCard.rulesetSheet } : {}),
+      },
+      generatedCard.temperament,
+      existingCard,
+    );
   });
 
   return { cards, updatedCount };
 }
 
-function buildFallbackGameCharacterCard(characterData: Record<string, any>, characterName: string) {
-  const description =
-    typeof characterData.description === "string" && characterData.description.trim()
-      ? characterData.description.trim()
-      : typeof characterData.personality === "string" && characterData.personality.trim()
-        ? characterData.personality.trim()
-        : `${characterName} joins the party.`;
-  const appearance =
-    typeof characterData.extensions?.appearance === "string" && characterData.extensions.appearance.trim()
-      ? characterData.extensions.appearance.trim()
-      : typeof characterData.appearance === "string" && characterData.appearance.trim()
-        ? characterData.appearance.trim()
-        : "";
-  const backstory =
-    typeof characterData.extensions?.backstory === "string" && characterData.extensions.backstory.trim()
-      ? characterData.extensions.backstory.trim()
-      : typeof characterData.backstory === "string" && characterData.backstory.trim()
-        ? characterData.backstory.trim()
-        : "";
-
-  return {
-    name: characterName,
-    shortDescription: description,
-    class: "Companion",
-    abilities: [],
-    strengths: [],
-    weaknesses: [],
-    extra: Object.fromEntries(
-      [
-        ["appearance", appearance],
-        ["backstory", backstory],
-      ].filter((entry): entry is [string, string] => Boolean(entry[1])),
-    ),
-  };
+/**
+ * The party's cards as a prompt shows them: everything the model may read or write back, without this
+ * game's copy of the ruleset sheet. The sheet is the game's own (the model never writes it, and a card
+ * written back keeps it), and the Game Master reads the sheets in their own block, so a whole sheet
+ * here only spends the context window.
+ */
+function gameCardsForPrompt(cards: Array<Record<string, unknown>>): Array<Record<string, unknown>> {
+  return cards.map(({ rulesetSheet: _sheet, ...card }) => card);
 }
 
 function getDiscordWebhookUrl(meta: Record<string, unknown>): string {
@@ -3035,9 +3520,9 @@ async function updateLatestGameStateWithTrackerLocks(
 async function resolveConnection(
   connections: Pick<ReturnType<typeof createConnectionsStorage>, "getWithKey" | "listRandomPool">,
   connId: string | null | undefined,
-  chatConnectionId: string | null,
+  chat: GameChatModel,
 ) {
-  const { conn, baseUrl } = await resolveGameConnection(connections, connId, chatConnectionId);
+  const { conn, baseUrl } = await resolveGameConnection(connections, connId, chat);
   return { conn, baseUrl, defaultGenerationParameters: parseStoredGenerationParameters(conn.defaultParameters) };
 }
 
@@ -3111,7 +3596,7 @@ function parseStoredGenerationParameters(raw: unknown): StoredGenerationParamete
     }
   }
 
-  const result = generationParametersSchema.partial().safeParse(parsed);
+  const result = partialInput(generationParametersSchema).safeParse(parsed);
   return result.success ? result.data : null;
 }
 
@@ -3273,6 +3758,7 @@ export function gameGenOptions(
       maxContext: options.maxContext,
       stream: options.stream,
       onToken: options.onToken,
+      onTokenKeepaliveOnly: options.onTokenKeepaliveOnly,
       onThinking: options.onThinking,
       onResponseParts: options.onResponseParts,
       signal: options.signal,
@@ -3293,7 +3779,6 @@ const GAME_SETUP_DEFAULT_OUTPUT_TOKENS = 16_384;
 const EXPERIENCE_GENERATION_MIN_OUTPUT_TOKENS = 1_024;
 const SESSION_CONCLUSION_DEFAULT_OUTPUT_TOKENS = 8192;
 const CAMPAIGN_PROGRESSION_DEFAULT_OUTPUT_TOKENS = SESSION_CONCLUSION_DEFAULT_OUTPUT_TOKENS;
-const GAME_GENERATION_TIMEOUT_MS = 5 * 60 * 1000;
 const GAME_ASSET_GENERATION_TIMEOUT_MS = 45 * 60 * 1000;
 const GAME_SCENE_VIDEO_GENERATION_TIMEOUT_MS = 31 * 60 * 1000;
 const GAME_ILLUSTRATION_SUMMARY_TIMEOUT_MS = 60 * 1000;
@@ -3338,12 +3823,15 @@ function createGameGenerationWatchdog(controller: AbortController, label: string
   return { promise, reset, clear };
 }
 
-async function runGameChatComplete(
+// Game calls wait for the Text generation timeout (CHAT_GENERATION_TIMEOUT_MS) between outputs, like
+// chats. Thinking is output too: a reasoning model can think for minutes before its first token (#7177).
+// Calls without onToken keep a total cap, even on providers that always stream their thinking.
+export async function runGameChatComplete(
   provider: { chatComplete(messages: ChatMessage[], options: ChatOptions): Promise<ChatCompletionResult> },
   messages: ChatMessage[],
   options: ChatOptions,
   label: string,
-  timeoutMs = GAME_GENERATION_TIMEOUT_MS,
+  timeoutMs = getChatGenerationTimeoutMs(),
 ): Promise<ChatCompletionResult> {
   const controller = new AbortController();
   const parentSignal = options.signal;
@@ -3355,7 +3843,7 @@ async function runGameChatComplete(
   }
 
   const watchdog = createGameGenerationWatchdog(controller, label, timeoutMs);
-  const onToken = options.onToken;
+  const { onToken, onThinking } = options;
   const watchedOptions: ChatOptions = {
     ...options,
     signal: controller.signal,
@@ -3365,24 +3853,33 @@ async function runGameChatComplete(
             watchdog.reset();
             await onToken(chunk);
           },
+          onThinking: (chunk: string) => {
+            watchdog.reset();
+            onThinking?.(chunk);
+          },
         }
       : {}),
   };
 
   try {
-    return await Promise.race([provider.chatComplete(messages, watchedOptions), watchdog.promise]);
+    const result = await Promise.race([provider.chatComplete(messages, watchedOptions), watchdog.promise]);
+    // A provider whose stream was aborted ends it quietly with what it had, often nothing. That is no
+    // reply to parse (cheap-GM playtest 2026-10-26: a world setup whose stream was cut came back as an
+    // empty world): the call fails at once, with why it was stopped.
+    if (controller.signal.aborted) throw abortReasonAsError(controller.signal, `${label} was cancelled`);
+    return result;
   } finally {
     watchdog.clear();
     parentSignal?.removeEventListener("abort", abortFromParent);
   }
 }
 
-async function runGameChatStream(
+export async function runGameChatStream(
   provider: { chat(messages: ChatMessage[], options: ChatOptions): AsyncIterable<string> },
   messages: ChatMessage[],
   options: ChatOptions,
   label: string,
-  timeoutMs = GAME_GENERATION_TIMEOUT_MS,
+  timeoutMs = getChatGenerationTimeoutMs(),
 ): Promise<string> {
   const controller = new AbortController();
   const parentSignal = options.signal;
@@ -3394,9 +3891,19 @@ async function runGameChatStream(
   }
 
   const watchdog = createGameGenerationWatchdog(controller, label, timeoutMs);
+  const onThinking = options.onThinking;
+  const streamOptions: ChatOptions = {
+    ...options,
+    signal: controller.signal,
+    stream: true,
+    onThinking: (chunk: string) => {
+      watchdog.reset();
+      onThinking?.(chunk);
+    },
+  };
   const streamPromise = (async () => {
     let streamed = "";
-    for await (const chunk of provider.chat(messages, { ...options, signal: controller.signal, stream: true })) {
+    for await (const chunk of provider.chat(messages, streamOptions)) {
       watchdog.reset();
       streamed += chunk;
     }
@@ -3522,7 +4029,7 @@ function truncateSessionTranscriptMiddle(content: string, targetTokens: number):
   return head + SESSION_SUMMARY_TRUNCATION_MARKER + tail;
 }
 
-function buildSessionConclusionMessages(args: {
+export function buildSessionConclusionMessages(args: {
   sessionNumber: number;
   language?: string | null;
   journalRecap: string;
@@ -3580,7 +4087,7 @@ function buildSessionConclusionMessages(args: {
     `${args.currentMorale}/100 (${getMoraleTier(args.currentMorale)})`,
     "",
     "Current character cards:",
-    JSON.stringify(args.currentCards, null, 2),
+    JSON.stringify(gameCardsForPrompt(args.currentCards), null, 2),
     "",
     "Current campaign plan (replace its next-arc material; do not repeat resolved hooks):",
     JSON.stringify(args.currentCampaignPlan, null, 2),
@@ -4158,7 +4665,7 @@ async function runGameLorebookKeeperAfterConclusion(args: {
     const { conn, baseUrl, defaultGenerationParameters } = await resolveConnection(
       connections,
       args.connectionId,
-      chat.connectionId,
+      chat,
     );
     const generationParameters = resolveStoredGameGenerationParameters(meta, defaultGenerationParameters);
     const provider = await createGameMainProvider(connections, conn, baseUrl);
@@ -4170,7 +4677,8 @@ async function runGameLorebookKeeperAfterConclusion(args: {
         temperature: 0.35,
         stream: streaming,
         signal: args.signal,
-        ...(streaming ? { onToken: args.onToken ?? (() => {}) } : {}),
+        ...(streaming ? { onToken: args.onToken ?? (() => {}), onThinking: args.onToken } : {}),
+        onTokenKeepaliveOnly: true,
       },
       generationParameters,
       conn.provider,
@@ -4531,7 +5039,8 @@ export function resolveNpcPortraitAppearance(
   const metadataDescriptionIsCanonical =
     metadataNpc?.descriptionSource === "model" ||
     metadataNpc?.descriptionSource === "library" ||
-    metadataNpc?.descriptionSource === "user";
+    metadataNpc?.descriptionSource === "user" ||
+    metadataNpc?.descriptionSource === "world";
 
   if (metadataDescriptionIsCanonical) {
     addPortraitAppearancePart(parts, seenValues, metadataNpc?.description, "Canonical NPC profile");
@@ -5911,9 +6420,21 @@ async function serializeGameTurnStoryboard(args: {
 const ITEM_NOT_IN_FIGHT = "That item does nothing in this fight.";
 
 export function parseRoomGameConfig(value: unknown): GameSetupConfig {
-  const config = gameSetupConfigSchema.parse(value);
+  // Overworld games locked (MARINARA_OVERWORLD_GAMES): a room game with a setting kit or a world is refused.
+  const asked =
+    value && typeof value === "object" ? (value as { worldKit?: unknown; world?: unknown; gameStyle?: unknown }) : {};
+  if (!isOverworldGamesEnabled() && (asked.worldKit || asked.world || asked.gameStyle === "overworld")) {
+    throw new Error("Overworld games are not available on this server yet.");
+  }
+  const { worldSnapshot, ...config } = gameSetupConfigSchema.parse(value);
   if (config.gameExperienceId) throw new Error("Package Game Experiences are unavailable in shared rooms.");
-  return config;
+  const styleIssue = gameStyleWorldIssue({ ...config, worldSnapshot });
+  if (styleIssue) throw new Error(styleIssue);
+  // A world another generator made comes with its snapshot (W11), checked whole here as at creation.
+  if (worldSnapshot == null) return config;
+  const read = readWorldSnapshot(worldSnapshot);
+  if (!read.ok) throw new Error(`The world's snapshot does not read: ${read.issues[0]}`);
+  return { ...config, worldSnapshot: read.snapshot };
 }
 
 function assertRoomGameOperation(chat: { id: string; metadata: unknown; characterIds: unknown }) {
@@ -5937,6 +6458,149 @@ export interface GameRouteOptions {
 
 export type CreateGameRequest = z.input<typeof createGameSchema>;
 export type SetupGameRequest = z.input<typeof setupSchema>;
+/** Why a sent edit layer does not fit a world, or nothing: it reads, and it fits. */
+function editIssues(game: Omit<GameWorld, "world" | "edits">, edits: unknown): string[] {
+  const parsed = worldEditsSchema.safeParse(edits);
+  if (!parsed.success) return [parsed.error.issues[0]?.message ?? "The edits do not read."];
+  const issues = worldEditIssues(game, parsed.data);
+  // And its towns laid out by hand (worldgen W9h), against the towns the world with these edits makes.
+  if (issues.length || (!parsed.data.towns?.length && !parsed.data.interiors?.length)) return issues;
+  return worldTownEditIssues({ ...game, world: compileGameWorld(game) }, parsed.data);
+}
+
+/** Why a setup cannot be made as it asks: a Classic game is the Game Mode without a world, so it takes
+ *  no setting kit, world, snapshot or story. Null when it holds together. */
+/** What a setup's chosen style refuses: a Classic game takes no kit, world or story, and an Overworld RPG
+ *  game made with the choice needs its kit (or the snapshot's) and its world. A setup that names no style
+ *  (one made before the choice) is read as before. */
+function gameStyleWorldIssue(config: {
+  gameStyle?: GameStyle;
+  worldKit?: unknown;
+  world?: unknown;
+  worldSnapshot?: unknown;
+  story?: unknown;
+}): string | null {
+  if (config.gameStyle === "overworld") {
+    return config.world == null || (config.worldKit == null && config.worldSnapshot == null)
+      ? "An Overworld RPG game needs a setting kit and a world: choose Classic for a game without one."
+      : null;
+  }
+  if (config.gameStyle !== "classic") return null;
+  return config.worldKit != null || config.world != null || config.worldSnapshot != null || config.story != null
+    ? "A Classic game has no setting kit or world: choose the Overworld RPG for one."
+    : null;
+}
+
+/** A new world as sent with a game's setup, or added to an older game (worldgen W12), checked: made in its
+ *  kit's words by this Engine's generator, or another generator's world with its snapshot (W11), its hand
+ *  edits fitting it, and its story (W10) fitting the world. `worldKit` is the snapshot's when one is kept. */
+function readNewGameWorld(input: {
+  worldKit?: WorldKit;
+  world?: GameWorldInputRead;
+  worldSnapshot?: unknown;
+  story?: unknown;
+}):
+  | {
+      ok: true;
+      worldKit?: WorldKit;
+      gameWorld: GameWorldInputRead | null;
+      snapshot: WorldSnapshot | null;
+      story: StoryScript | null;
+    }
+  | { ok: false; error: string; code: "world_invalid" | "story_invalid" } {
+  const requestedWorld = input.world;
+  let worldKit = input.worldKit;
+  let gameWorld: GameWorldInputRead | null = null;
+  // A world another generator made comes with its snapshot (W11) and is played as it was made: its kit,
+  // recipe and edits are the snapshot's.
+  let snapshot: WorldSnapshot | null = null;
+  if (requestedWorld && !worldGeneratorReads(requestedWorld.generatorVersion)) {
+    const read = input.worldSnapshot != null ? readWorldSnapshot(input.worldSnapshot) : null;
+    if (read && !read.ok) {
+      return { ok: false, error: `The world's snapshot does not read: ${read.issues[0]}`, code: "world_invalid" };
+    }
+    if (read?.ok) {
+      snapshot = read.snapshot;
+      worldKit = snapshot.kit;
+      gameWorld = {
+        seed: snapshot.seed,
+        generatorVersion: snapshot.generatorVersion,
+        grounding: snapshot.grounding,
+        brief: snapshot.brief,
+        ...(snapshot.edits ? { edits: snapshot.edits } : {}),
+      };
+    }
+  }
+  if (requestedWorld && !snapshot) {
+    const checked = worldKit ? checkWorldBrief(worldKit, requestedWorld.brief) : null;
+    if (!worldKit || !checked?.ok || !worldGeneratorReads(requestedWorld.generatorVersion)) {
+      return {
+        ok: false,
+        error: !worldKit
+          ? "A world needs a setting kit."
+          : !worldGeneratorReads(requestedWorld.generatorVersion)
+            ? "This world was made by another version of the generator."
+            : `The world's brief does not hold together: ${checked && !checked.ok ? checked.issues[0] : ""}`,
+        code: "world_invalid",
+      };
+    }
+    // Hand edits (worldgen W9c) sent with a world are held to what a saved edit layer is.
+    const unfit = requestedWorld.edits
+      ? editIssues(
+          {
+            kit: worldKit,
+            seed: requestedWorld.seed,
+            grounding: requestedWorld.grounding,
+            brief: checked.brief,
+            generatorVersion: requestedWorld.generatorVersion,
+          },
+          requestedWorld.edits,
+        )
+      : [];
+    if (unfit.length)
+      return { ok: false, error: `The world's hand edits do not fit it: ${unfit[0]}`, code: "world_invalid" };
+    gameWorld = { ...requestedWorld, brief: checked.brief };
+  }
+  // A story script (worldgen W10) names the world's places and people, so it is checked against it.
+  let story: StoryScript | null = null;
+  if (input.story != null) {
+    const inputs = gameWorld && worldKit ? { kit: worldKit, ...gameWorld, edits: gameWorld.edits } : null;
+    const storyWorld = snapshot
+      ? gameWorldFromSnapshot(snapshot)
+      : inputs
+        ? { ...inputs, world: compileGameWorld(inputs) }
+        : null;
+    const checked = storyWorld ? checkStoryScript(storyWorld, input.story) : null;
+    if (!checked?.ok) {
+      return {
+        ok: false,
+        error: checked ? `The world's story does not fit it: ${checked.issues[0]}` : "A story needs a world.",
+        code: "story_invalid",
+      };
+    }
+    story = checked.story;
+  }
+  return { ok: true, ...(worldKit ? { worldKit } : {}), gameWorld, snapshot, story };
+}
+type GameWorldInputRead = z.infer<typeof gameWorldSchema>;
+
+/** Work on a game's world, one piece at a time for each key: a game's sessions (its group) while a world is
+ *  given or a session starts from the latest, and a chat while its world's edits are saved. */
+const worldLocks = new Map<string, Promise<unknown>>();
+function withWorldLock<T>(key: string, work: () => Promise<T>): Promise<T> {
+  const run = (worldLocks.get(key) ?? Promise.resolve()).catch(() => undefined).then(work);
+  const tail = run.catch(() => undefined);
+  worldLocks.set(key, tail);
+  void tail.then(() => {
+    if (worldLocks.get(key) === tail) worldLocks.delete(key);
+  });
+  return run;
+}
+
+/** Why a world from an earlier generator cannot be edited or shared as a recipe (W11). */
+const OLD_GENERATOR_REFUSAL =
+  "This world was made by an earlier version of the world generator. It plays on as it was made, but it can no longer be edited.";
+
 export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions = {}) {
   registerSequentialGameTasks(app, [
     "/setup",
@@ -6054,7 +6718,10 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
     chatPersonaId: string | null,
     meta: Record<string, unknown>,
     setupConfig: GameSetupConfig | null,
-  ): Promise<{ definition: RulesetDefinition; stored: Map<string, unknown> } | null> => {
+    /** The chat's own members, which may hold some the setup's party never named: one added from
+     *  the Characters panel before the world was created (laptop playtest 2026-10-24). */
+    chatCharacterIds: readonly string[] = [],
+  ): Promise<{ definition: RulesetDefinition; stored: Map<string, unknown>; names: Map<string, string> } | null> => {
     if (meta.gameRuleset == null) return null;
     // loadRulesetRegistry never throws (a failed read is an empty registry) and resolving is pure,
     // so an install that cannot honour the pin arrives here as a status, not as an exception.
@@ -6066,13 +6733,23 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
     const rulesetId = pinned.definition.id;
     const characters = createCharactersStorage(app.db);
     const stored = new Map<string, unknown>();
-    for (const pcId of setupConfig?.partyCharacterIds ?? []) {
+    // Each sheet's character as named, so one the setup left out can still be given a card.
+    const names = new Map<string, string>();
+    const members = new Set([
+      ...(setupConfig?.partyCharacterIds ?? []),
+      ...chatCharacterIds.filter((id) => !id.startsWith("npc:")),
+    ]);
+    for (const pcId of members) {
       const pc = await characters.getById(pcId);
       if (!pc) continue;
       try {
         const data = typeof pc.data === "string" ? JSON.parse(pc.data) : pc.data;
         const sheet = data?.extensions?.rulesetSheets?.[rulesetId];
-        if (sheet && typeof data.name === "string") stored.set(normalizeCharacterLookupName(data.name), sheet);
+        if (typeof data?.name !== "string" || !data.name.trim()) continue;
+        // Every member is named, so one the setup left out still gets a card, on a blank sheet
+        // where they have none of their own.
+        names.set(normalizeCharacterLookupName(data.name), data.name);
+        if (sheet) stored.set(normalizeCharacterLookupName(data.name), sheet);
       } catch {
         /* an unreadable card simply has no sheet to copy */
       }
@@ -6084,12 +6761,15 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
         const stats = persona.personaStats ? JSON.parse(persona.personaStats) : null;
         const sheet = stats?.rulesetSheets?.[rulesetId];
         // The persona is the player, so its sheet wins a name it shares with a party member.
-        if (sheet) stored.set(normalizeCharacterLookupName(persona.name), sheet);
+        if (sheet) {
+          stored.set(normalizeCharacterLookupName(persona.name), sheet);
+          names.set(normalizeCharacterLookupName(persona.name), persona.name);
+        }
       } catch {
         /* skip */
       }
     }
-    return { definition: pinned.definition, stored };
+    return { definition: pinned.definition, stored, names };
   };
 
   const applyGameSetupPayload = async (args: {
@@ -6229,9 +6909,24 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
       if (arcs.length > 0) updates.gamePartyArcs = arcs;
     }
 
-    if (setupData.characterCards && Array.isArray(setupData.characterCards)) {
-      const rulesetSheets = await loadSetupRulesetSheets(chatId, args.chatPersonaId, meta, setupConfig);
-      const cards = (setupData.characterCards as Array<Record<string, unknown>>)
+    const setupSheets =
+      meta.gameRuleset != null
+        ? await loadSetupRulesetSheets(chatId, args.chatPersonaId, meta, setupConfig, args.chatCharacterIds)
+        : null;
+    if ((setupData.characterCards && Array.isArray(setupData.characterCards)) || (setupSheets?.names.size ?? 0) > 0) {
+      const rulesetSheets = setupSheets;
+      const generated = Array.isArray(setupData.characterCards)
+        ? (setupData.characterCards as Array<Record<string, unknown>>)
+        : [];
+      // A party member with a sheet the Game Master's setup left out still gets a card, or their
+      // sheet would never reach the game.
+      const carded = new Set(
+        generated.flatMap((card) => (typeof card.name === "string" ? [normalizeCharacterLookupName(card.name)] : [])),
+      );
+      const missing = [...(rulesetSheets?.names ?? new Map<string, string>())]
+        .filter(([key]) => !carded.has(key))
+        .map(([, name]) => ({ name }) as Record<string, unknown>);
+      const cards = [...generated, ...missing]
         .map((c) => {
           const name = (c.name as string) || "";
           const normalizedCard = normalizeGeneratedGameCharacterCard(c, name);
@@ -6245,117 +6940,36 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
           const isPersona =
             rpgContext.personaName && normalizedCardName === normalizeCharacterLookupName(rpgContext.personaName);
           const rpg = isPersona ? rpgContext.personaRpgStats : charStats;
-          return {
-            ...normalizedCard,
-            rpgStats: rpg
-              ? {
-                  attributes: rpg.attributes,
-                  hp: { value: rpg.hp.max, max: rpg.hp.max },
-                  pools: normalizeRpgStatPools(rpg),
-                }
-              : undefined,
-            // The game's own copy of the starting build, or a blank one, so every card has a sheet.
-            ...(rulesetSheets
-              ? {
-                  rulesetSheet: copyRulesetSheetForGame(
-                    rulesetSheets.definition,
-                    rulesetSheets.stored.get(normalizedCardName),
-                  ),
-                }
-              : {}),
-          };
+          return withCardTemperament(
+            {
+              ...normalizedCard,
+              rpgStats: rpg
+                ? {
+                    attributes: rpg.attributes,
+                    hp: { value: rpg.hp.max, max: rpg.hp.max },
+                    pools: normalizeRpgStatPools(rpg),
+                  }
+                : undefined,
+              // The game's own copy of the starting build, or a blank one, so every card has a sheet.
+              ...(rulesetSheets
+                ? {
+                    rulesetSheet: copyRulesetSheetForGame(
+                      rulesetSheets.definition,
+                      rulesetSheets.stored.get(normalizedCardName),
+                    ),
+                  }
+                : {}),
+            },
+            c.temperament,
+          );
         })
         .filter((c) => c.name);
       if (cards.length > 0) updates.gameCharacterCards = cards;
     }
 
     if (setupData.blueprint) {
-      // Coerce LLM output into the campaign-plan ranges rather than rejecting it.
-      // The LLM occasionally exceeds the array caps or the pressure-clock step
-      // count; without preprocessing, a single out-of-range value would fail
-      // safeParse and silently drop the entire blueprint — including hudWidgets,
-      // which is what the user actually configured.
-      const sliceArray = (max: number) => (val: unknown) => (Array.isArray(val) ? val.slice(0, max) : val);
-      const clampInt = (min: number, max: number) => (val: unknown) =>
-        typeof val === "number" && Number.isFinite(val) ? Math.max(min, Math.min(max, Math.trunc(val))) : val;
-      const campaignPlanSchema = z
-        .object({
-          openingSituation: z.string().max(240).optional().default(""),
-          pressureClocks: z.preprocess(
-            sliceArray(2),
-            z
-              .array(
-                z.object({
-                  name: z.string().max(80),
-                  steps: z.preprocess(clampInt(1, 12), z.number().int().min(1).max(12).default(4)),
-                  current: z.preprocess(clampInt(0, 12), z.number().int().min(0).max(12).default(0)),
-                  failure: z.string().max(180).default(""),
-                }),
-              )
-              .default([]),
-          ),
-          factions: z.preprocess(
-            sliceArray(2),
-            z
-              .array(
-                z.object({
-                  name: z.string().max(80),
-                  goal: z.string().max(160),
-                  method: z.string().max(160).optional(),
-                  secret: z.string().max(180).optional(),
-                }),
-              )
-              .default([]),
-          ),
-          questSeeds: z.preprocess(sliceArray(3), z.array(z.string().max(180)).default([])),
-          encounterPrinciples: z.preprocess(sliceArray(2), z.array(z.string().max(160)).default([])),
-        })
-        .optional()
-        .nullable()
-        .transform((plan) => plan ?? undefined);
-      const blueprintSchema = z.object({
-        campaignPlan: campaignPlanSchema,
-        hudWidgets: z
-          .array(
-            z.object({
-              id: z.string(),
-              type: z.enum([
-                "progress_bar",
-                "gauge",
-                "relationship_meter",
-                "counter",
-                "stat_block",
-                "list",
-                "inventory_grid",
-                "timer",
-              ]),
-              label: z.string(),
-              icon: z.string().optional(),
-              position: z.enum(["hud_left", "hud_right"]),
-              accent: z.string().optional(),
-              config: z.record(z.unknown()),
-            }),
-          )
-          .default([]),
-        introSequence: z
-          .array(
-            z.object({
-              effect: z.string(),
-              duration: z.number().optional(),
-              intensity: z.number().min(0).max(1).optional(),
-              target: z.enum(["background", "content", "all"]).optional(),
-              params: z.record(z.string()).optional(),
-            }),
-          )
-          .default([]),
-        visualTheme: z
-          .object({
-            palette: z.string(),
-            uiStyle: z.string(),
-            moodDefault: z.string(),
-          })
-          .optional(),
-      });
+      const blueprintSchema = gameSetupBlueprintSchema;
+
       const normalizeStatBlocks = (widgets: Array<{ type: string; config: Record<string, unknown> }>) => {
         for (const w of widgets) {
           if (w.type === "stat_block" && w.config.stats) {
@@ -6434,11 +7048,25 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
     logger.info("[game/create] Received request");
     const parsed = createGameSchema.safeParse(input);
     if (!parsed.success) {
+      const [issue] = validationDetails(parsed.error.issues);
       return rejectGenerationOutput(reply, 400, {
-        error: `Invalid game setup: ${parsed.error.issues[0]?.message ?? "invalid settings"}`,
+        error: `Invalid game setup: ${issue?.message ?? "invalid settings"}`,
       });
     }
     const parsedCreateGameInput = parsed.data;
+    // Overworld games are locked on this server (MARINARA_OVERWORLD_GAMES): a game with a setting kit or a
+    // world is refused, so only Classic games are made.
+    if (
+      !isOverworldGamesEnabled() &&
+      (parsedCreateGameInput.setupConfig.worldKit ||
+        parsedCreateGameInput.setupConfig.world ||
+        parsedCreateGameInput.setupConfig.gameStyle === "overworld")
+    ) {
+      return rejectGenerationOutput(reply, 403, {
+        error: "Overworld games are not available on this server yet.",
+        code: "overworld_locked",
+      });
+    }
     const { name, connectionId, promptPresetId, chatId, preferences, shareLabels } = parsedCreateGameInput;
     const normalizedSpatialMapDraftOptions =
       parsedCreateGameInput.setupConfig.spatialMapDraftSize !== undefined ||
@@ -6508,11 +7136,57 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
       if (layerIssue) {
         return rejectGenerationOutput(reply, 400, { error: layerIssue.message, code: layerIssue.code });
       }
+      // A ruleset may name the combat styles its games play (1.379): one it leaves out is refused, as a
+      // layer it cannot honour is, rather than played on rules the ruleset said it does not fit.
+      if (!rulesetAllowsCombatStyle(registered.definition, parsedCreateGameInput.setupConfig.combatStyle)) {
+        return rejectGenerationOutput(reply, 400, {
+          error: `The ruleset "${registered.definition.name}" plays battles only as ${rulesetCombatStyles(registered.definition)!.join(", ")}.`,
+          code: "combat_style_not_allowed",
+        });
+      }
       gameRuleset = { ...createRulesetRef(registered), options: requestedOptions };
     }
+    // A world (worldgen W1) is made in its kit's words, by this Engine's generator, or kept as another
+    // generator made it (W11); with its story (W10). The same checks as a world added to an older game.
+    const styleIssue = gameStyleWorldIssue(parsedCreateGameInput.setupConfig);
+    if (styleIssue) return rejectGenerationOutput(reply, 400, { error: styleIssue, code: "world_invalid" });
+    const newWorld = readNewGameWorld(parsedCreateGameInput.setupConfig);
+    if (!newWorld.ok) return rejectGenerationOutput(reply, 400, { error: newWorld.error, code: newWorld.code });
+    const { gameWorld, snapshot: sentSnapshot, story: gameStory } = newWorld;
+    if (newWorld.worldKit) parsedCreateGameInput.setupConfig.worldKit = newWorld.worldKit;
+    // An Experience's map pack (worldgen W9e) locks the game to its kit, and to one of its worlds when
+    // it ships any; a pack that does not read keeps the Experience from starting a game, with the reason.
+    let mapPack: MapPack | null = null;
+    // The Experience's own intro (1.372), kept with the game as it was when the game began, so its lock
+    // holds whatever the package does later.
+    let experienceIntro: GameIntro | null = null;
+    const experienceId = parsedCreateGameInput.setupConfig.gameExperienceId;
+    if (experienceId) {
+      experienceIntro = (await capabilityPackageManager.experienceSetupDefaults(experienceId))?.intro ?? null;
+      const read = await readMapPack(experienceId);
+      if (read && !read.ok) {
+        return rejectGenerationOutput(reply, 400, {
+          error: `Marinara could not read this Experience's map pack: ${read.reason}`,
+          code: "map_pack_invalid",
+        });
+      }
+      if (read?.ok) {
+        const issue = mapPackLockIssue(read.pack, {
+          worldKit: parsedCreateGameInput.setupConfig.worldKit,
+          world: gameWorld,
+          story: gameStory,
+        });
+        if (issue) return rejectGenerationOutput(reply, 400, { error: issue, code: "map_pack_locked" });
+        mapPack = read.pack;
+      }
+    }
+    const { worldSnapshot: _sentSnapshot, ...setupInput } = parsedCreateGameInput.setupConfig;
     const setupConfig: GameSetupConfig = {
-      ...parsedCreateGameInput.setupConfig,
+      ...setupInput,
       ...(gameRuleset ? { ruleset: gameRuleset } : {}),
+      // The setup's own copy carries the world as read, never the brief as sent, nor its snapshot.
+      world: gameWorld ?? undefined,
+      story: gameStory ?? undefined,
       gameWorldMapMode:
         requestedWorldMapMode === "hierarchical" && parsedCreateGameInput.setupConfig.enableAgents === true
           ? "hierarchical"
@@ -6588,11 +7262,11 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
       ...(setupConfig.gameStoryboardsEnabled ? [STORYBOARD_AGENT_ID] : []),
     ];
     const spotifySourceType = setupConfig.spotifySourceType ?? "liked";
-    const gameChatParameters = mergeStoredGenerationParameters(
-      defaultGenerationParameters,
+    const gameChatOverrides = mergeStoredGenerationParameters(
       sessionMeta.chatParameters,
       setupConfig.generationParameters,
     );
+    const gameChatParameters = mergeStoredGenerationParameters(defaultGenerationParameters, gameChatOverrides);
     const snapshotConnection = async (id: string | null | undefined) => {
       if (!id) return null;
       if (id === "random") return { name: "Random connection pool", provider: "random" };
@@ -6606,6 +7280,39 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
       snapshotConnection(setupConfig.videoConnectionId),
       snapshotConnection(setupConfig.audioConnectionId),
     ]);
+    // The world is made once, here, and kept as the chat's snapshot (W11) before any reader can see it.
+    if (sentSnapshot) await createGameWorldSnapshotsStorage(app.db).put(sessionChat.id, sentSnapshot);
+    else if (gameWorld && setupConfig.worldKit) {
+      await saveGameWorldSnapshot(app.db, sessionChat.id, { gameWorld, gameWorldKit: setupConfig.worldKit });
+    }
+    // The Experience's people (1.346): what is known of them, as a lorebook of this game's own that is
+    // active from the first turn. Only the people this world has; their names bring them in.
+    let peopleLorebookId: string | null = null;
+    const peopleWorld =
+      mapPack?.people && gameWorld
+        ? await loadGameWorld(app.db, sessionChat.id, { gameWorld, gameWorldKit: setupConfig.worldKit })
+        : null;
+    if (mapPack?.people && peopleWorld) {
+      const lore = experiencePeopleLore(peopleWorld, mapPack.people);
+      if (lore.length) {
+        const lorebooksStore = createLorebooksStorage(app.db);
+        const book = (await lorebooksStore.create({
+          name: `${mapPack.name}: people`.slice(0, 200),
+          description: "The people and lore of this game's Experience.",
+          category: "world",
+          chatId: sessionChat.id,
+          enabled: true,
+          tags: ["game", "experience"],
+        })) as { id?: string } | null;
+        if (book?.id) {
+          await lorebooksStore.bulkCreateEntries(
+            book.id,
+            lore.map((entry) => createLorebookEntrySchema.omit({ lorebookId: true }).parse(entry)),
+          );
+          peopleLorebookId = book.id;
+        }
+      }
+    }
     await chats.updateMetadata(sessionChat.id, {
       ...sessionMeta,
       gameId,
@@ -6655,9 +7362,22 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
       gameSceneConnectionId: setupConfig.sceneConnectionId || null,
       // Chosen at creation and fixed for the game's lifetime (see GameSetupConfig).
       gameExperienceId: setupConfig.gameExperienceId || null,
+      // Classic or Overworld, likewise fixed; a setup made before the choice stores none (see
+      // `gameStyleFromMetadata`).
+      ...(setupConfig.gameStyle ? { gameStyle: setupConfig.gameStyle } : {}),
+      // The Experience's own intro message (1.372), which a locked one keeps over the setup's.
+      ...(experienceIntro ? { gameExperienceIntro: experienceIntro } : {}),
       // Likewise fixed for the game's lifetime. Written only when a ruleset was chosen, so a game
       // on Marinara's own rules carries exactly the metadata it always has.
       ...(gameRuleset ? { gameRuleset } : {}),
+      // The Game Master's intro message (1.339), as the setup set it; a locked Experience intro wins over it.
+      ...(setupConfig.gameIntro ? { gameIntro: setupConfig.gameIntro } : {}),
+      // The setting kit, likewise only when one was chosen, and the world made in its words.
+      ...(setupConfig.worldKit ? { gameWorldKit: setupConfig.worldKit } : {}),
+      ...(gameWorld ? { gameWorld } : {}),
+      // Kept for what the game draws and plays with its pack: its tiles, creature art, music and people.
+      ...(mapPack ? { gameMapPack: { packageId: mapPack.packageId } } : {}),
+      ...(gameStory ? { gameStory } : {}),
       gameNpcs: [],
       enableAgents: setupConfig.enableAgents === true,
       activeAgentIds: setupActiveAgentIds,
@@ -6678,7 +7398,7 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
       gameStoryboardImagePromptTemplateId: setupConfig.gameStoryboardImagePromptTemplateId || null,
       gameStoryboardVideoPromptTemplateId: setupConfig.gameStoryboardVideoPromptTemplateId || null,
       gameLastSceneVideoId: null,
-      activeLorebookIds: setupConfig.activeLorebookIds || [],
+      activeLorebookIds: [...(setupConfig.activeLorebookIds || []), ...(peopleLorebookId ? [peopleLorebookId] : [])],
       enableCustomWidgets: setupConfig.enableCustomWidgets !== false,
       ...(customHudWidgets.length > 0 ? { gameWidgetState: customHudWidgets } : {}),
       gameUseMusicDj: setupConfig.enableSpotifyDj === true,
@@ -6697,7 +7417,7 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
           ? setupConfig.spotifyArtist || null
           : null,
       gameLorebookKeeperEnabled: setupConfig.enableLorebookKeeper === true,
-      ...(gameChatParameters ? { chatParameters: gameChatParameters } : {}),
+      ...(gameChatOverrides ? { chatParameters: gameChatOverrides } : {}),
     });
 
     const updatedSession = await chats.getById(sessionChat.id);
@@ -6707,7 +7427,25 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
   app.post("/create", (req, reply) => executeCreateGame(req.body as CreateGameRequest, reply));
 
   // ── POST /game/setup ──
+  // One world created at a time for a game (laptop playtest 2026-10-24): its setup open in two browser
+  // tabs could press Create world in both, and the second is refused while the first runs.
+  const setupsRunning = new Set<string>();
   const executeSetupGame = async (input: SetupGameRequest, reply: GenerationOutput, signal?: AbortSignal) => {
+    const chatId = (input as { chatId?: unknown } | null)?.chatId;
+    if (typeof chatId !== "string") return runSetupGame(input, reply, signal);
+    if (setupsRunning.has(chatId))
+      return rejectGenerationOutput(reply, 409, {
+        error: "This game's world is already being created, perhaps in another tab. Wait for it to finish.",
+        code: "setup_running",
+      });
+    setupsRunning.add(chatId);
+    try {
+      return await runSetupGame(input, reply, signal);
+    } finally {
+      setupsRunning.delete(chatId);
+    }
+  };
+  const runSetupGame = async (input: SetupGameRequest, reply: GenerationOutput, signal?: AbortSignal) => {
     logger.info("[game/setup] Received request");
     const { chatId, connectionId, preferences, streaming, debugMode, promptPresetId } = setupSchema.parse(input);
     const requestDebug = debugMode === true;
@@ -6741,17 +7479,19 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
     }
     const customHudWidgets = sanitizeGameHudWidgets(setupConfig.customHudWidgets);
 
-    const { conn, baseUrl, defaultGenerationParameters } = await resolveConnection(
-      connections,
-      connectionId,
-      chat.connectionId,
-    );
+    const { conn, baseUrl, defaultGenerationParameters } = await resolveConnection(connections, connectionId, chat);
+    // The connection the setup was run on becomes the game's own, so the start screen and every turn
+    // after it use the one the player picked, not one the chat held before (laptop playtest
+    // 2026-10-24: the start screen offered the old connection). "random" stays a per-request pick.
+    if (connectionId && connectionId !== "random" && conn?.id === connectionId && connectionId !== chat.connectionId) {
+      await app.db.update(chatsTable).set({ connectionId, updatedAt: now() }).where(eq(chatsTable.id, chatId));
+    }
     const provider = await createGameMainProvider(connections, conn, baseUrl);
     const setupGenerationParameters = resolveStoredGameGenerationParameters(meta, defaultGenerationParameters);
 
     let gmCharacterCard: string | null = null;
     if (setupConfig.gmMode === "character" && setupConfig.gmCharacterId) {
-      const gmChar = await characters.getById(setupConfig.gmCharacterId);
+      const gmChar = await characters.getById(setupConfig.gmCharacterId, chatId);
       if (gmChar) {
         const data = typeof gmChar.data === "string" ? JSON.parse(gmChar.data) : gmChar.data;
         const parts = [`Name: ${data.name}`];
@@ -6770,24 +7510,52 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
     const setupPersona = currentRoomGeneration()
       ? roomHostIdentity()
       : setupPersonaId
-        ? await characters.getPersona(setupPersonaId)
+        ? await characters.getPersona(setupPersonaId, chatId)
         : null;
 
     // Load persona info so the GM can tailor the experience
     let personaCard: string | null = null;
     const setupPersonaFields = {
+      example: setupPersona
+        ? "mes_example" in setupPersona
+          ? setupPersona.mes_example
+          : (setupPersona.mesExample ?? "")
+        : "",
       description: setupPersona?.description ?? "",
       personality: setupPersona?.personality ?? "",
       backstory: setupPersona?.backstory ?? "",
       appearance: setupPersona?.appearance ?? "",
       scenario: setupPersona?.scenario ?? "",
     };
+    const setupLorebookRequested =
+      (setupConfig.activeLorebookIds?.length ?? 0) > 0 || (setupConfig.activeLorebookEntryIds?.length ?? 0) > 0;
+    const setupPromptMacroContext =
+      setupPersonaFields.example || setupLorebookRequested
+        ? await buildPromptMacroContext({
+            db: app.db,
+            characterIds: setupConfig.partyCharacterIds,
+            personaName: setupPersona?.name ?? "User",
+            personaDescription: setupPersonaFields.description,
+            personaFields: setupPersonaFields,
+            variables: {},
+            chatId,
+            lastGenerationType: "game_setup",
+            idleDuration: "0 seconds",
+          })
+        : null;
     if (setupPersona) {
       const parts = [`Name: ${setupPersona.name}`];
       if (setupPersona.description) parts.push(`Description: ${setupPersona.description}`);
       if (setupPersona.personality) parts.push(`Personality: ${setupPersona.personality}`);
       if (setupPersona.backstory) parts.push(`Backstory: ${setupPersona.backstory}`);
       if (setupPersona.appearance) parts.push(`Appearance: ${setupPersona.appearance}`);
+      if (setupPersonaFields.example && setupPromptMacroContext) {
+        const example = resolveMacrosWithVariableSnapshot(setupPersonaFields.example, setupPromptMacroContext);
+        if (example.content.trim()) {
+          parts.push(`Example dialogue: ${example.content}`);
+          example.commit();
+        } else example.rollback();
+      }
       personaCard = parts.join("\n");
     }
 
@@ -6796,7 +7564,7 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
     const partyNames: string[] = [];
     const partyRpgStats: Record<string, RPGStatsConfig> = {};
     for (const pcId of setupConfig.partyCharacterIds) {
-      const pc = await characters.getById(pcId);
+      const pc = await characters.getById(pcId, chatId);
       if (pc) {
         const data = typeof pc.data === "string" ? JSON.parse(pc.data) : pc.data;
         const parts = [data.name];
@@ -6841,18 +7609,7 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
     }
 
     let setupLorebookContext: string | undefined;
-    if ((setupConfig.activeLorebookIds?.length ?? 0) > 0 || (setupConfig.activeLorebookEntryIds?.length ?? 0) > 0) {
-      const setupPromptMacroContext = await buildPromptMacroContext({
-        db: app.db,
-        characterIds: setupConfig.partyCharacterIds,
-        personaName: personaName ?? "User",
-        personaDescription: setupPersonaFields.description,
-        personaFields: setupPersonaFields,
-        variables: {},
-        chatId,
-        lastGenerationType: "game_setup",
-        idleDuration: "0 seconds",
-      });
+    if (setupLorebookRequested && setupPromptMacroContext) {
       const resolveSetupLorebookMacrosForFinal = (
         value: string,
         lorebookEntryCounts?: Readonly<Record<string, number>>,
@@ -6927,6 +7684,8 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
           customHudWidgets: customHudWidgets.length > 0 ? customHudWidgets : undefined,
           lorebookContext: setupLorebookContext,
           rulesetWorldGuidance,
+          worldKit: gameWorldKitFromMetadata(meta),
+          world: await loadGameWorld(app.db, chatId, meta),
           language: setupConfig.language,
           gameSystemPrompt: setupGameSystemPrompt,
           gameSpecialInstructions: setupGameSpecialInstructions,
@@ -6969,14 +7728,15 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
     });
     const setupAbort = createResponseAbortTracker(
       "kind" in reply ? null : reply,
-      GAME_SETUP_GENERATION_TIMEOUT_MS,
+      getChatGenerationTimeoutMs(),
       "Game setup",
     );
     const setupOverrides: Partial<ChatOptions> = {
       maxTokens: setupMaxTokens,
       stream: streaming,
       signal: signal ? AbortSignal.any([signal, setupAbort.signal]) : setupAbort.signal,
-      ...(streaming ? { onToken: () => setupAbort.touch() } : {}),
+      ...(streaming ? { onToken: () => setupAbort.touch(), onThinking: () => setupAbort.touch() } : {}),
+      onTokenKeepaliveOnly: true,
     };
     if (!setupGenerationParameters?.reasoningEffort) {
       setupOverrides.reasoningEffort = undefined;
@@ -7003,6 +7763,8 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
 
     try {
       for (let attempt = 1; attempt <= 2; attempt++) {
+        // A retry gets the full wait too, even when nothing streams to touch the timer.
+        setupAbort.touch();
         let result: ChatCompletionResult;
         try {
           result = await runGameChatComplete(
@@ -7023,6 +7785,21 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
           setupGenerationParameters?.customThinkingTags,
         );
         responseText = setupExtraction.content;
+        // A reply with no text is not JSON to repair: say so, rather than retrying the same wait or opening a repair
+        // dialog over nothing (playtest 2026-10-26: a world setup at maximum reasoning came back empty after 33 min).
+        if (!responseText.trim()) {
+          signal?.throwIfAborted();
+          logger.warn("[game/setup] The model returned no text (finish reason: %s)", setupFinishReason ?? "unknown");
+          rejectGenerationOutput(reply, 502, {
+            error:
+              setupFinishReason === "length" || setupExtraction.thinking.trim()
+                ? "The model returned no world, only its reasoning, before it stopped. Try again with a lower reasoning effort or a higher max output tokens on this connection, or use a different model."
+                : "The model returned an empty reply, so no world was made. Try again, or use a different model.",
+            code: "setup_empty",
+            finishReason: setupFinishReason ?? null,
+          });
+          return;
+        }
 
         if (debugLogsEnabled) {
           debugLog("[game/setup] Response length: %d chars", responseText.length);
@@ -7054,6 +7831,8 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
         }
 
         if (!parseError) break;
+        // A reply cut off before its JSON closed comes back cut off again: the same wait twice for nothing.
+        if (isLikelyTruncatedJsonResponse(responseText, setupFinishReason)) break;
         if (attempt === 1) {
           logger.warn("[game/setup] Setup JSON failed parse/validation; retrying world setup once");
         }
@@ -7067,8 +7846,9 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
       logger.error("[game/setup] Returning 422: %s", parseError);
       if (isLikelyTruncatedJsonResponse(responseText, setupFinishReason)) {
         rejectGenerationOutput(reply, 422, {
-          error:
-            "World generation response was cut off before the setup JSON completed. Increase this connection's max output tokens or use a model with a larger output limit, then try again.",
+          error: isLengthFinishReason(setupFinishReason)
+            ? "World generation response was cut off before the setup JSON completed. Increase this connection's max output tokens or use a model with a larger output limit, then try again."
+            : "World generation stopped before the setup JSON completed: the model's reply ended mid-way, without saying it was finished, as when a provider or proxy cuts a long reply off. Try again, or use a lower reasoning effort or a different model.",
           rawResponse: responseText,
           finishReason: setupFinishReason ?? null,
         });
@@ -7346,7 +8126,8 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
       return existingStart;
     }
 
-    const startSessionRequest = (async () => {
+    // A world being given to the game's latest session (W12) is given before this session starts from it.
+    const startSessionRequest = withWorldLock(`game:${gameId}`, async () => {
       const chats = createChatsStorage(app.db);
       const connections = createConnectionsStorage(app.db);
 
@@ -7471,8 +8252,11 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
         // The tellings of one of the previous session's turns: the stacks carry over, the record
         // of how that turn was told does not.
         gameInventoryTurn: _previousInventoryTurn,
-        ...carryMeta
+        ...previousSessionMeta
       } = prevMeta;
+      // Advanced Memory's settings carry over; its progress and its own recaps of the previous
+      // session's messages do not, so the new session builds its memory from its own story.
+      const carryMeta = withoutSessionAdvancedMemory(previousSessionMeta);
 
       const newMeta = parseMeta(newChat.metadata);
       const updatedNewMeta = {
@@ -7485,6 +8269,11 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
         gameActiveState: "exploration",
         gamePartyChatId: null,
         gamePreviousSessionSummaries: summaries,
+        // What the world's ledger read in the sessions before, and in this one: the new one goes on from it.
+        gameLedgerCarry: carryWorldLedger(
+          worldLedgerCarry(prevMeta.gameLedgerCarry),
+          latestSessionMessages.filter(isGameMasterReply).map((message) => message.content),
+        ),
         gameDialogueChatId: null,
         gameCombatChatId: null,
         gameSceneBackground: null,
@@ -7515,6 +8304,16 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
             }
           : {}),
       };
+      // The new session plays in the same world: its snapshot comes with it (W11), and the living world as
+      // the sessions so far left it, which the new one folds on from.
+      const worldSnapshots = createGameWorldSnapshotsStorage(app.db);
+      if (await worldSnapshots.copy(latestSession.id, newChat.id)) {
+        const sessionWorld = await loadGameWorld(app.db, latestSession.id, prevMeta);
+        if (sessionWorld) {
+          const sessionLedger = (await gameRepliesBefore(app.db, latestSession.id)).ledger;
+          await worldSnapshots.setFold(newChat.id, worldFold(sessionWorld, sessionLedger));
+        }
+      }
       await chats.updateMetadata(newChat.id, updatedNewMeta);
 
       let recapMessageId = "";
@@ -7525,7 +8324,7 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
           const { conn, baseUrl, defaultGenerationParameters } = await resolveConnection(
             connections,
             connectionId,
-            newChat.connectionId,
+            newChat,
           );
           const provider = await createGameMainProvider(connections, conn, baseUrl);
 
@@ -7541,7 +8340,7 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
               conn.model,
               {
                 temperature: 0.7,
-                signal: createResponseAbortSignal(reply, GAME_GENERATION_TIMEOUT_MS, "Game session recap"),
+                signal: createResponseAbortSignal(reply, getChatGenerationTimeoutMs(), "Game session recap"),
               },
               resolveStoredGameGenerationParameters(updatedNewMeta, defaultGenerationParameters),
               conn.provider,
@@ -7614,6 +8413,7 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
             // A new session continues with the party as the last one left it: spent slots stay
             // spent until a rest restores them.
             rulesetLive: parseStoredRulesetLive(previousState.rulesetLive),
+            rulesetClocks: parseStoredRulesetClocks(previousState.rulesetClocks),
             committed: true,
           });
         } catch (err) {
@@ -7645,7 +8445,7 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
       if (!updatedChat) throw new Error("Failed to reload new session chat");
 
       return { sessionChat: updatedChat, sessionNumber, recap: recapText };
-    })();
+    });
 
     pendingSessionStarts.set(gameId, startSessionRequest);
 
@@ -7713,11 +8513,7 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
       const currentCampaignPlan = currentGameCampaignPlan(meta);
       const currentNpcs = Array.isArray(meta.gameNpcs) ? (meta.gameNpcs as GameNpc[]) : [];
 
-      const { conn, baseUrl, defaultGenerationParameters } = await resolveConnection(
-        connections,
-        connectionId,
-        chat.connectionId,
-      );
+      const { conn, baseUrl, defaultGenerationParameters } = await resolveConnection(connections, connectionId, chat);
       const conclusionGenerationParameters = resolveStoredGameGenerationParameters(meta, defaultGenerationParameters);
       const modelAccessPolicy = resolveGameModelAccessPolicy({
         provider: conn.provider,
@@ -7736,7 +8532,8 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
           temperature: 0.45,
           stream: streaming,
           signal: conclusionAbort.signal,
-          ...(streaming ? { onToken: () => conclusionAbort.touch() } : {}),
+          ...(streaming ? { onToken: () => conclusionAbort.touch(), onThinking: () => conclusionAbort.touch() } : {}),
+          onTokenKeepaliveOnly: true,
         },
         conclusionGenerationParameters,
         conn.provider,
@@ -8124,7 +8921,7 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
 
     const lorebookKeeperAbort = createResponseAbortTracker(
       reply,
-      GAME_GENERATION_TIMEOUT_MS,
+      getChatGenerationTimeoutMs(),
       "Game lorebook keeper regeneration",
     );
     const result = await runGameLorebookKeeperAfterConclusion({
@@ -8274,11 +9071,7 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
     const currentCampaignPlan = currentGameCampaignPlan(meta);
     const currentNpcs = Array.isArray(meta.gameNpcs) ? (meta.gameNpcs as GameNpc[]) : [];
 
-    const { conn, baseUrl, defaultGenerationParameters } = await resolveConnection(
-      connections,
-      connectionId,
-      chat.connectionId,
-    );
+    const { conn, baseUrl, defaultGenerationParameters } = await resolveConnection(connections, connectionId, chat);
     const conclusionGenerationParameters = resolveStoredGameGenerationParameters(meta, defaultGenerationParameters);
     const modelAccessPolicy = resolveGameModelAccessPolicy({
       provider: conn.provider,
@@ -8300,7 +9093,8 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
         temperature: 0.45,
         stream: streaming,
         signal: conclusionAbort.signal,
-        ...(streaming ? { onToken: () => conclusionAbort.touch() } : {}),
+        ...(streaming ? { onToken: () => conclusionAbort.touch(), onThinking: () => conclusionAbort.touch() } : {}),
+        onTokenKeepaliveOnly: true,
       },
       conclusionGenerationParameters,
       conn.provider,
@@ -8549,7 +9343,7 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
     const { conn, baseUrl, defaultGenerationParameters } = await resolveConnection(
       connections,
       connectionId,
-      currentChat.connectionId,
+      currentChat,
     );
     const progressionGenerationParameters = resolveStoredGameGenerationParameters(
       currentMeta,
@@ -8558,7 +9352,7 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
     const provider = await createGameMainProvider(connections, conn, baseUrl);
     const progressionAbort = createResponseAbortTracker(
       reply,
-      GAME_GENERATION_TIMEOUT_MS,
+      getChatGenerationTimeoutMs(),
       "Game campaign progression update",
     );
     const progressionOptions = gameGenOptions(
@@ -8568,7 +9362,8 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
         temperature: 0.35,
         stream: streaming,
         signal: progressionAbort.signal,
-        ...(streaming ? { onToken: () => progressionAbort.touch() } : {}),
+        ...(streaming ? { onToken: () => progressionAbort.touch(), onThinking: () => progressionAbort.touch() } : {}),
+        onTokenKeepaliveOnly: true,
       },
       progressionGenerationParameters,
       conn.provider,
@@ -8808,7 +9603,11 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
         chat.personaId ??
         setupConfig.personaId ??
         null;
-      const persona = currentRoomGeneration() ? null : personaId ? await characters.getPersona(personaId) : null;
+      const persona = currentRoomGeneration()
+        ? null
+        : personaId
+          ? await characters.getPersona(personaId, input.chatId)
+          : null;
       if (persona) {
         targetName = persona.name?.trim() || requestedName;
         targetCharacterCard = buildRecruitCharacterSourceCard({
@@ -8846,7 +9645,7 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
         throw new Error("The selected character is not in the active party");
       }
 
-      const character = await characters.getById(input.characterId);
+      const character = await characters.getById(input.characterId, input.chatId);
       if (character) {
         const data = (typeof character.data === "string" ? JSON.parse(character.data) : character.data) as Record<
           string,
@@ -8871,7 +9670,10 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
     const existingTargetCard = targetCardIndex >= 0 ? currentCards[targetCardIndex]! : null;
     if (!targetCharacterCard) {
       targetCharacterCard = existingTargetCard
-        ? [`Name: ${targetName}`, `Current game sheet: ${JSON.stringify(existingTargetCard, null, 2)}`].join("\n")
+        ? [
+            `Name: ${targetName}`,
+            `Current game sheet: ${JSON.stringify(gameCardsForPrompt([existingTargetCard])[0], null, 2)}`,
+          ].join("\n")
         : `Name: ${targetName}`;
     }
 
@@ -8914,8 +9716,11 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
       targetCharacterName: targetName,
       targetCharacterCard,
       currentPartyNames: Array.from(new Set(partyNames)),
-      currentPartyCards: otherPartyCards.length > 0 ? JSON.stringify(otherPartyCards, null, 2) : null,
-      existingTargetCard: existingTargetCard ? JSON.stringify(existingTargetCard, null, 2) : null,
+      currentPartyCards:
+        otherPartyCards.length > 0 ? JSON.stringify(gameCardsForPrompt(otherPartyCards), null, 2) : null,
+      existingTargetCard: existingTargetCard
+        ? JSON.stringify(gameCardsForPrompt([existingTargetCard])[0], null, 2)
+        : null,
       worldOverview: (meta.gameWorldOverview as string) || null,
       storyArc: (meta.gameStoryArc as string) || null,
       plotTwists: Array.isArray(meta.gamePlotTwists) ? (meta.gamePlotTwists as string[]) : null,
@@ -8944,7 +9749,7 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
     const { conn, baseUrl, defaultGenerationParameters } = await resolveConnection(
       connections,
       input.connectionId,
-      chat.connectionId,
+      chat,
     );
     const generationParameters = resolveStoredGameGenerationParameters(meta, defaultGenerationParameters);
     const modelAccessPolicy = resolveGameModelAccessPolicy({
@@ -8958,7 +9763,7 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
       {
         temperature: 0.45,
         maxTokens: 1200,
-        signal: createResponseAbortSignal(reply, GAME_GENERATION_TIMEOUT_MS, "Game character sheet regeneration"),
+        signal: createResponseAbortSignal(reply, getChatGenerationTimeoutMs(), "Game character sheet regeneration"),
         debugMode: input.debugMode || isDebugAgentsEnabled(),
       },
       generationParameters,
@@ -9042,10 +9847,17 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
       !Array.isArray(existingTargetCard.rpgStats)
         ? existingTargetCard.rpgStats
         : sourceRpgStats;
-    const gameCard = {
-      ...regeneratedCard,
-      ...(preservedRpgStats ? { rpgStats: preservedRpgStats } : {}),
-    };
+    // A sheet made again for its format keeps the temperament its character already has.
+    const gameCard = withCardTemperament(
+      {
+        ...regeneratedCard,
+        ...(preservedRpgStats ? { rpgStats: preservedRpgStats } : {}),
+      },
+      gameCardTemperament(existingTargetCard as Record<string, unknown> | null | undefined)
+        ? undefined
+        : rawCard.temperament,
+      existingTargetCard as Record<string, unknown> | null | undefined,
+    );
 
     logger.info("[game/character-sheet/regenerate] Generated draft sheet for %s in chat %s", targetName, input.chatId);
     return { characterName: targetName, gameCard };
@@ -9082,21 +9894,112 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
       }
     });
 
-    let matches = parsedCharacters.filter((candidate) => candidate.lookup === requestedLookup);
-    if (matches.length === 0 && requestedLookup.length >= 3) {
-      matches = parsedCharacters.filter(
-        (candidate) =>
-          candidate.lookup.includes(requestedLookup) ||
-          (candidate.lookup.length >= 3 && requestedLookup.includes(candidate.lookup)),
-      );
+    let chatCharacterIds: string[] = [];
+    try {
+      chatCharacterIds =
+        typeof chat.characterIds === "string"
+          ? ((JSON.parse(chat.characterIds) as string[]) ?? [])
+          : ((chat.characterIds as string[]) ?? []);
+    } catch {
+      chatCharacterIds = [];
     }
-    if (matches.length > 1) {
-      throw new Error(`Character "${requestedName}" is ambiguous. Use the exact character name.`);
+    // An Experience's companions (1.347): one the party takes in joins with their sheet. While the
+    // Experience has companions, only they (and the player's own library characters) may join.
+    const companions = await gameCompanions(app.db, chat.id, meta);
+    const pinnedRuleset = meta.gameRuleset != null ? resolveGameRuleset(meta, await loadRulesetRegistry()) : null;
+    const companion = companions
+      ? gameCompanionNamed(companions, requestedName, pinnedRuleset?.status === "ok" ? pinnedRuleset.definition : null)
+      : null;
+    const currentPartyIds = getStoredPartyCharacterIds(meta, setupConfig, chatCharacterIds);
+    const gameNpcs = (meta.gameNpcs as GameNpc[]) ?? [];
+    const trackedNpc = findGameNpcByName(gameNpcs, requestedName);
+    if (input.copyOf) {
+      return recruitPartyCopy({
+        chats,
+        stateStore,
+        chat,
+        meta,
+        setupConfig,
+        chatCharacterIds,
+        currentPartyIds,
+        requestedName,
+        trackedNpc,
+        copyOf: input.copyOf.trim(),
+        condition: input.condition?.trim() || undefined,
+      });
+    }
+    // An NPC met this session may not be tracked yet, but the journal's NPC log already has them.
+    const journalNpcLog = (meta.gameJournal as Journal | null)?.npcLog;
+    const gameHasOwnCharacter =
+      trackedNpc !== null ||
+      (Array.isArray(journalNpcLog) &&
+        journalNpcLog.some(
+          (entry) =>
+            typeof entry?.npcName === "string" && normalizeCharacterLookupName(entry.npcName) === requestedLookup,
+        ));
+
+    // A library card is matched by its exact name only. A partial match imported unrelated cards,
+    // like a "Samantha" card for an NPC named Sam (#7324).
+    const sameNameCards = parsedCharacters.filter((candidate) => candidate.lookup === requestedLookup);
+    const partyCards = parsedCharacters.filter((candidate) => currentPartyIds.includes(candidate.row.id));
+    const cardInParty = partyCards.find((candidate) => candidate.lookup === requestedLookup);
+    let matches: typeof sameNameCards;
+    // Someone of this name already in the party stays the only one, even when a stale choice is answered.
+    // An Experience's companion (1.347) joins as themselves, never as a library card.
+    if (companion) {
+      matches = [];
+    } else if (cardInParty) {
+      matches = [cardInParty];
+    } else if (trackedNpc && currentPartyIds.includes(buildPartyNpcId(trackedNpc.name))) {
+      matches = [];
+    } else if (input.characterId !== undefined) {
+      // The player's answer to the card choice below; null keeps the game's own character.
+      matches = sameNameCards.filter((candidate) => candidate.row.id === input.characterId);
+      if (input.characterId !== null && matches.length === 0) {
+        throw new Error(`No character card named "${requestedName}" matches that choice.`);
+      }
+    } else if (sameNameCards.length > 1 || (sameNameCards.length === 1 && gameHasOwnCharacter)) {
+      // More than one character has this name, so the player picks. Nothing changes until they do.
+      return {
+        sessionChat: chat,
+        added: false,
+        characterName: trackedNpc?.name ?? requestedName,
+        cardCreated: false,
+        cardChoices: sameNameCards.map(({ row, data, name }) => ({
+          id: row.id,
+          name,
+          title: row.comment?.trim() || null,
+          avatarPath: row.avatarPath ?? null,
+          avatarCrop: data.extensions?.avatarCrop ?? null,
+          // The character library's preview text, so cards without a title or avatar can still be told apart.
+          summary:
+            [data.summary, data.creator_notes, data.description, data.personality]
+              .map((value) => (typeof value === "string" ? value.replace(/\s+/g, " ").trim() : ""))
+              .find(Boolean)
+              ?.slice(0, 200) ?? null,
+        })),
+      };
+    } else if (sameNameCards.length > 0 || trackedNpc) {
+      matches = sameNameCards;
+    } else {
+      // A shortened name for someone already in the party ("Kael" for "Kael Stormborn") is that member.
+      const partyMembers = partyCards.filter((candidate) => characterNamesLikelyMatch(candidate.name, requestedName));
+      matches = partyMembers.length === 1 ? partyMembers : [];
     }
 
-    const gameNpcs = (meta.gameNpcs as GameNpc[]) ?? [];
-    let npcRecruit = matches.length === 0 ? findGameNpcByName(gameNpcs, requestedName) : null;
-    const fallbackTrackedNpc = matches.length === 0 && !npcRecruit ? buildFallbackTrackedGameNpc(requestedName) : null;
+    if (companions && !companion && matches.length === 0) {
+      throw new Error(`${requestedName} is not one of this Experience's companions, so cannot join the party.`);
+    }
+
+    let npcRecruit =
+      matches.length === 0 ? (companion ? findGameNpcByName(gameNpcs, companion.name) : trackedNpc) : null;
+    const companionPerson = companion && !npcRecruit ? storyPerson(companions!.world, companion.person) : undefined;
+    const fallbackTrackedNpc =
+      matches.length === 0 && !npcRecruit
+        ? companionPerson
+          ? experienceDressedNpc(worldPersonNpc(companions!.world, companionPerson), companions!.people)
+          : buildFallbackTrackedGameNpc(requestedName)
+        : null;
     if (fallbackTrackedNpc) {
       npcRecruit = fallbackTrackedNpc;
       logger.info(
@@ -9108,17 +10011,6 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
 
     const recruit = matches[0] ?? null;
     const characterById = new Map(parsedCharacters.map((candidate) => [candidate.row.id, candidate.name] as const));
-    let chatCharacterIds: string[] = [];
-    try {
-      chatCharacterIds =
-        typeof chat.characterIds === "string"
-          ? ((JSON.parse(chat.characterIds) as string[]) ?? [])
-          : ((chat.characterIds as string[]) ?? []);
-    } catch {
-      chatCharacterIds = [];
-    }
-
-    const currentPartyIds = getStoredPartyCharacterIds(meta, setupConfig, chatCharacterIds);
     const currentCards = (meta.gameCharacterCards as Array<Record<string, unknown>>) ?? [];
     const recruitId = recruit ? recruit.row.id : buildPartyNpcId(npcRecruit!.name);
     const recruitName = recruit ? recruit.name : npcRecruit!.name;
@@ -9139,14 +10031,20 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
     const recruitRpgStats = recruit ? extractRecruitCharacterRpgStats(recruit.data) : undefined;
     // In a game on a ruleset a recruit joins the way the party did at setup: with a copy of the
     // library card's starting build, or a blank sheet (an NPC has no library card to copy from).
-    const pinnedRuleset = meta.gameRuleset != null ? resolveGameRuleset(meta, await loadRulesetRegistry()) : null;
+    // A companion joins with their own build for the party's level (1.347).
     const recruitRulesetSheet =
-      pinnedRuleset?.status === "ok"
-        ? copyRulesetSheetForGame(
+      pinnedRuleset?.status === "ok" && companion?.sheet
+        ? companionSheetEnvelope(
             pinnedRuleset.definition,
-            recruit?.data.extensions?.rulesetSheets?.[pinnedRuleset.definition.id],
+            companion.sheet,
+            companionPartyLevel(pinnedRuleset.definition, currentCards, companion.sheet, companionNames(companions!)),
           )
-        : undefined;
+        : pinnedRuleset?.status === "ok"
+          ? copyRulesetSheetForGame(
+              pinnedRuleset.definition,
+              recruit?.data.extensions?.rulesetSheets?.[pinnedRuleset.definition.id],
+            )
+          : undefined;
     const recruitSourceCard = recruit
       ? buildRecruitCharacterSourceCard(recruit.data)
       : buildNpcRecruitCharacterSourceCard(npcRecruit!);
@@ -9165,7 +10063,7 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
         const { conn, baseUrl, defaultGenerationParameters } = await resolveConnection(
           connections,
           input.connectionId,
-          chat.connectionId,
+          chat,
         );
         const provider = await createGameMainProvider(connections, conn, baseUrl);
         const generationParameters = resolveStoredGameGenerationParameters(meta, defaultGenerationParameters);
@@ -9215,7 +10113,7 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
           targetCharacterName: recruitName,
           targetCharacterCard: recruitSourceCard,
           currentPartyNames,
-          currentPartyCards: currentCards.length > 0 ? JSON.stringify(currentCards, null, 2) : null,
+          currentPartyCards: currentCards.length > 0 ? JSON.stringify(gameCardsForPrompt(currentCards), null, 2) : null,
           worldOverview: (meta.gameWorldOverview as string) || null,
           storyArc: (meta.gameStoryArc as string) || null,
           plotTwists: (meta.gamePlotTwists as string[]) || null,
@@ -9226,7 +10124,7 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
 
         const recruitAbortSignal = createResponseAbortSignal(
           reply,
-          GAME_GENERATION_TIMEOUT_MS,
+          getChatGenerationTimeoutMs(),
           "Game party recruit card",
         );
         const result = await runGameChatComplete(
@@ -9263,11 +10161,14 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
               ? (parsed[0] as Record<string, unknown>)
               : null;
         if (rawCard) {
-          nextCard = {
-            ...normalizeGeneratedGameCharacterCard(rawCard, recruitName),
-            ...(recruitRpgStats ? { rpgStats: recruitRpgStats } : {}),
-            ...(recruitRulesetSheet ? { rulesetSheet: recruitRulesetSheet } : {}),
-          };
+          nextCard = withCardTemperament(
+            {
+              ...normalizeGeneratedGameCharacterCard(rawCard, recruitName),
+              ...(recruitRpgStats ? { rpgStats: recruitRpgStats } : {}),
+              ...(recruitRulesetSheet ? { rulesetSheet: recruitRulesetSheet } : {}),
+            },
+            rawCard.temperament,
+          );
         }
       } catch (error) {
         logger.warn(error, "[game/party/recruit] Failed to generate recruit card, using fallback");
@@ -9421,9 +10322,14 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
   });
 
   // ── POST /game/dice/roll ──
-  app.post("/dice/roll", async (req) => {
-    const { notation } = diceRollSchema.parse(req.body);
-    const result = rollDice(notation);
+  app.post("/dice/roll", async (req, reply) => {
+    const { chatId, notation } = diceRollSchema.parse(req.body);
+    if (isRollableDiceNotation(notation)) return { result: rollDice(notation) };
+    // Anything else may name a symbol-pool game's own dice: "2 ability 1 proficiency vs 2 difficulty".
+    const chat = chatId ? await createChatsStorage(app.db).getById(chatId) : null;
+    const resolution = chat?.mode === "game" ? await symbolDiceResolution(parseMeta(chat.metadata), app.db) : null;
+    const result = rollSymbolDiceNotation(resolution, notation, rollDieSecurely);
+    if (!result) return reply.status(400).send({ error: "Invalid dice notation" });
     return { result };
   });
 
@@ -9444,6 +10350,8 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
        *  fallback asks the ruleset the same question generation would have. Each is ignored where the
        *  ruleset does not take it. */
       withAbility: z.string().trim().min(1).max(100).optional(),
+      /** `for=` (1.752): what the check is made for, "climb" or "swim". */
+      purpose: z.string().trim().min(1).max(40).optional(),
       threshold: z.number().int().min(1).max(1000).optional(),
       bonusDice: z.number().int().min(-20).max(20).optional(),
       difficulty: z.string().trim().min(1).max(80).optional(),
@@ -9473,6 +10381,7 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
         preRolledD20: input.preRolledD20,
         who: input.who,
         withAbility: input.withAbility,
+        ...(input.purpose ? { purpose: input.purpose } : {}),
         threshold: input.threshold,
         bonusDice: input.bonusDice,
         difficulty: input.difficulty,
@@ -9488,6 +10397,9 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
       // A check the character cannot attempt untrained is not there to roll.
       if (err instanceof SkillCheckUntrainedError) {
         return reply.status(400).send({ error: err.message, code: "skill_check_untrained" });
+      }
+      if (err instanceof SkillCheckRollerError) {
+        return reply.status(400).send({ error: err.message, code: "skill_check_unknown_roller" });
       }
       throw err;
     }
@@ -9586,6 +10498,218 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
     return { previousState: currentState, newState: validatedState };
   });
 
+  /**
+   * One worldgen model call (W0 kits, W1 briefs and canon): the prompt, the reply read as JSON and
+   * checked, and, when it does not hold together, the reasons sent back once. A failed connection is
+   * answered the way world setup answers it. The prompt and reply are logged in debug mode.
+   */
+  const askWorldModel = async <T>(args: {
+    reply: FastifyReply;
+    connectionId?: string;
+    debugMode?: boolean;
+    /** The route, for the log: "world-kit". */
+    route: string;
+    /** The watchdog's name for the call: "Setting kit". */
+    title: string;
+    prompt: { system: string; user: string };
+    notJson: string;
+    read: (data: unknown) => { ok: true; value: T } | { ok: false; issues: string[] };
+    repair: (issues: string[]) => string;
+    /** Room for the reply; a brief with its name lists needs more than a kit. */
+    maxTokens?: number;
+    /** The game's own generation settings, over the connection's (`worldKitWriteSchema`). */
+    generationParameters?: unknown;
+  }): Promise<{ ok: true; value: T } | { ok: false; status: number; error?: string; issues: string[] }> => {
+    const debugLog = (message: string, ...rest: any[]) => logDebugOverride(args.debugMode === true, message, ...rest);
+    const connections = createConnectionsStorage(app.db);
+    const {
+      conn,
+      baseUrl,
+      defaultGenerationParameters: connectionParameters,
+    } = await resolveConnection(connections, args.connectionId, null);
+    // The setup's reasoning effort, not the connection's, as world setup itself sends it.
+    const defaultGenerationParameters = mergeStoredGenerationParameters(
+      connectionParameters,
+      args.generationParameters,
+    );
+    const provider = await createGameMainProvider(connections, conn, baseUrl);
+    const messages: ChatMessage[] = [
+      { role: "system", content: args.prompt.system },
+      { role: "user", content: args.prompt.user },
+    ];
+    const overrides: Partial<ChatOptions> = {
+      temperature: 0.7,
+      maxTokens: clampGameMaxOutputTokens({
+        provider: conn.provider,
+        model: conn.model,
+        maxTokens: args.maxTokens ?? 8192,
+        maxTokensOverride: conn.maxTokensOverride,
+      }),
+      signal: createResponseAbortSignal(args.reply, getChatGenerationTimeoutMs(), args.title),
+    };
+    if (!defaultGenerationParameters?.reasoningEffort) {
+      overrides.reasoningEffort = undefined;
+      overrides.enableThinking = false;
+    }
+    const options = gameGenOptions(conn.model, overrides, defaultGenerationParameters, conn.provider);
+    let issues: string[] = [];
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      for (const message of messages) {
+        debugLog(`[game/${args.route}] [%s] (%d chars):\n%s`, message.role, message.content.length, message.content);
+      }
+      let result: ChatCompletionResult;
+      try {
+        result = await runGameChatComplete(
+          provider,
+          messages,
+          options,
+          attempt === 1 ? args.title : `${args.title} retry`,
+        );
+      } catch (error) {
+        const failure = formatInitialGameGmConnectionError(error);
+        logger.warn(error, "[game/%s] GM connection failed", args.route);
+        return { ok: false, status: failure.statusCode, error: failure.message, issues: [] };
+      }
+      const text = extractLeadingThinkingBlocks(
+        result.content ?? "",
+        defaultGenerationParameters?.customThinkingTags,
+      ).content;
+      debugLog(`[game/${args.route}] Response (%d chars):\n%s`, text.length, text);
+      let data: unknown = null;
+      try {
+        data = parseJSON(text);
+      } catch {
+        /* refused below */
+      }
+      const read = data === null ? { ok: false as const, issues: [args.notJson] } : args.read(data);
+      if (read.ok) return read;
+      issues = read.issues;
+      logger.warn("[game/%s] Refused on attempt %d: %s", args.route, attempt, issues.join("; "));
+      messages.push({ role: "assistant", content: text }, { role: "user", content: args.repair(issues) });
+    }
+    return { ok: false, status: 422, issues };
+  };
+
+  // ── POST /game/world-kit ──
+  // The model writes a setting kit from the player's own setting (worldgen W0). Nothing is stored:
+  // the kit goes back to the wizard, where the player can change any word before the game starts.
+  // A kit that does not hold together is sent back once with the reasons, then refused with them.
+  app.post("/world-kit", async (req, reply) => {
+    const input = worldKitWriteSchema.parse(req.body);
+    const written = await askWorldModel({
+      reply,
+      connectionId: input.connectionId,
+      debugMode: input.debugMode,
+      generationParameters: input.generationParameters,
+      route: "world-kit",
+      title: "Setting kit",
+      prompt: buildWorldKitWritingPrompt(input),
+      notJson: "kit: The reply was not JSON",
+      read: (data) => {
+        const read = readWrittenWorldKit(data);
+        return read.ok ? { ok: true, value: read.kit } : read;
+      },
+      repair: worldKitRepairPrompt,
+    });
+    if (written.ok) return { kit: written.value };
+    return reply.status(written.status).send({
+      error: written.error ?? "The model could not write a setting kit that holds together.",
+      issues: written.issues,
+    });
+  });
+
+  // ── POST /game/world-brief ──
+  // The model writes a world's brief (worldgen W1): what exists, in the kit's words, around the
+  // places read from the player's lore, which it keeps exactly. Nothing is stored here either: the
+  // wizard previews the compiled world and the brief is stored with the game.
+  app.post("/world-brief", async (req, reply) => {
+    const input = worldBriefWriteSchema.parse(req.body);
+    const canon = input.canon ?? [];
+    const canonEvents = input.canonEvents ?? [];
+    const written = await askWorldModel({
+      reply,
+      connectionId: input.connectionId,
+      debugMode: input.debugMode,
+      generationParameters: input.generationParameters,
+      route: "world-brief",
+      title: "World brief",
+      maxTokens: GAME_SETUP_DEFAULT_OUTPUT_TOKENS,
+      prompt: buildWorldBriefPrompt({ ...input, canon, canonEvents, strict: input.grounding === "strict" }),
+      notJson: "brief: The reply was not JSON",
+      read: (data) => {
+        const read = readWrittenWorldBrief(input.kit, data, canon, canonEvents);
+        return read.ok ? { ok: true, value: { brief: read.brief, repairs: read.repairs } } : read;
+      },
+      repair: worldBriefRepairPrompt,
+    });
+    if (written.ok) return written.value;
+    return reply.status(written.status).send({
+      error: written.error ?? "The model could not write a world brief that holds together.",
+      issues: written.issues,
+    });
+  });
+
+  // ── POST /game/world-canon ──
+  // The places the player's lore states (worldgen W1), read in batches and each linked to the entries
+  // that state it. The lorebooks are only read, never changed.
+  app.post("/world-canon", async (req, reply) => {
+    const input = worldCanonReadSchema.parse(req.body);
+    const wanted = input.entryIds ? new Set(input.entryIds) : null;
+    const lorebooks = createLorebooksStorage(app.db);
+    const rows = (await lorebooks.listEntriesByLorebooks(input.lorebookIds)) as unknown as Array<{
+      id: string;
+      name?: string | null;
+      content?: string | null;
+    }>;
+    // Only what play would read: an off lorebook, folder or entry states nothing.
+    const eligible = new Set(
+      (
+        await lorebooks.listEligibleEntriesByIds(
+          rows.map((entry) => entry.id),
+          { unlimited: true },
+        )
+      ).map((entry) => entry.id),
+    );
+    const entries = rows
+      .filter((entry) => eligible.has(entry.id) && (!wanted || wanted.has(entry.id)) && (entry.content ?? "").trim())
+      .map((entry) => ({ id: entry.id, name: entry.name ?? "", content: entry.content ?? "" }));
+    if (entries.length === 0) {
+      return reply.status(400).send({ error: "These lorebooks have no entries to read.", issues: [] });
+    }
+    const batches = loreBatches(entries).slice(0, WORLD_CANON_MAX_BATCHES);
+    const read: unknown[] = [];
+    for (const [index, batch] of batches.entries()) {
+      const answer = await askWorldModel({
+        reply,
+        connectionId: input.connectionId,
+        debugMode: input.debugMode,
+        generationParameters: input.generationParameters,
+        route: "world-canon",
+        title: `Lore reading ${index + 1}`,
+        prompt: buildWorldCanonPrompt(input.kit, batch),
+        notJson: "places: The reply was not JSON",
+        read: (data) =>
+          data && typeof data === "object" && Array.isArray((data as { places?: unknown }).places)
+            ? { ok: true, value: data }
+            : { ok: false, issues: ['places: Return {"places": [...]}'] },
+        repair: worldBriefRepairPrompt,
+      });
+      if (!answer.ok) {
+        return reply.status(answer.status).send({
+          error: answer.error ?? "The model could not read the lore's places.",
+          issues: answer.issues,
+        });
+      }
+      read.push(answer.value);
+    }
+    const merged = mergeWorldCanon(input.kit, read, new Set(batches.flat().map((entry) => entry.id)));
+    return {
+      ...merged,
+      entriesRead: batches.flat().length,
+      entriesLeft: entries.length - batches.flat().length,
+    };
+  });
+
   // ── POST /game/map/generate ──
   app.post("/map/generate", async (req, reply) => {
     const { chatId, locationType, context, connectionId } = mapGenerateSchema.parse(req.body);
@@ -9596,19 +10720,18 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
     const chat = await chats.getById(chatId);
     if (!chat) throw new Error("Chat not found");
 
-    const { conn, baseUrl, defaultGenerationParameters } = await resolveConnection(
-      connections,
-      connectionId,
-      chat.connectionId,
-    );
+    const { conn, baseUrl, defaultGenerationParameters } = await resolveConnection(connections, connectionId, chat);
     const provider = await createGameMainProvider(connections, conn, baseUrl);
 
     const messages: ChatMessage[] = [
-      { role: "system", content: buildMapGenerationPrompt(locationType, mapContext) },
+      {
+        role: "system",
+        content: buildMapGenerationPrompt(locationType, mapContext, gameWorldBattlefields(parseMeta(chat.metadata))),
+      },
       { role: "user", content: "Generate the map." },
     ];
 
-    const mapAbortSignal = createResponseAbortSignal(reply, GAME_GENERATION_TIMEOUT_MS, "Game map generation");
+    const mapAbortSignal = createResponseAbortSignal(reply, getChatGenerationTimeoutMs(), "Game map generation");
     const result = await runGameChatComplete(
       provider,
       messages,
@@ -9808,7 +10931,7 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
           side: z.enum(["player", "enemy"]).optional(),
           tactics: combatTacticsSchema.optional(),
           controller: z.enum(["manual", "ai"]).optional(),
-          skillCooldowns: z.record(z.number().int().min(0).max(10000)).optional(),
+          skillCooldowns: z.record(z.string(), z.number().int().min(0).max(10000)).optional(),
           skills: z
             .array(
               z.object({
@@ -9856,8 +10979,8 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
           itemEffect: z
             .object({
               name: generatedRequiredStringSchema,
-              target: z.enum(["self", "ally", "enemy", "any"]),
-              type: z.enum(["heal", "damage", "buff", "debuff", "status", "utility"]),
+              target: z.enum(["self", "ally", "enemy", "any"]).catch("any"),
+              type: z.enum(["heal", "damage", "buff", "debuff", "status", "utility"]).catch("utility"),
               description: generatedRequiredStringSchema,
               power: z.number().optional(),
               element: generatedOptionalStringSchema,
@@ -9867,7 +10990,7 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
                   emoji: generatedRequiredStringSchema,
                   duration: z.number(),
                   modifier: z.number().optional(),
-                  stat: z.enum(["attack", "defense", "speed", "hp"]).optional(),
+                  stat: z.enum(["attack", "defense", "speed", "hp"]).optional().catch(undefined),
                 })
                 .optional(),
               consumes: z.boolean().optional(),
@@ -9881,13 +11004,15 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
             name: generatedRequiredStringSchema,
             description: generatedRequiredStringSchema,
             ownerName: generatedOptionalStringSchema,
-            trigger: z.enum(["round_interval", "hp_threshold", "on_hit", "on_attack", "passive"]),
+            // A word the Engine has none of ("charge") goes off as an attack does (laptop playtest 2026-10-25).
+            trigger: z.enum(["round_interval", "hp_threshold", "on_hit", "on_attack", "passive"]).catch("on_attack"),
             interval: z.number().optional(),
             hpThreshold: z.number().optional(),
             counterplay: generatedOptionalStringSchema,
             effectType: z
               .enum(["damage_all", "damage_one", "buff_self", "debuff_party", "status_party", "status_enemy"])
-              .optional(),
+              .optional()
+              .catch(undefined),
             power: z.number().optional(),
             element: generatedOptionalStringSchema,
             status: z
@@ -9896,7 +11021,7 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
                 emoji: generatedRequiredStringSchema,
                 duration: z.number(),
                 modifier: z.number().optional(),
-                stat: z.enum(["attack", "defense", "speed", "hp"]).optional(),
+                stat: z.enum(["attack", "defense", "speed", "hp"]).optional().catch(undefined),
               })
               .optional(),
           }),
@@ -9945,11 +11070,20 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
       // Who uses each item, for the check a gated one asks first: the leader for the player's own
       // command, as the round gives it to them, and each party member for theirs.
       const leader = controlledId ?? combatants.find((c) => c.hp > 0 && c.side === "player")?.id;
-      const users = new Map<object, string | undefined>([
-        ...(playerAction?.type === "item" ? [[playerAction, leader] as const] : []),
-        ...Object.entries(partyActions ?? {}).map(([id, action]) => [action, id] as const),
-      ]);
-      for (const action of itemActions) {
+      // Each member's order once, in the order the screen spends them: the party's orders as sent, then
+      // the leader's own command, unless it is the same use as the leader's order among them (the screen
+      // sends both).
+      const own = partyActions?.[leader ?? ""];
+      const twice = own?.type === "item" && playerAction?.type === "item" && own.itemId === playerAction.itemId;
+      const orders = [
+        ...Object.entries(partyActions ?? {}).map(([id, action]) => ({ action, user: id as string | undefined })),
+        ...(playerAction && !twice ? [{ action: playerAction, user: leader }] : []),
+      ].filter(({ action }) => action.type === "item");
+      // A use that comes out of a fake does what the fake truly does (1.79): the round's uses of a line
+      // come out of its stacks one after another, as the screen spends them.
+      const uses = await loadGameFightUseEffects(app.db, meta);
+      const spent = new Map<string, number>();
+      for (const { action, user } of orders) {
         const line = fight.lines.find(
           (entry) => gameInventoryNameKey(entry.name) === gameInventoryNameKey(action.itemId ?? ""),
         );
@@ -9958,13 +11092,24 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
           (effect) => effect.ruleset && gameInventoryNameKey(effect.name) === gameInventoryNameKey(line.name),
         );
         if (!worked) continue;
-        const who = combatants.find((c) => c.id === users.get(action))?.name ?? "";
+        // ponytail: an order whose member falls before acting is not spent by the screen, so later uses of its
+        // line in that round read one stack on. Upgrade: work the effect out as each use resolves. One that
+        // holds charges reads the stack its charge comes from once the round's earlier uses spent theirs.
+        const nth = spent.get(line.name) ?? 0;
+        if (worked.consumes !== false || worked.charges) spent.set(line.name, nth + 1);
+        const does = uses ? uses.effectOf(line.ownName ?? line.name, worked, nth) : worked;
+        const who = combatants.find((c) => c.id === user)?.name ?? "";
         const gate = line.item ? await rollGameFightItemGate(app.db, chatId, who, line.item) : null;
-        action.itemEffect = gate && !gate.success ? { ...worked, failed: gate.line } : worked;
+        action.itemEffect = gate && !gate.success ? { ...does, failed: gate.line } : does;
+        if (twice && action === own && playerAction) playerAction.itemEffect = action.itemEffect;
       }
     }
     const difficulty = normalizeGameDifficulty((meta.gameSetupConfig as Record<string, unknown>)?.difficulty);
-    const elementPreset = ((meta.gameSetupConfig as Record<string, unknown>)?.elementPreset as string) ?? "default";
+    // The setting's own elements (worldgen W6c), when its kit names them; else the classic preset.
+    const elementPreset =
+      gameWorldElementSet(meta) ??
+      ((meta.gameSetupConfig as Record<string, unknown>)?.elementPreset as string) ??
+      "default";
     const result = resolveCombatRound(
       combatants as (CombatantStats & { side?: "player" | "enemy" })[],
       round,
@@ -10047,6 +11192,8 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
     .object({
       schemaVersion: z.literal(1),
       weather: combatWeatherSchema.optional(),
+      // The setting's elements (worldgen W6c): a state the client sends back is checked before it is read.
+      elements: worldElementSetSchema.optional(),
       grid: z
         .object({
           width: z.number().int().min(1).max(64),
@@ -10090,9 +11237,14 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
       round: z.number().int().min(1).max(10000),
       seed: tacticalBattlefieldSeedSchema,
       actionCounter: z.number().int().min(0).max(1_000_000),
-      log: z.array(z.record(z.unknown())).max(2000),
+      log: z.array(z.record(z.string(), z.unknown())).max(2000),
       difficulty: z.string(),
       outcome: z.enum(["victory", "defeat", "fled"]).optional(),
+      // The order a fight by initiative takes turns in (combat C6c): ids, at most one a unit.
+      initiative: z
+        .object({ order: z.array(z.string().min(1).max(200)).max(40) })
+        .strict()
+        .optional(),
     })
     .passthrough();
 
@@ -10130,7 +11282,7 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
         .status(400)
         .send({ error: `Invalid tactical battle request: ${field}${issue?.message ?? "invalid input"}` });
     }
-    const { chatId, party, enemies, seed, environment, formation, battlefield, weather } = parsed.data;
+    const { chatId, party, enemies, seed, formation, battlefield, weather } = parsed.data;
 
     const chats = createChatsStorage(app.db);
     const chat = await chats.getById(chatId);
@@ -10146,8 +11298,17 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
       randomSeed: () => randomInt(0, 0x1_0000_0000),
     });
     if (!preferences.ok) return reply.status(400).send({ error: preferences.error });
+    // A board painted for where the fight starts (worldgen W9g) is fought on as painted, in its own scene;
+    // the brief's terrain is not used.
+    const here = await gameBattlefieldHere(app.db, chatId, meta, preferences.seed);
+    // A scene in the setting's own words is laid out like the battlefield it names (worldgen W6d).
+    const environment =
+      here?.scene ??
+      worldSceneLike(gameWorldBattlefields(meta) ?? WORLD_DEFAULT_BATTLEFIELDS, parsed.data.environment) ??
+      parsed.data.environment;
 
     let state: TacticalCombatState;
+    let opening: { before: TacticalCombatState; events: TacticalEvent[] } | undefined;
     try {
       state = createTacticalCombat(party as unknown as Combatant[], enemies as unknown as Combatant[], {
         seed: preferences.seed,
@@ -10158,13 +11319,26 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
               resolveCombatWeather(
                 meta.gameWeather ?? (await createGameStateStorage(app.db).getLatestCommitted(chatId))?.weather,
                 environment,
-                preferences.battlefield?.exposure,
+                here ? undefined : preferences.battlefield?.exposure,
               )),
         difficulty,
+        ...(gameWorldElementSet(meta) ? { elements: gameWorldElementSet(meta) } : {}),
         environment,
         formation,
-        battlefield: preferences.battlefield,
+        ...(here ? { made: here } : { battlefield: preferences.battlefield }),
+        // One unit at a time in a rolled order, when the game says so (combat C6c).
+        ...((meta.gameTacticalTurnOrder ?? setupConfig?.tacticalTurnOrder) === "initiative"
+          ? { turnOrder: "initiative" as const }
+          : {}),
       });
+      // By initiative everybody before the first unit the player commands takes their turn at once, and
+      // the screen is sent those turns to play out from the board as it was laid out.
+      if (state.initiative) {
+        const before = state;
+        const turns = runInitiativeTurns(state);
+        state = turns.state;
+        if (turns.events.length > 0) opening = { before, events: turns.events };
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : "Unable to generate the requested battlefield.";
       logger.warn(err, "Tactical battlefield generation failed for chat %s", chatId);
@@ -10180,7 +11354,7 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
       preferences.seed,
     );
 
-    return { state };
+    return { state, ...(opening ? { opening } : {}) };
   });
 
   // ── POST /game/combat/tactical/action ──
@@ -10238,11 +11412,20 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
 
   // ── POST /game/time/advance ──
   app.post("/time/advance", async (req) => {
-    const schema = z.object({
-      chatId: z.string().min(1),
-      action: z.string().min(1).max(50),
-    });
-    const { chatId, action } = schema.parse(req.body);
+    // An action's span, or (the overworld's real time, worldgen W8) a number of minutes.
+    const schema = z.union([
+      z.object({ chatId: z.string().min(1), action: z.string().min(1).max(50) }),
+      z.object({
+        chatId: z.string().min(1),
+        minutes: z
+          .number()
+          .int()
+          .min(1)
+          .max(24 * 60),
+      }),
+    ]);
+    const body = schema.parse(req.body);
+    const { chatId } = body;
     const chats = createChatsStorage(app.db);
     const chat = await chats.getById(chatId);
     if (!chat) throw new Error("Chat not found");
@@ -10253,12 +11436,21 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
     // a World Maps definition revision bump, which then permanently fails movement validation as
     // spatial_transition_stale_definition. patchMetadata re-reads and merges under the per-chat queue.
     let newTime: GameTime | undefined;
+    let passed = 0;
     const updated = await chats.patchMetadata(chatId, (freshMeta) => {
       const currentTime = (freshMeta.gameTime as GameTime) ?? createInitialTime();
-      newTime = isTimeOfDayLabel(action) ? setTimeOfDay(currentTime, action) : advanceTime(currentTime, action);
+      newTime =
+        "minutes" in body
+          ? addMinutes(currentTime, body.minutes)
+          : isTimeOfDayLabel(body.action)
+            ? setTimeOfDay(currentTime, body.action)
+            : advanceTime(currentTime, body.action);
+      passed = gameTimeMinutes(newTime) - gameTimeMinutes(currentTime);
       return { gameTime: newTime };
     });
     if (!updated || !newTime) throw new Error("Chat not found");
+    // What waits on game time counts it (1.556).
+    await passGameInventoryTime(app.db, chatId, passed);
 
     // Also update the game state snapshot so WeatherEffects picks it up
     const gameStateStore = createGameStateStorage(app.db);
@@ -10269,6 +11461,15 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
     return { time: newTime, formatted: formatGameTime(newTime) };
   });
 
+  /** The season where the party is, in a game with a world (1.351): held by its story, else the day's. */
+  const gameSeasonHere = async (chatId: string, mode: string, meta: Record<string, unknown>) => {
+    const world = mode === "game" ? await loadGameWorld(app.db, chatId, meta) : null;
+    if (!world) return null;
+    const day = ((meta.gameTime as GameTime | undefined) ?? createInitialTime()).day;
+    const { here, seasons } = await overworldPlace(chatId, meta, world);
+    return (here ? seasons[here] : undefined) ?? seasons["*"] ?? worldSeason(day);
+  };
+
   // ── POST /game/weather/update ──
   app.post("/weather/update", async (req) => {
     const schema = z.object({
@@ -10278,12 +11479,15 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
       season: z.enum(["spring", "summer", "autumn", "winter"]).default("summer"),
       type: z.string().max(100).optional(),
     });
-    const { chatId, action, location, season, type } = schema.parse(req.body);
+    const { chatId, action, location, type } = schema.parse(req.body);
     const chats = createChatsStorage(app.db);
     const chat = await chats.getById(chatId);
     if (!chat) throw new Error("Chat not found");
 
     const meta = parseMeta(chat.metadata);
+    // A game with a world has its own season where the party is: the one the story holds it at (1.351),
+    // else the day's. Without one, the season sent.
+    const season = (await gameSeasonHere(chat.id, chat.mode, meta)) ?? schema.parse(req.body).season;
 
     // "set" action from scene analyzer — apply the exact weather type
     if (action === "set" && type) {
@@ -10379,7 +11583,7 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
     const schema = z.object({
       chatId: z.string().min(1),
       type: z.enum(["location", "npc", "combat", "quest", "item", "event", "note"]),
-      data: z.record(z.unknown()),
+      data: z.record(z.string(), z.unknown()),
     });
     const { chatId, type, data } = schema.parse(req.body);
     const chats = createChatsStorage(app.db);
@@ -10444,6 +11648,886 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
     const playerNotes = (meta.gamePlayerNotes as string) ?? "";
 
     return { journal, recap: buildStructuredRecap(journal, sessionNumber), playerNotes };
+  });
+
+  // Whether this server lets players make Overworld games (MARINARA_OVERWORLD_GAMES); the wizard greys the
+  // setting kit and world out when it does not.
+  app.get("/overworld", async () => ({ enabled: isOverworldGamesEnabled() }));
+
+  // ── GET /game/:chatId/world-journal ──
+  // The world as the party knows it (worldgen W7), folded from the replies exactly as a turn folds it:
+  // the ledger from all of them, the party's place from the ones the Game Master last read.
+  app.get<{ Params: { chatId: string } }>("/:chatId/world-journal", async (req, reply) => {
+    const chat = await createChatsStorage(app.db).getById(req.params.chatId);
+    if (!chat) return reply.status(404).send({ error: "Chat not found" });
+    const meta = parseMeta(chat.metadata);
+    const world = await loadGameWorld(app.db, chat.id, meta);
+    if (!world) return { journal: null };
+    const replies = await gameRepliesBefore(app.db, req.params.chatId);
+    // The place in force, as a turn reads it: the map's location when it is a world place (worldgen W7).
+    const place = worldPlaceInForce(
+      world,
+      lastGamePlace(replies.scoped),
+      (await resolveOwnerSpatialProjection(req.params.chatId, {}, meta))?.currentLocationId,
+    );
+    // The story's objectives (worldgen W10), as the replies have left its flags.
+    const story = gameStoryFromMetadata(meta, world);
+    const storyNow = story ? storyState(story, readStoryLedger(replies.all)) : null;
+    const clocks = story && storyNow ? storyClocks(story, storyNow) : [];
+    // The Experience's own track for here (1.345): the story's cue, else the place's, else its default.
+    const packId = (meta.gameMapPack as { packageId?: unknown } | undefined)?.packageId;
+    const packMusic = typeof packId === "string" ? await capabilityPackageManager.mapPackMusic(packId) : null;
+    const walking = worldWalkFromMetadata(meta);
+    const music = packMusic
+      ? experienceTrackHere(
+          packMusic,
+          world,
+          walking?.to ??
+            (place?.name ? worldPlaceByName(world.world, place.name)?.id : undefined) ??
+            world.world.startId,
+          storyNow?.music,
+        )
+      : undefined;
+    return {
+      journal: {
+        ...worldJournal(world, worldPresent(world, replies.ledger), { name: place?.name }),
+        ...(story && storyNow ? { story: storyObjectives(story, storyNow) } : {}),
+        ...(clocks.length ? { clocks } : {}),
+        ...(story && storyNow?.ended ? { ending: storyEndingOf(story, storyNow.ended) } : {}),
+        ...(music !== undefined ? { music } : {}),
+      },
+    };
+  });
+
+  // ── The overworld (worldgen W8) ──
+  // Where the party is on it: where a walk it has pending took it, else the settlement of the place in
+  // force, as a turn reads it.
+  const overworldPlace = async (chatId: string, meta: Record<string, unknown>, world: GameWorld) => {
+    const replies = await gameRepliesBefore(app.db, chatId);
+    const present = worldPresent(world, replies.ledger);
+    // The sites the story keeps closed until the Game Master opens them (design-game-overworld-sites.md).
+    // Reveals from every session (carried ones first), not only this one's.
+    const story = gameStoryFromMetadata(meta, world);
+    const locks = worldSiteLocks(world, story, replies.all);
+    // The places the story holds at a season whatever the day (1.351).
+    const seasons = story
+      ? storyPlaceSeasons(story, storyState(story, readStoryLedger(replies.all)).seasons, world)
+      : {};
+    const walk = worldWalkFromMetadata(meta);
+    if (walk) return { here: walk.to, walk, present, placeName: undefined, locks, seasons };
+    const place = worldPlaceInForce(
+      world,
+      lastGamePlace(replies.scoped),
+      (await resolveOwnerSpatialProjection(chatId, {}, meta))?.currentLocationId,
+    );
+    return {
+      here: worldOverworldSpot(world, present, place?.name)?.id ?? null,
+      walk: null,
+      present,
+      locks,
+      seasons,
+      placeName: place?.name,
+    };
+  };
+
+  // ── The town the party is in (worldgen W8b) ──
+  // Laid out from the world, with where in it the party stands: where it last walked to there, else the
+  // building of the place in force when that is a place in town, else the square.
+  const townOf = async (chatId: string, meta: Record<string, unknown>, world: GameWorld) => {
+    const { here: overworldAt, present, placeName } = await overworldPlace(chatId, meta, world);
+    // At a site a few steps out of its settlement, the party is still by that settlement's town.
+    const here =
+      overworldAt && worldIsSite(world, overworldAt)
+        ? (worldSettlementOf(world, overworldAt)?.id ?? null)
+        : overworldAt;
+    const town = here ? worldTown(world, here, present) : null;
+    if (!town) return null;
+    const spot = worldTownSpotFromMetadata(meta);
+    const named = placeName
+      ? (worldPlaceByName(world.world, placeName)?.id ?? worldAddedPlace(world, present, placeName)?.place.id)
+      : undefined;
+    const at =
+      (spot?.settlementId === town.settlementId && worldTownDoor(town, spot.at) ? spot.at : undefined) ??
+      town.buildings.find((building) => named && building.placeId === named)?.id ??
+      "square";
+    const visit = worldTownVisitFromMetadata(meta);
+    return { town, at, visit: visit?.settlementId === town.settlementId ? visit : null, pending: visit };
+  };
+
+  // ── GET /game/:chatId/town ──
+  app.get<{ Params: { chatId: string } }>("/:chatId/town", async (req, reply) => {
+    const chat = await createChatsStorage(app.db).getById(req.params.chatId);
+    if (!chat) return reply.status(404).send({ error: "Chat not found" });
+    const meta = parseMeta(chat.metadata);
+    const world = chat.mode === "game" ? await loadGameWorld(app.db, chat.id, meta) : null;
+    const found = world ? await townOf(req.params.chatId, meta, world) : null;
+    return { town: found ? { ...found.town, at: found.at, visit: found.visit } : null };
+  });
+
+  // ── GET /game/:chatId/town/interior?building= (worldgen W13) ──
+  // The rooms of a building in the town the party is in, as the world keeps them.
+  app.get<{ Params: { chatId: string } }>("/:chatId/town/interior", async (req, reply) => {
+    const { building } = z.object({ building: z.string().min(1).max(16) }).parse(req.query);
+    const chat = await createChatsStorage(app.db).getById(req.params.chatId);
+    if (!chat) return reply.status(404).send({ error: "Chat not found" });
+    const meta = parseMeta(chat.metadata);
+    const world = chat.mode === "game" ? await loadGameWorld(app.db, chat.id, meta) : null;
+    const found = world ? await townOf(req.params.chatId, meta, world) : null;
+    if (!world || !found) return reply.status(400).send({ error: "The party is not in a town." });
+    const interior = worldInterior(world, found.town, building);
+    return interior ? { interior } : reply.status(404).send({ error: "No such building in this town." });
+  });
+
+  // ── POST /game/:chatId/town/visit ──
+  // A walk across town to a building or the square: its minutes on the game's clock, where the party
+  // stands kept, and the visit kept for the next turn to tell the Game Master.
+  app.post<{ Params: { chatId: string } }>("/:chatId/town/visit", async (req, reply) => {
+    const { chatId } = req.params;
+    const { to } = z.object({ to: z.string().min(1).max(16) }).parse(req.body);
+    const chats = createChatsStorage(app.db);
+    const chat = await chats.getById(chatId);
+    if (!chat) return reply.status(404).send({ error: "Chat not found" });
+    const meta = parseMeta(chat.metadata);
+    const world = chat.mode === "game" ? await loadGameWorld(app.db, chat.id, meta) : null;
+    const found = world ? await townOf(chatId, meta, world) : null;
+    if (!found) return reply.status(400).send({ error: "The party is not in a town." });
+    if (!worldTownDoor(found.town, to)) return reply.status(400).send({ error: "No such place in this town." });
+    if (to === found.at) return reply.status(400).send({ error: "The party is already there." });
+    const path = worldTownPath(found.town, found.at, to) ?? [];
+    const minutes = worldTownMinutes(found.town, found.at, to);
+    let visit: WorldTownVisit | undefined;
+    let time: GameTime | undefined;
+    const updated = await chats.patchMetadata(chatId, (fresh) => {
+      // A turn told the visit, another visit landed, or the party walked to another settlement, since the
+      // town was read.
+      if (
+        (worldTownVisitFromMetadata(fresh)?.id ?? null) !== (found.pending?.id ?? null) ||
+        (worldWalkFromMetadata(fresh)?.id ?? null) !== (worldWalkFromMetadata(meta)?.id ?? null)
+      ) {
+        throw Object.assign(new Error("The party has moved since; try again."), { statusCode: 409 });
+      }
+      visit = {
+        id: randomUUID(),
+        settlementId: found.town.settlementId,
+        to,
+        minutes: (found.visit?.minutes ?? 0) + minutes,
+        // Every cell walked since the last turn told, for the story's step events (map events).
+        steps: [...(found.visit?.steps ?? []), ...path].slice(-WORLD_WALK_STEPS_MAX),
+      };
+      time = addMinutes((fresh.gameTime as GameTime) ?? createInitialTime(), minutes);
+      return { gameTownVisit: visit, gameTownSpot: { settlementId: found.town.settlementId, at: to }, gameTime: time };
+    });
+    if (!updated || !visit || !time) return reply.status(404).send({ error: "Chat not found" });
+    await updateLatestGameStateWithTrackerLocks(createGameStateStorage(app.db), chatId, {
+      time: formatGameTime(time),
+    });
+    await passGameInventoryTime(app.db, chatId, minutes);
+    return { visit, at: to, path, minutes, time, formatted: formatGameTime(time) };
+  });
+
+  // ── Dungeon, cave and station maps ──
+  // A map the Game Master opened with `[map:]`, kept on the chat as it was made: where the party stands
+  // on it, a walk across it on the game's clock, kept for the next turn to tell, and the way out.
+
+  // GET /game/:chatId/map: the game's map and the walk not yet told, or null for none.
+  app.get<{ Params: { chatId: string } }>("/:chatId/map", async (req, reply) => {
+    const chat = await createChatsStorage(app.db).getById(req.params.chatId);
+    if (!chat) return reply.status(404).send({ error: "Chat not found" });
+    const meta = parseMeta(chat.metadata);
+    return { map: gameDungeonMapFromMetadata(meta), walk: gameDungeonWalkFromMetadata(meta) };
+  });
+
+  // POST /game/:chatId/map/walk: the party walks to a cell by the shortest way; the minutes go on the
+  // clock and the walk waits for the next turn, joined to any walk not yet told.
+  app.post<{ Params: { chatId: string } }>("/:chatId/map/walk", async (req, reply) => {
+    const { chatId } = req.params;
+    const body = z
+      .object({
+        map: z.string().min(1).max(80),
+        x: z.number().int().min(0).max(63),
+        y: z.number().int().min(0).max(47),
+      })
+      .parse(req.body);
+    const chats = createChatsStorage(app.db);
+    let path: Array<{ x: number; y: number }> | null = null;
+    let minutes = 0;
+    let walk: GameDungeonWalk | undefined;
+    let time: GameTime | undefined;
+    let map: GameDungeonMap | undefined;
+    const updated = await chats.patchMetadata(chatId, (fresh) => {
+      const kept = gameDungeonMapFromMetadata(fresh);
+      if (!kept || kept.id !== body.map) {
+        throw Object.assign(new Error("The party is not on that map."), { statusCode: 409 });
+      }
+      const cells = dungeonFromGameDungeonMap(kept);
+      if (kept.at.x === body.x && kept.at.y === body.y) {
+        throw Object.assign(new Error("The party is already there."), { statusCode: 400 });
+      }
+      path = dungeonPath(cells, kept.at, body);
+      if (!path) throw Object.assign(new Error("There is no way there."), { statusCode: 400 });
+      minutes = dungeonWalkMinutes(path.length);
+      const pending = gameDungeonWalkFromMetadata(fresh);
+      walk = {
+        id: randomUUID(),
+        map: kept.id,
+        from: pending?.map === kept.id ? pending.from : kept.at,
+        to: { x: body.x, y: body.y },
+        minutes: Math.min(600, (pending?.map === kept.id ? pending.minutes : 0) + minutes),
+        // On a map made by hand: its place and every cell walked, for the story's step events.
+        ...(kept.hand && kept.place
+          ? {
+              place: kept.place,
+              steps: [...(pending?.map === kept.id ? (pending.steps ?? []) : []), ...path!].slice(
+                -WORLD_WALK_STEPS_MAX,
+              ),
+            }
+          : {}),
+      };
+      map = { ...kept, at: { x: body.x, y: body.y } };
+      time = addMinutes((fresh.gameTime as GameTime) ?? createInitialTime(), minutes);
+      return { gameDungeonMap: map, gameDungeonWalk: walk, gameTime: time };
+    });
+    if (!updated || !walk || !time || !map) return reply.status(404).send({ error: "Chat not found" });
+    await updateLatestGameStateWithTrackerLocks(createGameStateStorage(app.db), chatId, {
+      time: formatGameTime(time),
+    });
+    await passGameInventoryTime(app.db, chatId, minutes);
+    return { map, walk, path, minutes, time, formatted: formatGameTime(time) };
+  });
+
+  // POST /game/:chatId/map/leave: the party leaves by the way out it stands on; the next turn says so.
+  app.post<{ Params: { chatId: string } }>("/:chatId/map/leave", async (req, reply) => {
+    const { chatId } = req.params;
+    const body = z.object({ map: z.string().min(1).max(80) }).parse(req.body);
+    const chats = createChatsStorage(app.db);
+    let left: string | undefined;
+    const updated = await chats.patchMetadata(chatId, (fresh) => {
+      const kept = gameDungeonMapFromMetadata(fresh);
+      if (!kept || kept.id !== body.map) {
+        throw Object.assign(new Error("The party is not on that map."), { statusCode: 409 });
+      }
+      if (!gameDungeonOnWayOut(kept)) {
+        throw Object.assign(new Error("The way out is elsewhere."), { statusCode: 400 });
+      }
+      left = kept.name;
+      return { gameDungeonMap: null, gameDungeonWalk: null, gameDungeonLeft: kept.name };
+    });
+    if (!updated || !left) return reply.status(404).send({ error: "Chat not found" });
+    return { left };
+  });
+
+  // POST /game/:chatId/map/enter: the party goes down into the place in town it stands at (a cave, a
+  // mine, a crypt, a sewer, by its words; map editor Phase 3): its map, laid out from the game and the
+  // place's name as the Game Master's `[map:]` would be, or the one the party is already on.
+  app.post<{ Params: { chatId: string } }>("/:chatId/map/enter", async (req, reply) => {
+    const { chatId } = req.params;
+    const body = z
+      .object({ at: z.string().min(1).max(16).optional(), place: z.string().min(1).max(16).optional() })
+      .refine((value) => Boolean(value.at) !== Boolean(value.place), "A building in town or a site, one of them")
+      .parse(req.body);
+    const chats = createChatsStorage(app.db);
+    const chat = await chats.getById(chatId);
+    if (!chat) return reply.status(404).send({ error: "Chat not found" });
+    const meta = parseMeta(chat.metadata);
+    const world = chat.mode === "game" ? await loadGameWorld(app.db, chat.id, meta) : null;
+    if (!world) return reply.status(400).send({ error: "This game has no world." });
+    // A site out in the world (design-game-overworld-sites.md): the one the party is at on the overworld.
+    // Else a building in the town the party is in, where it stands.
+    let building: { id: string; placeId?: string; name?: string } | undefined;
+    let placeKey: string;
+    if (body.place) {
+      const { here, locks } = await overworldPlace(chatId, meta, world);
+      if (here !== body.place || !worldIsSite(world, body.place))
+        return reply.status(400).send({ error: "The party is not there." });
+      if (locks.has(body.place)) return reply.status(400).send({ error: "That place is closed to the party for now." });
+      building = { id: body.place, placeId: body.place };
+      placeKey = body.place;
+    } else {
+      const found = await townOf(chatId, meta, world);
+      if (!found) return reply.status(400).send({ error: "The party is not in a town." });
+      if (found.at !== body.at) return reply.status(400).send({ error: "The party is not there." });
+      building = found.town.buildings.find((each) => each.id === body.at);
+      placeKey = building?.placeId ?? `${found.town.settlementId}:${building?.id}`;
+    }
+    const place = building?.placeId ? world.world.places.find((each) => each.id === building.placeId) : undefined;
+    const name = building?.name ?? place?.name;
+    const family = worldKitArtFamily(gameWorldKitFromMetadata(meta) ?? undefined);
+    // A map made for the place by hand (map editor Phase 3) is the one gone down into; else one laid out
+    // from its name, for a place whose words say it is one to go down into.
+    const hand = building?.placeId ? worldPlaceMap(world, building.placeId) : null;
+    const set =
+      building && name
+        ? (dungeonSetForPlace({ name, tags: place?.tags }, family) ?? (hand ? dungeonSetFor(undefined, family) : null))
+        : null;
+    if (!building || !name || !set) return reply.status(400).send({ error: "There is no going down here." });
+    let map: GameDungeonMap | undefined;
+    const updated = await chats.patchMetadata(chatId, (fresh) => {
+      const current = gameDungeonMapFromMetadata(fresh);
+      if (current?.place === placeKey) {
+        map = current;
+        return { gameDungeonView: "map" };
+      }
+      // Another map the party is on (one the Game Master opened) is never thrown away for this one.
+      if (current) throw Object.assign(new Error("The party is on another map; leave it first."), { statusCode: 409 });
+      if (hand) {
+        // A hand-made map the game cannot keep (made for a later Engine) is never half kept.
+        const kept = gameDungeonMapSchema.safeParse(
+          gameDungeonMapFromPlaceMap(
+            hand,
+            name,
+            set,
+            randomUUID(),
+            placeKey,
+            (person) => worldCast(world, person.replace(/-e?\d+$/u, "")).find((each) => each.id === person)?.name,
+          ),
+        );
+        if (!kept.success) throw Object.assign(new Error("This place's map can't be read."), { statusCode: 400 });
+        map = kept.data;
+      } else {
+        const made = generateDungeonMap(set.id, gameDungeonSeed(chatId, name), "medium");
+        map = { ...gameDungeonMapFromDungeon(made, name, randomUUID()), place: placeKey };
+      }
+      return { gameDungeonMap: map, gameDungeonWalk: null, gameDungeonLeft: null, gameDungeonView: "map" };
+    });
+    if (!updated || !map) return reply.status(404).send({ error: "Chat not found" });
+    return { map };
+  });
+
+  // ── The world editor (worldgen W9c): a game's world as compiled, its hand edits, a place's people ──
+  // The editor draws the compiled world with its edit layer on top and saves the whole layer; the
+  // Engine checks every layer against the world it edits.
+
+  // GET /game/worlds: the games with a world, for an editor to pick from.
+  app.get("/worlds", async () => {
+    const worlds: Array<{
+      chatId: string;
+      name: string;
+      updatedAt: string;
+      kit: string;
+      family: string | null;
+      edited: boolean;
+    }> = [];
+    for (const chat of await createChatsStorage(app.db).list()) {
+      if (chat.mode !== "game") continue;
+      const meta = parseMeta(chat.metadata);
+      if (meta.gameWorld == null) continue;
+      const kit = gameWorldKitFromMetadata(meta);
+      const stored = gameWorldSchema.safeParse(meta.gameWorld);
+      if (!kit || !stored.success || !worldGeneratorReads(stored.data.generatorVersion)) continue;
+      worlds.push({
+        chatId: chat.id,
+        name: chat.name,
+        updatedAt: chat.updatedAt,
+        kit: kit.label,
+        family: worldKitArtFamily(kit) ?? null,
+        edited: !worldEditsEmpty(stored.data.edits),
+      });
+    }
+    return { worlds };
+  });
+
+  // GET /game/:chatId/world/edit: the world as compiled (before any edit), in a shape an editor draws,
+  // the stored edit layer, and the ways as they run with it.
+  app.get<{ Params: { chatId: string } }>("/:chatId/world/edit", async (req, reply) => {
+    const chat = await createChatsStorage(app.db).getById(req.params.chatId);
+    if (!chat) return reply.status(404).send({ error: "Chat not found" });
+    const game = chat.mode === "game" ? await loadGameWorld(app.db, chat.id, parseMeta(chat.metadata)) : null;
+    if (!game) return reply.status(404).send({ error: "This game has no world." });
+    if (!worldMadeByThisGenerator(game)) return reply.status(409).send({ error: OLD_GENERATOR_REFUSAL });
+    return { world: worldForEditor(game), edits: game.edits ?? null, links: game.world.links };
+  });
+
+  // GET /game/:chatId/world/town?settlement=: a settlement's town for a town editor (worldgen W9h).
+  app.get<{ Params: { chatId: string } }>("/:chatId/world/town", async (req, reply) => {
+    const { settlement } = z.object({ settlement: z.string().min(1).max(16) }).parse(req.query);
+    const chat = await createChatsStorage(app.db).getById(req.params.chatId);
+    if (!chat) return reply.status(404).send({ error: "Chat not found" });
+    const game = chat.mode === "game" ? await loadGameWorld(app.db, chat.id, parseMeta(chat.metadata)) : null;
+    if (!game) return reply.status(404).send({ error: "This game has no world." });
+    if (!worldMadeByThisGenerator(game)) return reply.status(409).send({ error: OLD_GENERATOR_REFUSAL });
+    const found = worldTownForEditor(game, settlement);
+    return found ?? reply.status(404).send({ error: "No such settlement in this world." });
+  });
+
+  // GET /game/:chatId/world/interior?settlement=&building=: a building's rooms for a room editor (W13b).
+  app.get<{ Params: { chatId: string } }>("/:chatId/world/interior", async (req, reply) => {
+    const { settlement, building } = z
+      .object({ settlement: z.string().min(1).max(16), building: z.string().min(1).max(16) })
+      .parse(req.query);
+    const chat = await createChatsStorage(app.db).getById(req.params.chatId);
+    if (!chat) return reply.status(404).send({ error: "Chat not found" });
+    const game = chat.mode === "game" ? await loadGameWorld(app.db, chat.id, parseMeta(chat.metadata)) : null;
+    if (!game) return reply.status(404).send({ error: "This game has no world." });
+    if (!worldMadeByThisGenerator(game)) return reply.status(409).send({ error: OLD_GENERATOR_REFUSAL });
+    const found = worldInteriorForEditor(game, settlement, building);
+    return found ?? reply.status(404).send({ error: "No building with rooms there." });
+  });
+
+  // PUT /game/:chatId/world/edits: the whole edit layer, checked against the world; an empty one clears it.
+  //
+  // A caller that read the layer first may pass it as `expected`, the "Last write wins" of a maker
+  // screen made safe: the layer is compared with it inside the write itself, so one saved by another
+  // writer meanwhile is refused instead of replaced by this draft (#7743).
+  app.put<{ Params: { chatId: string } }>("/:chatId/world/edits", async (req, reply) => {
+    const { chatId } = req.params;
+    const body = (req.body ?? {}) as { edits?: unknown; expected?: unknown };
+    const parsed = worldEditsSchema.safeParse(body.edits);
+    if (!parsed.success) {
+      const issue = parsed.error.issues[0];
+      return reply.status(400).send({ error: `The edits do not read: ${issue?.path.join(".")}: ${issue?.message}` });
+    }
+    const chats = createChatsStorage(app.db);
+    const chat = await chats.getById(chatId);
+    if (!chat) return reply.status(404).send({ error: "Chat not found" });
+    const game = chat.mode === "game" ? await loadGameWorld(app.db, chat.id, parseMeta(chat.metadata)) : null;
+    if (!game) return reply.status(404).send({ error: "This game has no world." });
+    if (!worldMadeByThisGenerator(game)) return reply.status(409).send({ error: OLD_GENERATOR_REFUSAL });
+    // The layer against the world, then its towns laid out by hand against the towns it makes (W9h).
+    const worldIssues = worldEditIssues(game, parsed.data);
+    const issues = worldIssues.length ? worldIssues : worldTownEditIssues(game, parsed.data);
+    if (issues.length) return reply.status(400).send({ error: issues.join(" "), issues });
+    const edits = worldEditsEmpty(parsed.data) ? undefined : worldEditsVersioned(parsed.data);
+    // The game's story (worldgen W10) names places and people: edits that take one away are refused, as
+    // the story stands when the edits are written (one saved meanwhile counts).
+    let storyRefusal = null as { error: string; issues: string[] } | null;
+    let stale: { edits: unknown } | null = null;
+    let previous: unknown;
+    // One save of a chat's edits at a time, so taking back one that failed never undoes another's.
+    const updated = await withWorldLock(`edits:${chatId}`, async () => {
+      const saved = await chats.patchMetadata(chatId, (fresh) => {
+        // The world is the same one the edits were checked against: a world is written once, at creation.
+        if (!fresh.gameWorld || typeof fresh.gameWorld !== "object") {
+          throw Object.assign(new Error("This game has no world."), { statusCode: 404 });
+        }
+        // The baseline, compared where the write happens: a layer saved since is newer than this draft.
+        if ("expected" in body) {
+          const stored = (fresh.gameWorld as { edits?: unknown }).edits ?? null;
+          if (!sameGameDataValue(stored, body.expected)) {
+            stale = { edits: stored };
+            return {};
+          }
+        }
+        const now = gameWorldFromMetadata(fresh);
+        storyRefusal = now ? editsStoryRefusal(now, edits, gameStoryFromMetadata(fresh, now)) : null;
+        if (storyRefusal) return {};
+        previous = fresh.gameWorld;
+        const { edits: _old, ...stored } = fresh.gameWorld as Record<string, unknown>;
+        return { gameWorld: edits ? { ...stored, edits } : stored };
+      });
+      // Nothing was written for a stale or refused layer: no snapshot to save, and nothing to take back.
+      // (`previous` is only set on a write, so a failed snapshot here would roll the world back to nothing.)
+      if (!saved || stale || storyRefusal) return saved;
+      // The world with its new edits is the snapshot from now on (W11). Edits it could not keep are taken
+      // back, so the recipe and the snapshot never disagree.
+      try {
+        await saveGameWorldSnapshot(app.db, chatId, parseMeta(saved.metadata));
+      } catch (err) {
+        await chats.patchMetadata(chatId, () => ({ gameWorld: previous }));
+        throw err;
+      }
+      return saved;
+    });
+    if (!updated) return reply.status(404).send({ error: "Chat not found" });
+    // Read through a typed local: assigned only inside the updater, so TS would narrow it to null here.
+    const staleEdits = stale as { edits: unknown } | null;
+    if (staleEdits)
+      return reply
+        .status(409)
+        .send({ reason: "stale", error: "The edits were saved by someone else meanwhile.", ...staleEdits });
+    if (storyRefusal) return reply.status(400).send(storyRefusal);
+    const world = compileGameWorld({ ...game, edits });
+    logger.info("[game/world] %s: hand edits %s", chatId, edits ? "saved" : "cleared");
+    return { edits: edits ?? null, links: world.links };
+  });
+
+  // ── Setting kits for a maker (worldgen W9d): the starter kits, the games' kits, and a kit checked and
+  // written as a file, so a kit editor (Pixelforge's) never writes one this Engine would refuse ──
+
+  // GET /game/world-kits: the starter kits, and each game's kit.
+  app.get("/world-kits", async () => {
+    const games: Array<{ chatId: string; name: string; label: string }> = [];
+    for (const chat of await createChatsStorage(app.db).list()) {
+      if (chat.mode !== "game") continue;
+      const kit = gameWorldKitFromMetadata(parseMeta(chat.metadata));
+      if (kit) games.push({ chatId: chat.id, name: chat.name, label: kit.label });
+    }
+    return {
+      starters: WORLD_STARTER_KITS.map((kit) => ({ id: kit.id, label: kit.label, summary: kit.summary })),
+      games,
+    };
+  });
+
+  // GET /game/world-kits/starter/:id: a starter kit, as a kit reads.
+  app.get<{ Params: { id: string } }>("/world-kits/starter/:id", async (req, reply) => {
+    const starter = WORLD_STARTER_KITS.find((kit) => kit.id === req.params.id);
+    const read = starter ? parseWorldKit(starter) : null;
+    if (!read?.ok) return reply.status(404).send({ error: "No such starter kit." });
+    return { kit: read.kit };
+  });
+
+  // GET /game/:chatId/world-kit: the kit a game keeps.
+  app.get<{ Params: { chatId: string } }>("/:chatId/world-kit", async (req, reply) => {
+    const chat = await createChatsStorage(app.db).getById(req.params.chatId);
+    if (!chat) return reply.status(404).send({ error: "Chat not found" });
+    const kit = chat.mode === "game" ? gameWorldKitFromMetadata(parseMeta(chat.metadata)) : null;
+    if (!kit) return reply.status(404).send({ error: "This game has no setting kit." });
+    return { kit };
+  });
+
+  // POST /game/world-kits/check {kit}: the kit as this Engine reads it, and as a kit file; or why not.
+  app.post("/world-kits/check", async (req, reply) => {
+    const read = parseWorldKit((req.body as { kit?: unknown } | undefined)?.kit);
+    if (!read.ok) {
+      return reply
+        .status(400)
+        .send({ error: `The kit does not read: ${read.issues[0]}`, issues: read.issues.slice(0, 20) });
+    }
+    return { kit: read.kit, file: worldKitFile(read.kit) };
+  });
+
+  // POST /game/world-kits/read {text}: a kit file, read; or why it cannot be.
+  app.post("/world-kits/read", { bodyLimit: WORLD_SHARE_FILE_MAX_BYTES * 6 + 16_384 }, async (req, reply) => {
+    const { text } = z.object({ text: z.string().min(1) }).parse(req.body);
+    const read = readWorldKitFile(text);
+    if (!read.ok) return reply.status(400).send({ error: read.issues[0], issues: read.issues });
+    return { kit: read.kit, notes: read.notes };
+  });
+
+  // POST /game/experience/check (Capability API 1.350): a whole map pack an author is about to export,
+  // checked as an installed one is read, without installing it.
+  app.post("/experience/check", { bodyLimit: 128 * 1024 * 1024 }, async (req, reply) => {
+    const body = req.body as Partial<MapPackCheckInput> | null;
+    if (
+      !body ||
+      typeof body !== "object" ||
+      !body.files ||
+      typeof body.files !== "object" ||
+      Array.isArray(body.files)
+    ) {
+      return reply.status(400).send({ error: "Send the map pack block, its files by path and its assets." });
+    }
+    const assets = Array.isArray(body.assets)
+      ? body.assets.flatMap((asset) =>
+          asset && typeof asset.path === "string" && Number.isFinite(asset.bytes)
+            ? [{ path: asset.path, bytes: Number(asset.bytes) }]
+            : [],
+        )
+      : [];
+    return checkMapPack({ mapPack: body.mapPack, files: body.files as Record<string, unknown>, assets });
+  });
+
+  // GET /game/experience-map-pack/:packageId: an installed Experience's map pack (worldgen W9e), checked,
+  // for the setup wizard to lock to and a game to draw with; null when it ships none.
+  app.get<{ Params: { packageId: string } }>("/experience-map-pack/:packageId", async (req, reply) => {
+    const read = await readMapPack(req.params.packageId);
+    if (!read) return { mapPack: null };
+    if (!read.ok)
+      return reply.status(400).send({ error: `Marinara could not read this Experience's map pack: ${read.reason}` });
+    return { mapPack: read.pack };
+  });
+
+  // GET /game/:chatId/world/file: the game's world as a share file (worldgen W9d): its kit, and its world
+  // with the hand edits kept with it, to start a new game from.
+  app.get<{ Params: { chatId: string } }>("/:chatId/world/file", async (req, reply) => {
+    const chat = await createChatsStorage(app.db).getById(req.params.chatId);
+    if (!chat) return reply.status(404).send({ error: "Chat not found" });
+    const game = chat.mode === "game" ? await loadGameWorld(app.db, chat.id, parseMeta(chat.metadata)) : null;
+    if (!game) return reply.status(404).send({ error: "This game has no world." });
+    return worldFile(
+      chat.name,
+      game.kit,
+      {
+        seed: game.seed,
+        generatorVersion: game.frozen?.generatorVersion ?? game.generatorVersion ?? WORLD_GENERATOR_VERSION,
+        grounding: game.grounding,
+        brief: game.brief,
+        ...(game.edits ? { edits: game.edits } : {}),
+      },
+      gameStoryFromMetadata(parseMeta(chat.metadata), game),
+      // The world as it was made (W11), so the file reads the same after the generator changes.
+      worldSnapshot(game),
+    );
+  });
+
+  // ── A game's story script (worldgen W10), for a maker: read, saved (checked against the game's world,
+  // its hand edits included) and taken away. What the story has done so far is folded from the replies,
+  // so a script changed mid-game never rewrites it. ──
+
+  // GET /game/:chatId/story
+  app.get<{ Params: { chatId: string } }>("/:chatId/story", async (req, reply) => {
+    const chat = await createChatsStorage(app.db).getById(req.params.chatId);
+    if (!chat) return reply.status(404).send({ error: "Chat not found" });
+    const meta = parseMeta(chat.metadata);
+    const game = chat.mode === "game" ? await loadGameWorld(app.db, chat.id, meta) : null;
+    if (!game) return reply.status(404).send({ error: "This game has no world." });
+    const story = gameStoryFromMetadata(meta, game);
+    const replies = await gameRepliesBefore(app.db, req.params.chatId);
+    return {
+      story,
+      // For a story maker: what the story has done in this game so far, and what a story can name here
+      // (the world as edited; its people come from /world/people).
+      state: story ? storyState(story, readStoryLedger(replies.all)) : null,
+      names: storyNamesOf(game),
+    };
+  });
+
+  // PUT /game/:chatId/story {story, expected} — `story: null` takes the story away.
+  //
+  // A caller that read the story first may pass it as `expected`: compared inside the write itself, so a
+  // story saved by another writer meanwhile is refused instead of replaced (#7743).
+  app.put<{ Params: { chatId: string } }>("/:chatId/story", async (req, reply) => {
+    const { chatId } = req.params;
+    const chats = createChatsStorage(app.db);
+    const chat = await chats.getById(chatId);
+    if (!chat) return reply.status(404).send({ error: "Chat not found" });
+    const game = chat.mode === "game" ? await loadGameWorld(app.db, chat.id, parseMeta(chat.metadata)) : null;
+    if (!game) return reply.status(404).send({ error: "This game has no world." });
+    const body = (req.body ?? {}) as { story?: unknown; expected?: unknown };
+    const input = body.story;
+    // Checked against the world as it is when the story is written: hand edits saved meanwhile count.
+    let refusal = null as { error: string; issues: string[] } | null;
+    let stale = null as { story: unknown } | null;
+    let story = null as StoryScript | null;
+    const updated = await chats.patchMetadata(chatId, (fresh) => {
+      if ("expected" in body) {
+        const stored = fresh.gameStory ?? null;
+        if (!sameGameDataValue(stored, body.expected)) {
+          stale = { story: stored };
+          return {};
+        }
+      }
+      if (input === null) return { gameStory: null };
+      // A world from an earlier generator is checked as its snapshot keeps it.
+      const now = worldMadeByThisGenerator(game) ? gameWorldFromMetadata(fresh) : game;
+      const checked = now ? checkStoryScript(now, input) : null;
+      if (!checked?.ok) {
+        const issues = checked?.issues ?? ["the game has no world"];
+        refusal = { error: `The story does not fit this world: ${issues[0]}`, issues };
+        return {};
+      }
+      story = checked.story;
+      return { gameStory: checked.story };
+    });
+    if (!updated) return reply.status(404).send({ error: "Chat not found" });
+    const staleStory = stale as { story: unknown } | null;
+    if (staleStory)
+      return reply
+        .status(409)
+        .send({ reason: "stale", error: "The story was saved by someone else meanwhile.", ...staleStory });
+    if (refusal) return reply.status(400).send(refusal);
+    logger.info("[game/story] %s: story saved", chatId);
+    return { story };
+  });
+
+  // DELETE /game/:chatId/story
+  app.delete<{ Params: { chatId: string } }>("/:chatId/story", async (req, reply) => {
+    const chats = createChatsStorage(app.db);
+    const chat = await chats.getById(req.params.chatId);
+    if (!chat) return reply.status(404).send({ error: "Chat not found" });
+    if (chat.mode !== "game" || !(await loadGameWorld(app.db, chat.id, parseMeta(chat.metadata)))) {
+      return reply.status(404).send({ error: "This game has no world." });
+    }
+    const updated = await chats.patchMetadata(req.params.chatId, () => ({ gameStory: null }));
+    if (!updated) return reply.status(404).send({ error: "Chat not found" });
+    logger.info("[game/story] %s: story taken away", req.params.chatId);
+    return { story: null };
+  });
+
+  // GET /game/:chatId/world/people?place=: a place's people as the game has them, edits applied.
+  app.get<{ Params: { chatId: string } }>("/:chatId/world/people", async (req, reply) => {
+    const { place } = z.object({ place: z.string().min(1).max(16) }).parse(req.query);
+    const chat = await createChatsStorage(app.db).getById(req.params.chatId);
+    if (!chat) return reply.status(404).send({ error: "Chat not found" });
+    const game = chat.mode === "game" ? await loadGameWorld(app.db, chat.id, parseMeta(chat.metadata)) : null;
+    if (!game) return reply.status(404).send({ error: "This game has no world." });
+    return { people: worldPeopleOf(game, place) };
+  });
+
+  // ── GET /game/:chatId/world ── the game's world for its screen (W11): as its snapshot keeps it, so the
+  // screen never makes it again from the recipe.
+  app.get<{ Params: { chatId: string } }>("/:chatId/world", async (req, reply) => {
+    const chat = await createChatsStorage(app.db).getById(req.params.chatId);
+    if (!chat) return reply.status(404).send({ error: "Chat not found" });
+    const game = chat.mode === "game" ? await loadGameWorld(app.db, chat.id, parseMeta(chat.metadata)) : null;
+    if (!game) return { world: null };
+    const { frozen: _frozen, compiled: _compiled, ...shown } = game;
+    return { world: shown };
+  });
+
+  // ── POST /game/:chatId/world {worldKit, world, worldSnapshot?, story?} ── a world for a game made without
+  // one (worldgen W12), only ever when the player asks: checked as a new game's world is, kept as its
+  // snapshot, then named in the session's metadata, so later sessions take it as they take any world. It
+  // starts now: the game's past turns, map and people are left as they are.
+  app.post<{ Params: { chatId: string } }>("/:chatId/world", async (req, reply) => {
+    // A legacy game is not turned into an Overworld game while Overworld games are locked.
+    if (!isOverworldGamesEnabled()) {
+      return reply
+        .status(403)
+        .send({ error: "Overworld games are not available on this server yet.", code: "overworld_locked" });
+    }
+    const body = z
+      .object({
+        worldKit: worldKitSchema,
+        world: gameWorldSchema,
+        worldSnapshot: z.unknown().optional(),
+        story: z.unknown().optional(),
+      })
+      .safeParse(req.body);
+    if (!body.success) {
+      const issue = body.error.issues[0];
+      return reply.status(400).send({ error: `The world does not read: ${issue?.path.join(".")}: ${issue?.message}` });
+    }
+    const chats = createChatsStorage(app.db);
+    const found = await chats.getById(req.params.chatId);
+    if (!found) return reply.status(404).send({ error: "Chat not found" });
+    // One at a time for a game, and never while a session starts from its latest (which would copy it
+    // without the world): everything below is read again inside the lock.
+    const lockKey = found.groupId ?? readTrimmedString(parseMeta(found.metadata).gameId) ?? found.id;
+    return withWorldLock(`game:${lockKey}`, async () => {
+      const chat = await chats.getById(req.params.chatId);
+      if (!chat) return reply.status(404).send({ error: "Chat not found" });
+      if (chat.mode !== "game") return reply.status(400).send({ error: "Only a game has a world." });
+      assertRoomGameOperation(chat);
+      const meta = parseMeta(chat.metadata);
+      if (meta.gameWorld != null) return reply.status(409).send({ error: "This game has a world already." });
+      if (meta.gameExperienceId) {
+        return reply.status(409).send({ error: "This game's Experience decides its world." });
+      }
+      if (meta.gameStyle === "classic") {
+        return reply.status(409).send({ error: "A Classic game has no world." });
+      }
+      const read = readNewGameWorld(body.data);
+      if (!read.ok) return reply.status(400).send({ error: read.error, code: read.code });
+      const worldKit = read.worldKit ?? body.data.worldKit;
+      // A game made with a setting kit keeps it: its money, elements and art are that kit's.
+      const ownKit = gameWorldKitFromMetadata(meta);
+      if (ownKit && JSON.stringify(ownKit) !== JSON.stringify(worldKit)) {
+        return reply.status(409).send({ error: "This game keeps its own setting kit; make the world in it." });
+      }
+      // Only the game's latest session takes a world, and only while no session has one: the next session
+      // starts from the latest, so a world given to another would be lost, and a second one could follow.
+      // A game's sessions share the chat group its first session made.
+      const groupId = chat.groupId ?? readTrimmedString(meta.gameId);
+      const sessions = groupId ? await chats.listByGroup(groupId) : [];
+      if (sessions.some((session) => session.id === chat.id)) {
+        if (sessions.some((session) => parseMeta(session.metadata).gameWorld != null)) {
+          return reply.status(409).send({ error: "This game has a world already." });
+        }
+        if (selectSessionForNextStart(sessions)?.id !== chat.id) {
+          return reply.status(409).send({ error: "Give the game its world in its latest session." });
+        }
+      }
+      // The world is kept before the metadata names it, as at a game's creation; a chat that keeps a world
+      // already is never given another over it.
+      const snapshots = createGameWorldSnapshotsStorage(app.db);
+      if (await snapshots.raw(chat.id)) return reply.status(409).send({ error: "This game has a world already." });
+      const given = read.snapshot
+        ? gameWorldFromSnapshot(read.snapshot)
+        : { kit: worldKit, ...read.gameWorld!, world: compileGameWorld({ kit: worldKit, ...read.gameWorld! }) };
+      // The world starts now: a place the game was in that the world does not list is left behind, so the
+      // party is at the world's start until the Game Master says otherwise.
+      const placed = lastGamePlace((await gameRepliesBefore(app.db, chat.id)).scoped);
+      const lastMessage = (await chats.listMessages(chat.id)).at(-1);
+      const startsAfter =
+        placed?.name && !worldPlaceByName(given.world, placed.name) && lastMessage ? lastMessage.id : null;
+      if (read.snapshot) await snapshots.put(chat.id, read.snapshot);
+      else await saveGameWorldSnapshot(app.db, chat.id, { gameWorld: read.gameWorld, gameWorldKit: worldKit });
+      let updated: Awaited<ReturnType<typeof chats.patchMetadata>>;
+      try {
+        updated = await chats.patchMetadata(chat.id, (fresh) => {
+          if (fresh.gameWorld != null)
+            throw Object.assign(new Error("This game has a world already."), { statusCode: 409 });
+          return {
+            gameWorldKit: worldKit,
+            gameWorld: read.gameWorld,
+            ...(read.story ? { gameStory: read.story } : {}),
+            ...(startsAfter ? { gameWorldStartsAfter: startsAfter } : {}),
+          };
+        });
+      } catch (err) {
+        // The world was not given, so it is not kept either.
+        await snapshots.remove(chat.id);
+        throw err;
+      }
+      if (!updated) {
+        await snapshots.remove(chat.id);
+        return reply.status(404).send({ error: "Chat not found" });
+      }
+      return await shownWorld(chat.id, parseMeta(updated.metadata), reply);
+    });
+  });
+
+  /** The world as the screen reads it, after a world was given. */
+  const shownWorld = async (
+    chatId: string,
+    meta: Record<string, unknown>,
+    reply: { status: (code: number) => { send: (body: unknown) => unknown } },
+  ) => {
+    logger.info("[game/world] %s: a world was made for this game", chatId);
+    const game = await loadGameWorld(app.db, chatId, meta);
+    if (!game) return reply.status(500).send({ error: "The world could not be read back." });
+    const { frozen: _frozen, compiled: _compiled, ...shown } = game;
+    return { world: shown };
+  };
+
+  // ── GET /game/:chatId/overworld ──
+  app.get<{ Params: { chatId: string } }>("/:chatId/overworld", async (req, reply) => {
+    const chat = await createChatsStorage(app.db).getById(req.params.chatId);
+    if (!chat) return reply.status(404).send({ error: "Chat not found" });
+    const meta = parseMeta(chat.metadata);
+    const world = chat.mode === "game" ? await loadGameWorld(app.db, chat.id, meta) : null;
+    if (!world) return { overworld: null };
+    const { here, walk, present, locks, seasons } = await overworldPlace(req.params.chatId, meta, world);
+    // A hidden site is never sent: the player does not know it is there.
+    const locked = Object.fromEntries([...locks].filter(([, lock]) => lock === "sealed"));
+    const hidden = new Set([...locks].filter(([, lock]) => lock === "hidden").map(([id]) => id));
+    return {
+      overworld: {
+        here,
+        walk,
+        ruined: present.ruined,
+        // Only when the story keeps a site closed: an overworld without any reads as it always did.
+        ...(Object.keys(locked).length ? { locked } : {}),
+        ...(hidden.size ? { hidden: [...hidden] } : {}),
+        // Only when the story holds a place at a season (1.351).
+        ...(Object.keys(seasons).length ? { seasons } : {}),
+      },
+    };
+  });
+
+  // ── POST /game/:chatId/overworld/walk ──
+  // A walk to a settlement along the world's ways: its route and days read here, never the client's, the
+  // days passed on the game's clock, and the walk kept for the next turn to tell the Game Master.
+  app.post<{ Params: { chatId: string } }>("/:chatId/overworld/walk", async (req, reply) => {
+    const { chatId } = req.params;
+    const { to } = z.object({ to: z.string().min(1).max(16) }).parse(req.body);
+    const chats = createChatsStorage(app.db);
+    const chat = await chats.getById(chatId);
+    if (!chat) return reply.status(404).send({ error: "Chat not found" });
+    const meta = parseMeta(chat.metadata);
+    const world = chat.mode === "game" ? await loadGameWorld(app.db, chat.id, meta) : null;
+    if (!world) return reply.status(400).send({ error: "This game has no world." });
+    const { here, walk, locks } = await overworldPlace(chatId, meta, world);
+    if (locks.has(to)) return reply.status(400).send({ error: "That place is closed to the party for now." });
+    const route = here ? worldTrip(world, here, to) : null;
+    if (!route) return reply.status(400).send({ error: "No way leads there from where the party is." });
+    let walked: WorldWalk | undefined;
+    let time: GameTime | undefined;
+    const updated = await chats.patchMetadata(chatId, (fresh) => {
+      // A turn told the walk, or another walk landed, since the route was read: the party is elsewhere.
+      if ((worldWalkFromMetadata(fresh)?.id ?? null) !== (walk?.id ?? null)) {
+        throw Object.assign(new Error("The party has moved since; try again."), { statusCode: 409 });
+      }
+      walked = worldWalkJoined(walk, route, randomUUID());
+      time = addMinutes((fresh.gameTime as GameTime) ?? createInitialTime(), Math.round(route.days * 24 * 60));
+      return { gameWorldWalk: walked, gameTime: time };
+    });
+    if (!updated || !walked || !time) return reply.status(404).send({ error: "Chat not found" });
+    await updateLatestGameStateWithTrackerLocks(createGameStateStorage(app.db), chatId, {
+      time: formatGameTime(time),
+    });
+    await passGameInventoryTime(app.db, chatId, Math.round(route.days * 24 * 60));
+    return { walk: walked, route, time, formatted: formatGameTime(time) };
   });
 
   // ── PUT /game/:chatId/journal/entries/:entryIndex ──
@@ -10687,7 +12771,7 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
     async (req, reply) => {
       const body = z
         .object({
-          state: z.unknown(),
+          state: z.unknown().optional(),
           schemaVersion: z.number().int().min(1).max(1_000_000).default(1),
           // Experience saves are player-confirmed world state, not mid-turn
           // provisional snapshots, so they default to committed (regen fallback
@@ -10895,7 +12979,7 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
         /** "" is the live anchor the PUT uses before the first assistant message exists. */
         messageId: z.string().max(200),
         swipeIndex: z.number().int().min(0).max(1_000_000),
-        state: z.unknown(),
+        state: z.unknown().optional(),
         schemaVersion: z.number().int().min(1).max(1_000_000).default(1),
         committed: z.boolean().default(true),
         /** Accepted so an export round-trips without stripping fields, but never stored —
@@ -11188,7 +13272,7 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
       const { conn, baseUrl, defaultGenerationParameters } = await resolveConnection(
         connections,
         input.connectionId,
-        chat.connectionId,
+        chat,
       );
       const gameGenerationParameters = resolveStoredGameGenerationParameters(meta, defaultGenerationParameters);
       const modelAccessPolicy = resolveGameModelAccessPolicy({
@@ -11222,8 +13306,9 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
         const characters = createCharactersStorage(app.db);
         const experienceSetupConfig = (meta.gameSetupConfig as GameSetupConfig | null) ?? null;
         const lorePersonaId = chat.personaId || experienceSetupConfig?.personaId || null;
-        const lorePersona = lorePersonaId ? await characters.getPersona(lorePersonaId) : null;
+        const lorePersona = lorePersonaId ? await characters.getPersona(lorePersonaId, req.params.chatId) : null;
         const lorePersonaFields = {
+          example: lorePersona?.mes_example ?? "",
           description: lorePersona?.description ?? "",
           personality: lorePersona?.personality ?? "",
           backstory: lorePersona?.backstory ?? "",
@@ -11354,7 +13439,7 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
           code: "chat_busy",
         });
       }
-      const signal = createResponseAbortSignal(reply, GAME_GENERATION_TIMEOUT_MS, "Experience generation");
+      const signal = createResponseAbortSignal(reply, getChatGenerationTimeoutMs(), "Experience generation");
       const release = await acquireGameAssetGenerationLock(req.params.chatId, signal);
       try {
         const options = gameGenOptions(
@@ -11596,17 +13681,28 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
   );
 
   // ── PUT /game/:chatId/widgets ──
-  app.put<{ Params: { chatId: string } }>("/:chatId/widgets", async (req) => {
-    const { widgets: rawWidgets } = z
-      .object({ widgets: z.array(hudWidgetSchema).max(MAX_GAME_HUD_WIDGETS) })
+  // A caller that read the widgets first may pass them as `expected`: compared inside the write itself,
+  // so widgets the game changed meanwhile (a turn's tags move their values) are refused, not replaced (#7743).
+  app.put<{ Params: { chatId: string } }>("/:chatId/widgets", async (req, reply) => {
+    const { widgets: rawWidgets, expected } = z
+      .object({ widgets: z.array(hudWidgetSchema).max(MAX_GAME_HUD_WIDGETS), expected: z.unknown().optional() })
       .parse(req.body);
+    const checksBaseline = "expected" in ((req.body ?? {}) as object);
     const widgets = sanitizeGameHudWidgets(rawWidgets, true);
     const chats = createChatsStorage(app.db);
     const chat = await chats.getById(req.params.chatId);
     if (!chat) throw new Error("Chat not found");
 
     const enableCustomWidgets = widgets.length > 0;
+    let stale: { widgets: unknown } | null = null;
     await chats.patchMetadata(req.params.chatId, (freshMeta) => {
+      if (checksBaseline) {
+        const stored = freshMeta.gameWidgetState ?? null;
+        if (!sameGameDataValue(stored, expected ?? null)) {
+          stale = { widgets: stored };
+          return {};
+        }
+      }
       const setupConfig = (freshMeta.gameSetupConfig as GameSetupConfig | null) ?? null;
       return {
         gameWidgetState: widgets,
@@ -11622,8 +13718,60 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
           : {}),
       };
     });
+    // Read through a typed local: assigned only inside the updater, so TS would narrow it to null here.
+    const staleWidgets = stale as { widgets: unknown } | null;
+    if (staleWidgets) {
+      return reply
+        .status(409)
+        .send({ reason: "stale", error: "The widgets changed in the game meanwhile.", ...staleWidgets });
+    }
 
     return { ok: true };
+  });
+
+  // ── PATCH /game/:chatId/data ──
+  // The State Editor's hand edits of the game's own data (#7743). Only allow-listed keys, each
+  // checked; refused whole when any key changed since the editor opened it. Never the generic
+  // metadata PATCH, which merges any key unchecked and replaces lists like gameNpcs wholesale.
+  app.patch<{ Params: { chatId: string } }>("/:chatId/data", async (req, reply) => {
+    const parsed = gameDataEditRequestSchema.safeParse(req.body);
+    if (!parsed.success) return reply.status(400).send({ error: "Invalid game data edit", issues: [] });
+    const { edits } = parsed.data;
+    if (new Set(edits.map((edit) => edit.key)).size !== edits.length) {
+      return reply.status(400).send({ error: "Each key may be edited once per save", issues: [] });
+    }
+    const chats = createChatsStorage(app.db);
+    const chat = await chats.getById(req.params.chatId);
+    if (!chat) return reply.status(404).send({ error: "Chat not found" });
+    if (chat.mode !== "game") return reply.status(400).send({ error: "Not a game", issues: [] });
+
+    // Party card sheets are read through the game's pinned ruleset, resolved once before the queue.
+    const meta = parseMeta(chat.metadata);
+    const pinned =
+      meta.gameRuleset != null && edits.some((edit) => edit.key === "gameCharacterCards")
+        ? resolveGameRuleset(meta, await loadRulesetRegistry(app.db))
+        : null;
+    const ruleset = pinned?.status === "ok" ? pinned.definition : null;
+
+    let issues: GameDataEditIssue[] = [];
+    const updated = await chats.patchMetadata(req.params.chatId, (fresh) => {
+      const result = buildGameDataEditPatch(fresh, edits, ruleset);
+      if ("issues" in result) {
+        issues = result.issues;
+        return {};
+      }
+      return result.patch;
+    });
+    if (!updated) return reply.status(404).send({ error: "Chat not found" });
+    if (issues.length > 0) {
+      const stale = issues.some((issue) => issue.reason === "stale");
+      return reply.status(stale ? 409 : 400).send({
+        error: stale ? "The game changed this data since the editor opened it" : "Some game data can't be saved",
+        issues,
+      });
+    }
+    logger.info("[game/data] %s: hand edit saved (%s)", req.params.chatId, edits.map((edit) => edit.key).join(", "));
+    return { saved: edits.map((edit) => edit.key) };
   });
 
   // ── POST /game/party-turn ──
@@ -11670,7 +13818,7 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
     const { conn, baseUrl, defaultGenerationParameters } = await resolveConnection(
       connections,
       input.connectionId,
-      chat.connectionId,
+      chat,
     );
     const gameGenerationParameters = resolveStoredGameGenerationParameters(meta, defaultGenerationParameters);
 
@@ -11687,7 +13835,7 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
     }
     for (const charId of partyCharIds) {
       try {
-        const charRow = await chars.getById(charId);
+        const charRow = await chars.getById(charId, input.chatId);
         if (!charRow) continue;
         const charData = typeof charRow.data === "string" ? JSON.parse(charRow.data) : charRow.data;
         const description = typeof charData.description === "string" ? charData.description : "";
@@ -11790,6 +13938,9 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
       }
     }
     let systemPrompt = buildPartySystemPrompt({
+      ttsEmotionIndicatorsEnabled: gameTtsEmotionIndicatorsEnabled(
+        await createAppSettingsStorage(app.db).get(TTS_SETTINGS_KEY),
+      ),
       partyCards,
       playerName,
       gameActiveState,
@@ -11814,7 +13965,7 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
     ];
 
     const provider = await createGameMainProvider(connections, conn, baseUrl);
-    const partyTurnAbortSignal = createResponseAbortSignal(reply, GAME_GENERATION_TIMEOUT_MS, "Game party turn");
+    const partyTurnAbortSignal = createResponseAbortSignal(reply, getChatGenerationTimeoutMs(), "Game party turn");
     const result = await runGameChatComplete(
       provider,
       messages,
@@ -11852,12 +14003,7 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
     }
 
     // Extract and apply reputation tags from party response
-    const repRegex = /\[reputation:\s*npc="([^"]+)"\s*action="([^"]+)"\]/gi;
-    let repMatch: RegExpExecArray | null;
-    const repActions: Array<{ npcId: string; action: string }> = [];
-    while ((repMatch = repRegex.exec(raw)) !== null) {
-      repActions.push({ npcId: repMatch[1]!.trim(), action: repMatch[2]!.trim() });
-    }
+    const repActions = readReputationTags(raw).map((tag) => ({ npcId: tag.id ?? tag.npcName, action: tag.action }));
     if (repActions.length > 0) {
       try {
         const currentNpcs = (meta.gameNpcs as GameNpc[]) ?? [];
@@ -11873,7 +14019,7 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
     }
 
     // Strip reputation tags from the displayed content
-    const cleanRaw = raw.replace(/\[reputation:\s*npc="[^"]+"\s*action="[^"]+"\]/gi, "").trim();
+    const cleanRaw = stripReputationTags(raw).trim();
 
     // Save party response as a message in the game chat
     const partyMsg = await chats.createMessage({
@@ -11905,7 +14051,7 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
     chatId: z.string().min(1),
     narration: z.string().max(50000).optional().default(""),
     playerAction: z.string().max(5000).optional(),
-    context: z.record(z.unknown()).optional().default({}),
+    context: z.record(z.string(), z.unknown()).prefault({}),
     limit: z.number().min(1).max(50).optional().default(50),
   });
 
@@ -12021,7 +14167,7 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
     const { conn, baseUrl, defaultGenerationParameters } = await resolveConnection(
       connections,
       requestedSceneConnId,
-      chat.connectionId,
+      chat,
     );
     const gameGenerationParameters = resolveStoredGameGenerationParameters(meta, defaultGenerationParameters, {
       includeChatParameters: inheritsChatGenerationParameters({
@@ -12103,7 +14249,7 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
     // request should stay on the buffered completion path regardless of the
     // UI's live-streaming toggle. Some GPT-5.5/OpenAI-compatible stacks return
     // empty content when `chatComplete()` is asked to stream this JSON route.
-    const sceneWrapAbortSignal = createResponseAbortSignal(reply, GAME_GENERATION_TIMEOUT_MS, "Game scene wrap");
+    const sceneWrapAbortSignal = createResponseAbortSignal(reply, getChatGenerationTimeoutMs(), "Game scene wrap");
     const sceneWrapOptions = gameGenOptions(
       conn.model ?? "",
       {
@@ -12196,6 +14342,7 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
           currentMusic: input.context.currentMusic,
           recentMusic: input.context.recentMusic,
           availableMusic: serverMusicTags,
+          family: gameArtFamily(meta),
         });
         if (scoredMusic) {
           parsed.music = scoredMusic;
@@ -12346,7 +14493,7 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
       }
 
       if (debugLogsEnabled) {
-        debugLog("[debug/game/scene-analysis:connection] final result:\n%s", JSON.stringify(parsed, null, 2));
+        debugLog("[debug/game/scene-analysis:connection] final result:\n%s", debugJson(parsed));
       }
 
       return { result: parsed };
@@ -12719,11 +14866,7 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
           ? readTrimmedString(meta.gameSceneConnectionId) ||
             readTrimmedString((meta.gameSetupConfig as Record<string, unknown> | null)?.sceneConnectionId)
           : null);
-      const { conn, baseUrl, defaultGenerationParameters } = await resolveConnection(
-        connections,
-        sceneConnId,
-        chat.connectionId,
-      );
+      const { conn, baseUrl, defaultGenerationParameters } = await resolveConnection(connections, sceneConnId, chat);
       const includeChatParameters = inheritsChatGenerationParameters({
         requestedConnectionId: sceneConnId,
         resolvedConnectionId: conn.id,
@@ -12749,6 +14892,7 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
           .catch(() => null));
       const charStore = createCharactersStorage(app.db);
       const storyboardCharacterContext = await buildStoryboardCharacterContext({
+        db: app.db,
         characters: charStore,
         characterGallery,
         personaGallery,
@@ -12825,11 +14969,7 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
           useNovelAiCharacterPrompts,
           providerSupportsStructuredCharacterPrompts,
         );
-        debugLog(
-          "[debug/%s/storyboard-planner] messages:\n%s",
-          ownerMode,
-          JSON.stringify(illustratorMessages.messages, null, 2),
-        );
+        debugLog("[debug/%s/storyboard-planner] messages:\n%s", ownerMode, debugJson(illustratorMessages.messages));
       }
 
       let illustratorErrorMessage: string | null = null;
@@ -13013,6 +15153,7 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
           charReferenceSourceByName,
           charAvatarByName,
           charDescriptionByName,
+          charOwnerByReference: storyboardCharacterContext.charOwnerByReference,
           includeReferenceImages: useAvatarReferences,
           includeCharacterDescriptions: includeCharacterAppearanceAtRender && characterPrompts.length === 0,
           maxReferenceImages: Math.max(0, storyboardReferenceImageLimit - (spatialLocationReferenceImage ? 1 : 0)),
@@ -13152,6 +15293,7 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
       );
 
       let videoRuntime: GameVideoRuntime | null = null;
+      let videoPromptInstructions: string | null = null;
       let videoFallback: Awaited<ReturnType<typeof resolveVideoConnectionFallback>> = undefined;
       if (generateStoryboardVideos && !usedFallbackStoryboardPlanner) {
         const videoConnectionId =
@@ -13160,6 +15302,7 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
         const videoConn = videoConnectionId ? await connections.getWithKey(videoConnectionId) : null;
         if (videoConn?.provider === "video_generation") {
           videoRuntime = resolveGameVideoRuntime(videoConn);
+          videoPromptInstructions = videoConn.videoPromptInstructions;
           videoFallback = await resolveVideoConnectionFallback(connections, videoConn.id);
         }
       }
@@ -13204,11 +15347,12 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
               "[debug/game/storyboard-image-assets] frame=%d nativeCharacterPrompts=%d prompts:\n%s",
               frame.index + 1,
               characterPrompts.length,
-              JSON.stringify(characterPrompts, null, 2),
+              debugJson(characterPrompts),
             );
           }
         }
         let sentIllustrationPrompt: string | null = null;
+        let sentIllustrationNegativePrompt = "";
         const promptOverride = storyboardPromptOverrideById.get(`storyboard:${frame.index}`);
         try {
           const tag = await generateSceneIllustration({
@@ -13250,6 +15394,7 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
             preserveFullScenePrompt: true,
             onCompiledPrompt: (compiled) => {
               sentIllustrationPrompt = compiled.prompt;
+              sentIllustrationNegativePrompt = compiled.negativePrompt;
             },
             signal: backgroundSignal,
           });
@@ -13261,6 +15406,16 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
             illustration,
             model: imgModel,
             prompt: sentIllustrationPrompt,
+            generation: buildChatImageGenerationRecord({
+              prompt: sentIllustrationPrompt,
+              connectionId: imgConn.id,
+              negativePrompt: sentIllustrationNegativePrompt,
+              characterPrompts: illustration.characterPrompts,
+              referenceCharacterIds: illustrationAssets.referenceCharacterIds,
+              referencePersonaId: illustrationAssets.referencePersonaId,
+              referencePersonaSource: illustrationAssets.referencePersonaSource,
+              locationImageId: spatialLocationReferenceImage ? storyboardSpatialProjection?.referenceImageId : null,
+            }),
           });
           if (!galleryImage) throw new Error("Storyboard keyframe image could not be saved to gallery.");
           await storyboards.updateKeyframe(frame.id, { chatImageId: galleryImage.id, status: "image_complete" });
@@ -13273,7 +15428,7 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
             try {
               const galleryImagePath = resolveGalleryImagePath(galleryImage);
               if (!galleryImagePath) throw new Error("Storyboard keyframe image file could not be found.");
-              const referenceImage = readOmniReferenceImage(
+              const referenceImage = await readOmniReferenceImage(
                 galleryImagePath,
                 sourceGalleryImagePathForMetadata(galleryImage),
               );
@@ -13301,13 +15456,14 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
                     durationSeconds: plannedFrame.durationSeconds,
                     aspectRatio: plannedFrame.aspectRatio,
                     referenceImage: exactReferenceImage,
+                    videoPromptInstructions,
                   });
                   if (debugLogsEnabled) {
                     debugLog(
                       "[debug/%s/storyboard-animation-refinement] frame=%d messages:\n%s",
                       ownerMode,
                       frame.index + 1,
-                      JSON.stringify(redactStoryboardAnimationRefinementMessages(refinementMessages), null, 2),
+                      debugJson(redactStoryboardAnimationRefinementMessages(refinementMessages)),
                     );
                   }
                   const refinementResult = await runGameChatComplete(
@@ -13334,6 +15490,7 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
                   const refinement = resolveStoryboardAnimationRefinement(
                     extraction.content,
                     plannedFrame.narrationBeat,
+                    [videoPromptInstructions],
                   );
                   if (!refinement) {
                     throw new Error("Animation Planner returned no usable image-aware motion beat");
@@ -13677,7 +15834,7 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
       }
       try {
         sourceIllustrationPath = sourceGalleryImagePathForMetadata(galleryImage);
-        referenceImage = readOmniReferenceImage(galleryImagePath, sourceIllustrationPath);
+        referenceImage = await readOmniReferenceImage(galleryImagePath, sourceIllustrationPath);
       } catch (err) {
         const message = err instanceof Error ? err.message : "The selected gallery illustration cannot be used.";
         return reply.status(400).send({ error: message });
@@ -13698,7 +15855,7 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
       }
       try {
         sourceIllustrationPath = sourceIllustrationPathForMetadata(sourceIllustrationAssetPath);
-        referenceImage = readOmniReferenceImage(sourceIllustrationAssetPath, sourceIllustrationPath);
+        referenceImage = await readOmniReferenceImage(sourceIllustrationAssetPath, sourceIllustrationPath);
       } catch (err) {
         const message = err instanceof Error ? err.message : "The current scene illustration cannot be used.";
         return reply.status(400).send({ error: message });
@@ -13971,7 +16128,7 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
     let resolvedIllustration: Pick<SceneIllustrationRequest, "prompt" | "characters"> | undefined;
 
     if (backgroundGenerationEnabled && input.backgroundTag) {
-      const slug = generatedBackgroundSlug(input.backgroundTag);
+      const slug = generatedBackgroundSlug(input.backgroundTag, gameArtFamily(meta));
       const backgroundDescription =
         input.backgroundDescription?.trim() || input.backgroundTag.replace(/:/g, " ").replace(/-/g, " ");
       const promptOverride = promptOverrideById.get(gameImagePromptReviewId("background", slug));
@@ -14023,7 +16180,19 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
         const charStore = createCharactersStorage(app.db);
         const allChars = await charStore.list();
         const illustrationCharacterAssets = emptyIllustrationCharacterAssetMaps();
-        await addCharacterRowsIllustrationAssets(illustrationCharacterAssets, allChars, characterGallery);
+        const resolveAppearance = createIllustrationAppearanceResolver({
+          db: app.db,
+          chat,
+          meta,
+          setupConfig: setupCfg,
+          worldState: latestImageState,
+        });
+        await addCharacterRowsIllustrationAssets(
+          illustrationCharacterAssets,
+          allChars,
+          characterGallery,
+          resolveAppearance,
+        );
         // #7053: the preview route previews the same prompt the real route sends,
         // so it must resolve the persona identically or the preview understates
         // the appearance a frame will actually carry.
@@ -14033,6 +16202,7 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
           personaGallery,
           chat,
           setupConfig: setupCfg,
+          resolveAppearance,
         });
         const { charReferenceByName, charReferenceSourceByName, charAvatarByName, charDescriptionByName } =
           illustrationCharacterAssets;
@@ -14270,22 +16440,18 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
       if (debugLogsEnabled) {
         debugLog(
           "[debug/game/generate-assets] request payload:\n%s",
-          JSON.stringify(
-            {
-              chatId: input.chatId,
-              backgroundTag: input.backgroundTag ?? null,
-              backgroundDescriptionChars: input.backgroundDescription?.length ?? 0,
-              forceBackground: input.forceBackground === true,
-              npcsNeedingAvatars: input.npcsNeedingAvatars ?? [],
-              illustration: input.illustration ?? null,
-              illustrationNarrationChars: input.illustrationNarration?.length ?? 0,
-              useAvatarReferences: input.useAvatarReferences ?? null,
-              includeCharacterAppearance: input.includeCharacterAppearance ?? null,
-              queueImageGenerationRequests: input.queueImageGenerationRequests,
-            },
-            null,
-            2,
-          ),
+          debugJson({
+            chatId: input.chatId,
+            backgroundTag: input.backgroundTag ?? null,
+            backgroundDescriptionChars: input.backgroundDescription?.length ?? 0,
+            forceBackground: input.forceBackground === true,
+            npcsNeedingAvatars: input.npcsNeedingAvatars ?? [],
+            illustration: input.illustration ?? null,
+            illustrationNarrationChars: input.illustrationNarration?.length ?? 0,
+            useAvatarReferences: input.useAvatarReferences ?? null,
+            includeCharacterAppearance: input.includeCharacterAppearance ?? null,
+            queueImageGenerationRequests: input.queueImageGenerationRequests,
+          }),
         );
       }
 
@@ -14385,7 +16551,7 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
 
       // ── Generate background ──
       if (!assetAbortSignal.aborted && backgroundGenerationEnabled && input.backgroundTag) {
-        const slug = generatedBackgroundSlug(input.backgroundTag);
+        const slug = generatedBackgroundSlug(input.backgroundTag, gameArtFamily(meta));
         const backgroundDescription =
           input.backgroundDescription?.trim() || input.backgroundTag.replace(/:/g, " ").replace(/-/g, " ");
         const promptOverride = promptOverrideById.get(gameImagePromptReviewId("background", slug));
@@ -14396,6 +16562,7 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
           sceneDescription: backgroundDescription,
           genre,
           setting,
+          family: gameArtFamily(meta),
           currentLocation: latestImageState?.location ?? null,
           currentWeather: latestImageState?.weather ?? null,
           currentTimeOfDay: latestImageState?.time ?? null,
@@ -14425,7 +16592,10 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
         if (tag) {
           generatedBackground = tag;
         } else {
-          fallbackBackground = pickFallbackBackgroundTag(input.backgroundTag, getAssetManifest().assets);
+          fallbackBackground = pickFallbackBackgroundTag(
+            input.backgroundTag,
+            worldAssetsForFamily(getAssetManifest().assets, gameArtFamily(meta)) ?? {},
+          );
           if (fallbackBackground) {
             logger.warn(
               '[game/generate-assets] background generation failed for "%s"; using fallback "%s"',
@@ -14452,7 +16622,19 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
           const charStore = createCharactersStorage(app.db);
           const allChars = await charStore.list();
           const illustrationCharacterAssets = emptyIllustrationCharacterAssetMaps();
-          await addCharacterRowsIllustrationAssets(illustrationCharacterAssets, allChars, characterGallery);
+          const resolveAppearance = createIllustrationAppearanceResolver({
+            db: app.db,
+            chat,
+            meta,
+            setupConfig: setupCfg,
+            worldState: latestImageState,
+          });
+          await addCharacterRowsIllustrationAssets(
+            illustrationCharacterAssets,
+            allChars,
+            characterGallery,
+            resolveAppearance,
+          );
           // #7053: the chat persona is a visible participant like any character,
           // but only character rows were loaded here, so the persona never reached
           // `charDescriptionByName` and produced no appearance line at all.
@@ -14462,6 +16644,7 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
             personaGallery,
             chat,
             setupConfig: setupCfg,
+            resolveAppearance,
           });
           const { charReferenceByName, charReferenceSourceByName, charAvatarByName, charDescriptionByName } =
             illustrationCharacterAssets;
@@ -14521,6 +16704,7 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
             charReferenceSourceByName,
             charAvatarByName,
             charDescriptionByName,
+            charOwnerByReference: illustrationCharacterAssets.charOwnerByReference,
             includeReferenceImages: useAvatarReferences,
             includeCharacterDescriptions: includeCharacterAppearance,
             maxReferenceImages: Math.max(0, referenceImageLimit - (spatialLocationReferenceImage ? 1 : 0)),
@@ -14546,6 +16730,7 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
           const generatedTags: string[] = [];
           for (let variantIndex = 0; variantIndex < illustrationCount; variantIndex += 1) {
             let sentIllustrationPrompt: string | null = null;
+            let sentIllustrationNegativePrompt = "";
             const tag = await generateSceneIllustration({
               chatId: input.chatId,
               title: illustration.title,
@@ -14584,6 +16769,7 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
               preserveFullScenePrompt: true,
               onCompiledPrompt: (compiled) => {
                 sentIllustrationPrompt = compiled.prompt;
+                sentIllustrationNegativePrompt = compiled.negativePrompt;
               },
               signal: assetAbortSignal,
             });
@@ -14596,6 +16782,15 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
               illustration,
               model: imgModel,
               prompt: sentIllustrationPrompt,
+              generation: buildChatImageGenerationRecord({
+                prompt: sentIllustrationPrompt,
+                connectionId: imgConn.id,
+                negativePrompt: sentIllustrationNegativePrompt,
+                referenceCharacterIds: illustrationAssets.referenceCharacterIds,
+                referencePersonaId: illustrationAssets.referencePersonaId,
+                referencePersonaSource: illustrationAssets.referencePersonaSource,
+                locationImageId: spatialLocationReferenceImage ? ownerSpatialProjection?.referenceImageId : null,
+              }),
             });
             generatedTags.push(tag);
           }
@@ -14781,6 +16976,7 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
       "combat_end",
       "location_change",
       "auto_interval",
+      "state_editor_save",
     ]),
   });
 
@@ -14948,6 +17144,7 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
         hiddenTrackerFields: parseTrackerHiddenFields(snapshot.hiddenTrackerFields),
         // Restoring a checkpoint restores the sheets as they stood then, spent slots included.
         rulesetLive: parseStoredRulesetLive(snapshot.rulesetLive),
+        rulesetClocks: parseStoredRulesetClocks(snapshot.rulesetClocks),
         committed: true,
       },
       manualOverrides,
@@ -15055,11 +17252,77 @@ export async function gameRoutes(app: FastifyInstance, options: GameRouteOptions
       }
     });
 
-    // Restore chat metadata fields from checkpoint
-    if (cp.gameState) {
-      await chats.patchMetadata(input.chatId, () => ({
-        gameActiveState: cp.gameState as GameActiveState,
-      }));
+    // Restore chat metadata fields from checkpoint: the game's own keys it captured (#7742), and the
+    // active state. A checkpoint from before gameMetadataData leaves those keys as they are, as before.
+    const capturedGameMetadata = parseJsonField<Record<string, unknown> | null>(cp.gameMetadataData, null);
+    const restoresGameMetadata =
+      !!capturedGameMetadata && typeof capturedGameMetadata === "object" && !Array.isArray(capturedGameMetadata);
+    // #7783: the world's hand-edits layer comes back in the same queued write, so the story this
+    // load restores and the edits it restores are put back together (a pair captured together
+    // fits). It goes through the checks and the snapshot re-save of PUT /world/edits, never a
+    // direct write to gameWorld; a capture from before the field leaves the layer as it is.
+    const capturedWorldEdits = parseJsonField<unknown>(cp.gameWorldEditsData, null);
+    let worldEditsWrite: { previous: unknown } | null = null;
+    let worldEditsRefusal: string | null = null;
+    const restorePatch = (current: Record<string, unknown>): Record<string, unknown> => {
+      const patch: Record<string, unknown> = {
+        ...(restoresGameMetadata ? buildCheckpointGameMetadataRestore(capturedGameMetadata, current) : {}),
+        ...(cp.gameState ? { gameActiveState: cp.gameState as GameActiveState } : {}),
+      };
+      if (capturedWorldEdits == null) return patch;
+      // Checked against the metadata this load produces, the restored story included.
+      const restored = buildCheckpointWorldEditsRestore(capturedWorldEdits, { ...current, ...patch });
+      if (restored.refusal) {
+        worldEditsRefusal = restored.refusal;
+        return patch;
+      }
+      if (!restored.patch) return patch;
+      worldEditsWrite = { previous: current.gameWorld };
+      return { ...patch, ...restored.patch };
+    };
+    // The chat's characterIds column holds the party's library members, and session start trusts it
+    // over gamePartyCharacterIds. So the load puts back the list it had at the save, in the same
+    // queued write, or a member recruited after the save would come back at the next session.
+    const capturedCharacterIds = parseJsonField<unknown>(cp.chatCharacterIdsData, null);
+    const applyRestore = async (
+      storage: ReturnType<typeof createChatsStorage>,
+      opts: { metadataQueueHeld?: boolean } = {},
+    ) =>
+      restoresGameMetadata && Array.isArray(capturedCharacterIds)
+        ? await storage.patchMetadataWithCharacterIds(
+            input.chatId,
+            (current) => ({
+              metadata: restorePatch(current),
+              characterIds: readCheckpointCharacterIds(capturedCharacterIds),
+            }),
+            opts,
+          )
+        : cp.gameState || restoresGameMetadata || capturedWorldEdits != null
+          ? await storage.patchMetadata(input.chatId, (current) => ({ ...restorePatch(current) }), opts)
+          : null;
+    // One save of a chat's edits at a time, the same lock PUT /world/edits holds — and the metadata
+    // restore and the snapshot it implies are one transaction: a load that fails halfway must not
+    // leave the restored story beside the snapshot of the world it replaced. The metadata queue is
+    // taken before the transaction, the order chats.storage documents, and the patch runs with it
+    // held so the write never waits on a queue the transaction is already serialising.
+    const restoreWorld = () =>
+      withChatMetadataPatchQueue(input.chatId, () =>
+        app.db.transaction(async (tx) => {
+          const saved = await applyRestore(createChatsStorage(tx), { metadataQueueHeld: true });
+          // Assigned only inside the queued updater, so read through a typed local.
+          const worldEditsWritten = worldEditsWrite as { previous: unknown } | null;
+          // The world with its restored layer is the snapshot from now on (W11).
+          if (worldEditsWritten && saved) {
+            await saveGameWorldSnapshot(tx, input.chatId, parseMeta(saved.metadata));
+          }
+          return saved;
+        }),
+      );
+    await (capturedWorldEdits == null ? applyRestore(chats) : withWorldLock(`edits:${input.chatId}`, restoreWorld));
+    const worldEditsSkip = worldEditsRefusal as string | null;
+    if (worldEditsSkip) {
+      // The load still restores everything else; only the layer is left as it is.
+      logger.warn("[game/checkpoint] %s: World Edits not restored: %s", input.chatId, worldEditsSkip);
     }
 
     return { ok: true, messageId: restoreMsg.id };

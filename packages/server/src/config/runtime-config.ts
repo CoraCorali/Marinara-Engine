@@ -17,6 +17,13 @@ const DEFAULT_PORT = 7860;
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_DATA_DIR = resolve(SERVER_ROOT, "data");
 const DEFAULT_MAX_TOOL_ROUNDS = 100;
+/** The most tool rounds a Game Mode turn gets before it must narrate (MAX_TOOL_ROUNDS when lower). */
+export const GAME_TURN_MAX_TOOL_ROUNDS = 4;
+/** The most tool rounds an agent gets before it must answer (MAX_TOOL_ROUNDS when lower). */
+export const AGENT_MAX_TOOL_ROUNDS = 16;
+/** The most tool rounds a lorebook backfill run gets: it saves one entry a call, a chunk at a time, on a
+ *  backend that may call one tool a round (MAX_TOOL_ROUNDS when lower). */
+export const LOREBOOK_BACKFILL_MAX_TOOL_ROUNDS = 64;
 const MAX_CONFIGURED_TOOL_ROUNDS = 10_000;
 const DEFAULT_CUSTOM_TOOL_TIMEOUT_MS = 60_000;
 export const DEFAULT_CHAT_GENERATION_TIMEOUT_MS = 300_000;
@@ -339,6 +346,23 @@ export function getLogPreset() {
   return normalizeEnvValue(process.env.LOG_PRESET)?.toLowerCase() ?? "default";
 }
 
+/** `LOG_FORMAT=pretty` or `json`; null (unset or anything else) lets the logger choose by where its output goes. */
+export function getLogFormat(): "pretty" | "json" | null {
+  const format = normalizeEnvValue(process.env.LOG_FORMAT)?.toLowerCase();
+  return format === "pretty" || format === "json" ? format : null;
+}
+
+/**
+ * Whether the `claude_subscription` provider may use the host's installed
+ * Claude Code instead of the Agent SDK's bundled build. Default `true`; set
+ * `CLAUDE_SUBSCRIPTION_USE_INSTALLED_CLI=false` (or `0`/`off`/`no`) to always
+ * use the bundled build.
+ */
+export function isClaudeSubscriptionInstalledCliEnabled(value = process.env.CLAUDE_SUBSCRIPTION_USE_INSTALLED_CLI) {
+  const raw = normalizeEnvValue(value);
+  return raw === null || !isDisabledFlag(raw);
+}
+
 /**
  * Kill switch for the `claude_subscription` provider's resume code path.
  * Default `true`; set `CLAUDE_SUBSCRIPTION_USE_RESUME=false` (or `0`/`off`/`no`)
@@ -416,17 +440,22 @@ export function isUnauthenticatedPrivateNetworkAllowed() {
 /**
  * Optional override for the no-auth-lockdown private-network exemption list.
  * Comma-separated IPs / CIDRs. When set, REPLACES the built-in defaults
- * (RFC 1918, CGNAT, link-local, IPv6 ULA). When unset, defaults are used.
+ * (RFC 1918, link-local, IPv6 ULA; not CGNAT). When unset, defaults are used.
  */
 export function getTrustedPrivateNetworksOverride() {
   return normalizeEnvValue(process.env.TRUSTED_PRIVATE_NETWORKS);
+}
+
+/** Comma-separated IPs / CIDRs of forward-auth proxies that already log every visitor in. */
+export function getTrustedAuthProxy() {
+  return normalizeEnvValue(process.env.TRUSTED_AUTH_PROXY);
 }
 
 /**
  * Choose how direct Tailscale traffic may skip the IP allowlist and Basic Auth.
  *
  * Default: automatic. A Tailscale-shaped client is trusted only when its
- * connection also arrived on a local 100.64.0.0/10 address. Set the flag to
+ * connection also arrived on a 100.64.0.0/10 address of a local Tailscale interface. Set the flag to
  * true for the legacy broad range bypass, or false to disable it.
  */
 export function getTailscaleBypassMode(): "auto" | "enabled" | "disabled" {
@@ -457,6 +486,18 @@ export function getDockerBypassMode(): "auto" | "enabled" | "disabled" {
  */
 export function isDockerProxyAuthRequired() {
   return !isDisabledFlag(process.env.REQUIRE_AUTH_FOR_DOCKER_PROXY);
+}
+
+/**
+ * Treat loopback requests that carry reverse-proxy forwarding headers as the
+ * remote clients they represent, so a proxy or tunnel on this machine cannot
+ * pass every visitor off as the local user.
+ *
+ * Default: ON. Set REQUIRE_AUTH_FOR_LOOPBACK_PROXY=false only when the proxy
+ * itself requires a login from every client it forwards.
+ */
+export function isLoopbackProxyAuthRequired() {
+  return !isDisabledFlag(process.env.REQUIRE_AUTH_FOR_LOOPBACK_PROXY);
 }
 
 export function isDebugAgentsEnabled() {
@@ -498,6 +539,10 @@ export function isUpdatesApplyHardDisabled() {
   // .env hot-reload writing UPDATES_APPLY_DISABLED=false must not lift a
   // guard whose whole point is protecting the checkout this process runs from.
   return BOOT_UPDATES_APPLY_HARD_DISABLED || isEnabledFlag(process.env.UPDATES_APPLY_DISABLED);
+}
+
+export function isMarinaraNoticesEnabled() {
+  return !isDisabledFlag(process.env.MARINARA_NOTICES_ENABLED);
 }
 
 export function isUpdatesRemoteApplyAllowed() {
@@ -584,10 +629,10 @@ export function getChatGenerationTimeoutMs() {
 }
 
 /**
- * Per-call timeout for agent LLM requests (trackers, HTML reformatter, …).
- * Unlike the main chat path, these are total-duration caps, so slow local
- * models need a higher value here even when streaming (#3958). Read per
- * request so .env hot reloads apply without a restart.
+ * Maximum silence before or during agent LLM requests (trackers, HTML reformatter, …).
+ * Real provider data renews the timeout, so active streams can outlive this budget.
+ * Bounded memory operations also use this value as their total operation budget.
+ * Read per request so .env hot reloads apply without a restart.
  */
 export function getAgentCallTimeoutMs() {
   return readAgentCallTimeoutMs();
@@ -697,6 +742,10 @@ export function isTtsLocalUrlsEnabled() {
   return isEnabledFlag(process.env.TTS_LOCAL_URLS_ENABLED);
 }
 
+export function isSttLocalUrlsEnabled() {
+  return isEnabledFlag(process.env.STT_LOCAL_URLS_ENABLED);
+}
+
 export function isDeeplxLocalUrlsEnabled() {
   return isEnabledFlag(process.env.DEEPLX_LOCAL_URLS_ENABLED);
 }
@@ -707,6 +756,11 @@ export function isWebhookLocalUrlsEnabled() {
 
 export function isCustomToolScriptEnabled() {
   return isEnabledFlag(process.env.CUSTOM_TOOL_SCRIPT_ENABLED);
+}
+
+/** Overworld games (setting kits and generated worlds) are not ready for everyone yet: off unless set. */
+export function isOverworldGamesEnabled() {
+  return isEnabledFlag(process.env.MARINARA_OVERWORLD_GAMES);
 }
 
 export function isCustomAgentRepositoriesEnabled() {

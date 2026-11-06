@@ -35,6 +35,8 @@ export function RulesetImportReviewModal({
   installedVersions,
   importing,
   failure,
+  catalogs = [],
+  translation = false,
   onCancel,
   onConfirm,
 }: {
@@ -47,6 +49,10 @@ export function RulesetImportReviewModal({
   importing: boolean;
   /** Why the last attempt failed, shown here because the panel's banner sits behind the dialog. */
   failure: string | null;
+  /** Its catalogs and how many entries each holds (a package file's files included). */
+  catalogs?: Array<{ label: string; count: number }>;
+  /** Language packs come with it (1.811): importing an installed version again keeps their translation. */
+  translation?: boolean;
   onCancel: () => void;
   onConfirm: () => void;
 }) {
@@ -79,7 +85,12 @@ export function RulesetImportReviewModal({
 
           {installedVersions.includes(review.version) && (
             <div role="status" className="rounded-lg bg-[var(--primary)]/10 px-3 py-2 text-xs text-[var(--primary)]">
-              {t("game.ruleset.import.alreadyInstalled", { version: review.version })}
+              {t(
+                translation
+                  ? "game.ruleset.import.alreadyInstalledTranslation"
+                  : "game.ruleset.import.alreadyInstalled",
+                { version: review.version },
+              )}
             </div>
           )}
 
@@ -102,6 +113,15 @@ export function RulesetImportReviewModal({
                   t("game.ruleset.import.licenseNone")
                 )}
               </ReviewRow>
+              {catalogs.length > 0 && (
+                <ReviewRow label={t("game.ruleset.import.catalogsLabel")}>
+                  {catalogs
+                    .map((catalog) =>
+                      t("game.ruleset.import.catalogEntries", { label: catalog.label, count: catalog.count }),
+                    )
+                    .join(", ")}
+                </ReviewRow>
+              )}
             </section>
 
             <section className="space-y-2 rounded-xl border border-[var(--border)] bg-[var(--background)]/45 p-3">

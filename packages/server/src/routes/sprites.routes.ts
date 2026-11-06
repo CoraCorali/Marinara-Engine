@@ -2,51 +2,48 @@
 // Routes: Character Sprite Upload, List & Serving
 // ──────────────────────────────────────────────
 import type { FastifyInstance } from "fastify";
-import { isOpenAIGptImageModel, isOpenAIGptImage2Model, supportsOpenAIImageCustomSize } from "@marinara-engine/shared";
+import {
+  isOpenAIGptImageModel,
+  isOpenAIGptImage2Model,
+  normalizeSpriteExpressionKey,
+  supportsOpenAIImageCustomSize,
+  type AvatarEmotion,
+  type AvatarExtraFeeling,
+} from "@marinara-engine/shared";
 import AdmZip from "adm-zip";
 import { execFile } from "child_process";
-import { existsSync, mkdirSync, readdirSync, unlinkSync, statSync, readFileSync } from "fs";
+import { existsSync, readdirSync, unlinkSync, statSync, readFileSync, lstatSync } from "fs";
 import { randomUUID } from "crypto";
-import { writeFile, mkdir, unlink, copyFile, rm, readFile, mkdtemp, rename } from "fs/promises";
+import { writeFile, mkdir, unlink, copyFile, rm, readFile, mkdtemp } from "fs/promises";
 import { tmpdir } from "os";
-import { delimiter, dirname, extname, isAbsolute, join, relative, resolve } from "path";
+import { basename, delimiter, dirname, extname, isAbsolute, join, relative, resolve } from "path";
 import { fileURLToPath } from "url";
 import { promisify } from "util";
 import { DATA_DIR } from "../utils/data-dir.js";
-import {
-  getBackgroundRemoverStatus,
-  tryRemoveBackgroundWithBackgroundRemover,
-} from "../services/image/background-remover.service.js";
+import { getBackgroundRemoverStatus } from "../services/image/background-remover.service.js";
 import {
   applySpriteBackgroundInstruction,
-  removeUniformSpriteBackgroundPng,
+  removeSpriteBackgroundPng,
   selectSpriteChromaMatte,
   spriteBackgroundContract,
+  SPRITE_CLEANUP_REVISION,
+  type SpriteCleanupEngine,
+  type UsedSpriteCleanupEngine,
   type SpriteChromaMatte,
 } from "../services/image/sprite-background.service.js";
 import { pixelizeImage, PixelizeInputError } from "../services/image/pixelize.service.js";
-import { clampByte, clampUnit, getSharp, type RgbColor } from "../services/image/sharp-runtime.js";
-import { logger } from "../lib/logger.js";
+import { getSharp } from "../services/image/sharp-runtime.js";
+import type { DB } from "../db/connection.js";
+import { logDebugOverride, logger } from "../lib/logger.js";
 import { SPRITE_RENAME_RATE_LIMIT } from "../middleware/rate-limit.js";
-
-const spriteRenameQueues = new Map<string, Promise<void>>();
-
-async function withSpriteRenameLock<T>(characterId: string, operation: () => Promise<T>): Promise<T> {
-  const previous = spriteRenameQueues.get(characterId) ?? Promise.resolve();
-  let release!: () => void;
-  const current = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  const queuedTail = previous.then(() => current);
-  spriteRenameQueues.set(characterId, queuedTail);
-  await previous;
-  try {
-    return await operation();
-  } finally {
-    release();
-    if (spriteRenameQueues.get(characterId) === queuedTail) spriteRenameQueues.delete(characterId);
-  }
-}
+import { z } from "zod";
+import {
+  listSpriteCatalog,
+  readSpriteCatalog,
+  readOptionalSpriteCatalog,
+  writeSpriteCatalog,
+  withSpriteCatalogLock,
+} from "../services/sprites/sprite-catalog.js";
 
 async function getSpriteCapabilities() {
   try {
@@ -70,6 +67,7 @@ import { generateImage } from "../services/image/image-generation.js";
 import {
   resolveConnectionImageDefaults,
   resolveConnectionImageQuality,
+  type ImageDefaultsConnection,
 } from "../services/image/image-generation-defaults.js";
 import { loadImageGenerationUserSettings } from "../services/image/image-generation-settings.js";
 import { compileImagePrompt } from "../services/image/image-prompt-compiler.js";
@@ -109,7 +107,11 @@ import {
   type ImageStyleProfileSettings,
 } from "@marinara-engine/shared";
 import { assertInsideDir, isAllowedImageBuffer } from "../utils/security.js";
-import { sendValidatedMediaFile, validateImageAssetFile } from "../utils/media-file-security.js";
+import {
+  sendValidatedMediaFile,
+  validateImageAssetBuffer,
+  validateImageAssetFile,
+} from "../utils/media-file-security.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -127,9 +129,6 @@ const ANIMATED_EXPRESSION_ASPECT_RATIO = "9:16" as const;
 const ANIMATED_EXPRESSION_GIF_WIDTH = 512;
 const ANIMATED_EXPRESSION_GIF_FPS = 12;
 const ANIMATED_EXPRESSION_FFMPEG_TIMEOUT_MS = Number(process.env.SPRITE_ANIMATED_FFMPEG_TIMEOUT_MS ?? 180_000);
-
-type SpriteCleanupEngine = "auto" | "backgroundremover" | "builtin";
-type UsedSpriteCleanupEngine = "backgroundremover" | "builtin";
 
 interface SpriteCleanupBackupEntry {
   expression: string;
@@ -181,6 +180,8 @@ type SpriteGenerateSheetBody = {
   /** Optional style-profile override for the bake (#5095); absent keeps the
    *  active-profile resolution unchanged. */
   styleProfileId?: string | null;
+  /** Faces for a 2D avatar's talking head: open eyes and a closed mouth in every face. */
+  talkingHeadFaces?: boolean;
 };
 
 type SpriteGenerateAnimatedBody = Omit<
@@ -225,6 +226,7 @@ type SpritePromptPlan = {
   matte: SpriteChromaMatte;
   nativeTransparentPng: boolean;
   backgroundContract: string;
+  talkingHeadFaces: boolean;
   sheetWidth: number;
   sheetHeight: number;
   cellWidth: number;
@@ -271,12 +273,6 @@ function spritePromptReviewId(kind: "sheet" | "expression", spriteType: string |
 
 function animatedSpritePromptReviewId(expression: string): string {
   return spritePromptReviewId("expression", "animated-portrait", expression);
-}
-
-function ensureDir(dir: string) {
-  if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true });
-  }
 }
 
 export function resolveSpriteNativeTransparency(model: string | undefined, requested: boolean): boolean {
@@ -593,6 +589,261 @@ function withSpriteBackgroundContract(prompt: SpriteCompiledPrompt, plan: Sprite
   };
 }
 
+/** How each talking-head face looks with open eyes and closed lips. Unasked, models draw amusement, excitement,
+ *  fear, grief and disgust with an open mouth, shut eyes or teeth, and can't draw vague labels such as approval
+ *  or realization at all. */
+export const TALKING_HEAD_FACE_LOOKS: Readonly<Record<AvatarEmotion | AvatarExtraFeeling, string>> = Object.freeze({
+  neutral: "calm resting face, relaxed brows, eyes open and looking ahead, lips closed in a relaxed line",
+  happy: "warm closed-lip smile with lifted cheeks, bright open eyes, relaxed brows",
+  angry: "glare under lowered, drawn-together brows, lips pressed shut, tense jaw",
+  sad: "brows tilted up at the inner ends, open eyes with a lowered gaze, closed mouth turned down at the corners",
+  relaxed: "peaceful, content look, soft brows, calm open eyes, faint closed-lip smile",
+  surprised: "eyes wide open, brows raised high, lips closed",
+  curiosity: "interested look, one brow raised, head tilted slightly, attentive open eyes, lips closed",
+  admiration: "eyes bright and wide with interest, brows lifted, soft closed-lip smile, looking up a little",
+  amusement: "playful closed-lip grin with lifted cheeks, bright, merry open eyes, relaxed brows",
+  desire:
+    "wistful, longing look, soft open eyes gazing slightly aside, brows gently raised, small hopeful closed-lip smile",
+  embarrassment:
+    "flushed pink cheeks, open eyes glancing aside, brows raised in the middle, small awkward closed-lip smile",
+  excitement: "eyes wide and sparkling, brows high, big closed-lip smile with lifted cheeks",
+  gratitude: "warm thankful look, brows softly raised, open eyes slightly glistening, gentle closed-lip smile",
+  optimism: "hopeful look, bright open eyes looking slightly upward, brows lifted, confident closed-lip smile",
+  pride: "chin raised, self-assured open-eyed gaze, relaxed brows, satisfied closed-lip smile",
+  annoyance: "flat, unimpressed stare under slightly lowered brows, eyes still fully open, lips pressed to one side",
+  disapproval:
+    "stern look, brows drawn together and slightly lowered, open eyes, lips pressed into a thin line, chin slightly raised",
+  disgust: "nose wrinkled, brows lowered, head pulled back slightly, closed lips pulled down at one corner",
+  disappointment:
+    "brows tilted up at the inner ends, open eyes with a dropped gaze, closed mouth turned down, slight slump",
+  grief:
+    "deep sorrow, brows pulled up at the inner ends, open eyes glistening with tears, closed trembling lips turned down",
+  nervousness:
+    "uneasy look, brows raised and drawn together, open eyes glancing sideways, lips pressed in a tight wavy line, a bead of sweat",
+  remorse:
+    "guilty look, head slightly bowed, brows tilted up at the inner ends, open eyes looking down, lips pressed together",
+  approval: "calm, confident look, steady open-eyed gaze, relaxed brows, small closed-lip smile",
+  caring: "gentle, tender look, brows softly raised, warm open eyes, soft closed-lip smile, head tilted slightly",
+  love: "affectionate soft gaze with open eyes, light blush on the cheeks, gentle closed-lip smile",
+  relief: "brows relaxed and slightly raised, shoulders lowered, open eyes, soft closed-lip smile",
+  confusion:
+    "puzzled look, one brow raised and the other lowered, head tilted, open eyes, lips closed and pushed to one side",
+  fear: "eyes very wide with the whites showing, brows raised and pulled together, lips pressed tightly shut, tense shoulders",
+  realization: 'eyes widening slightly, brows lifting, lips closed, a sudden "I see" look',
+});
+
+/** A talking head's blink and talk pictures close the eyes and open the mouth of each face, so every face
+ *  has to start with open eyes and a closed mouth. Unasked, models draw "happy" as a closed-eye smile and
+ *  "angry" and "surprised" with an open mouth, and the swap then changes nothing. Added after the prompt is compiled,
+ *  like the background contract, so the tag compiler can't drop it. The faces asked for get their look; a custom
+ *  label gets none. */
+export function withTalkingHeadFaceContract(
+  prompt: SpriteCompiledPrompt,
+  plan: Pick<SpritePromptPlan, "talkingHeadFaces"> & { expressions?: readonly string[] },
+  expressions: readonly string[] = plan.expressions ?? [],
+): SpriteCompiledPrompt {
+  if (!plan.talkingHeadFaces) return prompt;
+
+  const rule = `MANDATORY TALKING-HEAD FACES: in every face both eyes are fully open with the irises visible, and the lips are closed. Show each feeling with the eyebrows, the shape of the open eyes and the cheeks: a happy face smiles with open eyes and closed lips, an angry face glares under lowered brows with its lips pressed shut, and a surprised face has wide-open eyes and raised brows with a closed mouth. Never draw a closed-eye smile (^_^), a wink, eyes squeezed shut, an open-mouth laugh, gasp or shout, gritted or bared teeth, or any visible teeth. Separate blinking and talking pictures are made from these faces later.`;
+  const looks = expressions.flatMap((label) => {
+    const key = normalizeSpriteExpressionKey(label) as keyof typeof TALKING_HEAD_FACE_LOOKS;
+    return Object.hasOwn(TALKING_HEAD_FACE_LOOKS, key)
+      ? [`${formatSpriteLabelForPrompt(label)}: ${TALKING_HEAD_FACE_LOOKS[key]}`]
+      : [];
+  });
+
+  return {
+    prompt: [prompt.prompt, looks.length > 0 ? `${rule}\nDraw each face like this: ${looks.join("; ")}.` : rule].join(
+      "\n\n",
+    ),
+    negativePrompt: [
+      prompt.negativePrompt,
+      "closed eyes, eyes shut, closed-eye smile, ^_^, winking, squinting, open mouth, parted lips, laughing, gasping, shouting, gritted teeth, bared teeth, visible teeth, tongue out",
+    ]
+      .filter(Boolean)
+      .join(", "),
+  };
+}
+
+/** The cells of a talking head's set, left to right: the face, then its blink and talk pictures. */
+const TALKING_HEAD_SET_CELLS = ["face", "eyes-closed", "mouth-open"] as const;
+
+/** A talking head's set: the same face three times in one picture, so the blink and talk pictures match it.
+ *  Added after the prompt is compiled, like the other contracts, so the tag compiler can't drop it. */
+export function withTalkingHeadSetContract(prompt: SpriteCompiledPrompt, face: string): SpriteCompiledPrompt {
+  const key = normalizeSpriteExpressionKey(face) as keyof typeof TALKING_HEAD_FACE_LOOKS;
+  const look = Object.hasOwn(TALKING_HEAD_FACE_LOOKS, key) ? `, ${TALKING_HEAD_FACE_LOOKS[key]}` : "";
+  return {
+    prompt: [
+      prompt.prompt,
+      `MANDATORY TALKING-HEAD SET: the three cells show the same character as the same picture: identical pose, head angle, framing, size, position in the cell, hair, outfit, lighting and colours. Only the eyes and the mouth differ.`,
+      `Cell 1: the ${formatSpriteLabelForPrompt(face)} face${look}, both eyes fully open, lips closed.`,
+      `Cell 2: exactly cell 1 with both eyes closed, relaxed eyelids as in a blink; the mouth and everything else unchanged.`,
+      `Cell 3: exactly cell 1 with the mouth open as if saying a clear "ah"; the eyes and everything else unchanged.`,
+    ].join("\n\n"),
+    negativePrompt: [
+      prompt.negativePrompt,
+      "different pose in each cell, different framing in each cell, different hair in each cell, different outfit in each cell, head turned, zoomed cell",
+    ]
+      .filter(Boolean)
+      .join(", "),
+  };
+}
+
+/** Removes a sheet's background when asked (native transparency is preferred; a flat matte is removed when a
+ *  provider cannot return alpha) and cuts it into its cells, each cleaned again on its own. Cleanup that fails
+ *  keeps the picture as it is rather than failing the sheet. */
+async function cutSpriteSheet(
+  sheet: Buffer,
+  plan: Pick<SpritePromptPlan, "cols" | "rows" | "expressions">,
+  options: { clean: boolean; cleanupStrength: number },
+): Promise<{ sheetBase64: string; cells: Array<{ expression: string; base64: string }> }> {
+  let sheetBuffer = sheet;
+  const sharp = await getSharp();
+  let metadata = await sharp(sheetBuffer).metadata();
+  if (options.clean) {
+    try {
+      sheetBuffer = (await removeSpriteBackgroundPng(sheetBuffer, options.cleanupStrength)).buffer;
+      metadata = await sharp(sheetBuffer).metadata();
+    } catch (bgErr) {
+      logger.warn(bgErr, "Sprite background cleanup failed; continuing with original image");
+      sheetBuffer = sheet;
+      metadata = await sharp(sheetBuffer).metadata();
+    }
+  }
+
+  const imgWidth = metadata.width ?? (plan.cols <= 2 ? 1024 : 1536);
+  const imgHeight = metadata.height ?? (plan.rows <= 2 ? 1024 : 1536);
+  const cellWidth = Math.floor(imgWidth / plan.cols);
+  const cellHeight = Math.floor(imgHeight / plan.rows);
+  const cellPromises: Promise<{ expression: string; base64: string }>[] = [];
+  for (let row = 0; row < plan.rows; row++) {
+    for (let col = 0; col < plan.cols; col++) {
+      const idx = row * plan.cols + col;
+      if (idx >= plan.expressions.length) break;
+      const expression = plan.expressions[idx]!;
+      const left = col * cellWidth;
+      const top = row * cellHeight;
+      cellPromises.push(
+        (async () => {
+          let cellBuffer = await sharp(sheetBuffer)
+            .extract({ left, top, width: cellWidth, height: cellHeight })
+            .png()
+            .toBuffer();
+          if (options.clean) {
+            try {
+              cellBuffer = (await removeSpriteBackgroundPng(cellBuffer, options.cleanupStrength)).buffer;
+            } catch (bgErr) {
+              logger.warn(bgErr, 'Sprite background cleanup failed for "%s"; using the sheet crop', expression);
+            }
+          }
+          return { expression, base64: cellBuffer.toString("base64") };
+        })(),
+      );
+    }
+  }
+  return { sheetBase64: sheetBuffer.toString("base64"), cells: await Promise.all(cellPromises) };
+}
+
+/** The image connection a talking head's set is drawn with, as the avatar generator resolves it. */
+export interface TalkingHeadSetConnection {
+  conn: ImageDefaultsConnection & {
+    apiKey?: string | null;
+    imageEndpointId?: string | null;
+    comfyuiWorkflow?: string | null;
+  };
+  fallback?: Awaited<ReturnType<typeof resolveImageConnectionFallback>>;
+}
+
+/** The prompt and sheet size of a talking head's set for one face, drawn from the appearance for an image
+ *  connection that can't edit pictures. Built like the face maker's sheet (the expression sheet template, the
+ *  style profile and the chroma matte it removes), with the set contract after it. */
+export async function talkingHeadSetPrompt(
+  db: DB,
+  image: TalkingHeadSetConnection,
+  request: { face: string; appearance: string },
+): Promise<SpriteCompiledPrompt & { width: number; height: number }> {
+  const model = image.conn.model || "";
+  const face = formatSpriteLabelForPrompt(request.face);
+  const body: SpriteGenerateSheetBody = {
+    appearance: request.appearance,
+    expressions: [face, `${face}, eyes closed`, `${face}, mouth open`],
+    cols: TALKING_HEAD_SET_CELLS.length,
+    rows: 1,
+    spriteType: "expressions",
+    noBackground: true,
+    nativeTransparentPng: false,
+  };
+  const plan = await buildSpritePromptPlan(db, body, model);
+  const imageSettings = await loadImageGenerationUserSettings(db);
+  const compiled = compileSpritePrompt(plan.prompt, {
+    appearance: plan.appearance,
+    styleProfiles: imageSettings.styleProfiles,
+    imageDefaults: resolveConnectionImageDefaults(image.conn),
+  });
+  const prompt = withTalkingHeadSetContract(
+    withSpriteBackgroundContract(withSpriteSheetLayoutContract(compiled, plan), plan),
+    request.face,
+  );
+  return { ...prompt, width: plan.sheetWidth, height: plan.sheetHeight };
+}
+
+/** Draws a talking head's set in one picture with `prompt` (talkingHeadSetPrompt, or the reviewed one) and
+ *  cuts it into the face and its eyes-closed and mouth-open cells, each without its background (PNG). The
+ *  cells are drawn separately, so they still have to be lined up with the face. */
+export async function drawTalkingHeadSet(
+  image: TalkingHeadSetConnection,
+  request: {
+    prompt: SpriteCompiledPrompt & { width: number; height: number };
+    signal?: AbortSignal;
+    debug: boolean;
+    logLabel: string;
+  },
+): Promise<Record<(typeof TALKING_HEAD_SET_CELLS)[number], Buffer>> {
+  const { conn } = image;
+  const model = conn.model || "";
+  const source = conn.imageGenerationSource || model;
+  logDebugOverride(
+    request.debug,
+    "[debug/avatar-generation] %s set prompt (%dx%d):\n%s\nnegative: %s",
+    request.logLabel,
+    request.prompt.width,
+    request.prompt.height,
+    request.prompt.prompt,
+    request.prompt.negativePrompt,
+  );
+  const result = await generateImage(
+    source,
+    conn.baseUrl || "https://image.pollinations.ai",
+    conn.apiKey || "",
+    conn.imageService || source,
+    {
+      prompt: request.prompt.prompt,
+      negativePrompt: request.prompt.negativePrompt || undefined,
+      model,
+      width: request.prompt.width,
+      height: request.prompt.height,
+      transparentBackground: false,
+      preserveProviderOutput: true,
+      imageEndpointId: conn.imageEndpointId || undefined,
+      comfyWorkflow: conn.comfyuiWorkflow || undefined,
+      imageDefaults: resolveConnectionImageDefaults(conn),
+      quality: resolveConnectionImageQuality(conn),
+      fallback: image.fallback ?? undefined,
+      signal: request.signal,
+      debugMode: request.debug,
+    },
+  );
+  const { cells } = await cutSpriteSheet(
+    Buffer.from(result.base64, "base64"),
+    { cols: TALKING_HEAD_SET_CELLS.length, rows: 1, expressions: [...TALKING_HEAD_SET_CELLS] },
+    { clean: true, cleanupStrength: 35 },
+  );
+  const cell = (name: (typeof TALKING_HEAD_SET_CELLS)[number]) =>
+    Buffer.from(cells.find((entry) => entry.expression === name)!.base64, "base64");
+  return { face: cell("face"), "eyes-closed": cell("eyes-closed"), "mouth-open": cell("mouth-open") };
+}
+
 function withFullBodyCompositionContract(
   prompt: SpriteCompiledPrompt,
   spriteType: SpriteType | undefined,
@@ -648,25 +899,7 @@ function isSafeBackupId(value: unknown): value is string {
 }
 
 function listSpriteInfos(characterId: string) {
-  const dir = join(SPRITES_ROOT, characterId);
-  ensureDir(dir);
-
-  try {
-    return readdirSync(dir)
-      .filter((f) => SPRITE_FILE_RE.test(f))
-      .map((f) => {
-        const ext = extname(f);
-        const expression = f.slice(0, -ext.length);
-        const mtime = statSync(join(dir, f)).mtimeMs;
-        return {
-          expression,
-          filename: f,
-          url: `/api/sprites/${characterId}/file/${encodeURIComponent(f)}?v=${Math.floor(mtime)}`,
-        };
-      });
-  } catch {
-    return [];
-  }
+  return listSpriteCatalog(characterId).sprites;
 }
 
 function buildFullBodyExpressionSheetPrompt({
@@ -718,196 +951,6 @@ function buildFullBodyExpressionSheetPrompt({
   ]
     .filter((part): part is string => Boolean(part))
     .join(" ");
-}
-
-function rgbLuma(color: RgbColor): number {
-  return color.red * 0.2126 + color.green * 0.7152 + color.blue * 0.0722;
-}
-
-function rgbSpread(color: RgbColor): number {
-  return Math.max(color.red, color.green, color.blue) - Math.min(color.red, color.green, color.blue);
-}
-
-async function softenBackgroundRemoverMask(
-  originalInput: Buffer,
-  aiOutput: Buffer,
-  cleanupStrength = 35,
-): Promise<Buffer> {
-  const strength = Math.max(0, Math.min(100, cleanupStrength));
-  if (strength >= 99) return aiOutput;
-
-  const sharp = await getSharp();
-  const original = await sharp(originalInput).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
-  if (!original.info.width || !original.info.height) return aiOutput;
-
-  const width = original.info.width;
-  const height = original.info.height;
-  const pixelCount = width * height;
-  const originalRgba = Buffer.from(original.data);
-  const originalChannels = original.info.channels;
-  const ai = await sharp(aiOutput)
-    .ensureAlpha()
-    .resize(width, height, { fit: "fill" })
-    .raw()
-    .toBuffer({ resolveWithObject: true });
-  const outputRgba = Buffer.from(ai.data);
-  const outputChannels = ai.info.channels;
-  const transparentAlpha = 16 + ((100 - strength) / 100) * 18;
-  const backgroundMask = new Uint8Array(pixelCount);
-  const queue = new Int32Array(pixelCount);
-  let queueStart = 0;
-  let queueEnd = 0;
-
-  const originalOffset = (pixelIndex: number) => pixelIndex * originalChannels;
-  const outputOffset = (pixelIndex: number) => pixelIndex * outputChannels;
-  const outputAlpha = (pixelIndex: number) => outputRgba[outputOffset(pixelIndex) + 3] ?? 255;
-  const isOutputTransparent = (pixelIndex: number) => outputAlpha(pixelIndex) <= transparentAlpha;
-
-  const markBackground = (pixelIndex: number) => {
-    if (backgroundMask[pixelIndex] || !isOutputTransparent(pixelIndex)) return;
-    backgroundMask[pixelIndex] = 1;
-    queue[queueEnd++] = pixelIndex;
-  };
-
-  for (let xPos = 0; xPos < width; xPos++) {
-    markBackground(xPos);
-    markBackground((height - 1) * width + xPos);
-  }
-  for (let yPos = 0; yPos < height; yPos++) {
-    markBackground(yPos * width);
-    markBackground(yPos * width + width - 1);
-  }
-
-  while (queueStart < queueEnd) {
-    const pixelIndex = queue[queueStart++]!;
-    const xPos = pixelIndex % width;
-    const yPos = Math.floor(pixelIndex / width);
-    if (xPos > 0) markBackground(pixelIndex - 1);
-    if (xPos < width - 1) markBackground(pixelIndex + 1);
-    if (yPos > 0) markBackground(pixelIndex - width);
-    if (yPos < height - 1) markBackground(pixelIndex + width);
-  }
-
-  const hasForegroundNeighbor = (pixelIndex: number): boolean => {
-    const xPos = pixelIndex % width;
-    const yPos = Math.floor(pixelIndex / width);
-    for (let yOffset = -2; yOffset <= 2; yOffset++) {
-      const sampleY = yPos + yOffset;
-      if (sampleY < 0 || sampleY >= height) continue;
-      for (let xOffset = -2; xOffset <= 2; xOffset++) {
-        if (xOffset === 0 && yOffset === 0) continue;
-        const sampleX = xPos + xOffset;
-        if (sampleX < 0 || sampleX >= width) continue;
-        if (outputAlpha(sampleY * width + sampleX) >= 168) return true;
-      }
-    }
-    return false;
-  };
-
-  const hasOriginalDetailNeighbor = (pixelIndex: number): boolean => {
-    const xPos = pixelIndex % width;
-    const yPos = Math.floor(pixelIndex / width);
-    for (let yOffset = -2; yOffset <= 2; yOffset++) {
-      const sampleY = yPos + yOffset;
-      if (sampleY < 0 || sampleY >= height) continue;
-      for (let xOffset = -2; xOffset <= 2; xOffset++) {
-        const sampleX = xPos + xOffset;
-        if (sampleX < 0 || sampleX >= width) continue;
-        const offset = originalOffset(sampleY * width + sampleX);
-        const alpha = originalRgba[offset + 3] ?? 255;
-        if (alpha <= 8) continue;
-        const color = {
-          red: originalRgba[offset] ?? 255,
-          green: originalRgba[offset + 1] ?? 255,
-          blue: originalRgba[offset + 2] ?? 255,
-        };
-        if (rgbLuma(color) < 166 || rgbSpread(color) > 42) return true;
-      }
-    }
-    return false;
-  };
-
-  const restorePixel = (pixelIndex: number, restoreWeight: number) => {
-    const originalPixelOffset = originalOffset(pixelIndex);
-    const outputPixelOffset = outputOffset(pixelIndex);
-    const originalAlpha = originalRgba[originalPixelOffset + 3] ?? 255;
-    const currentAlpha = outputRgba[outputPixelOffset + 3] ?? 255;
-    const weight = clampUnit(restoreWeight);
-    if (weight <= 0 || currentAlpha >= originalAlpha) return;
-
-    outputRgba[outputPixelOffset] = clampByte(
-      (outputRgba[outputPixelOffset] ?? 0) * (1 - weight) + (originalRgba[originalPixelOffset] ?? 0) * weight,
-    );
-    outputRgba[outputPixelOffset + 1] = clampByte(
-      (outputRgba[outputPixelOffset + 1] ?? 0) * (1 - weight) + (originalRgba[originalPixelOffset + 1] ?? 0) * weight,
-    );
-    outputRgba[outputPixelOffset + 2] = clampByte(
-      (outputRgba[outputPixelOffset + 2] ?? 0) * (1 - weight) + (originalRgba[originalPixelOffset + 2] ?? 0) * weight,
-    );
-    outputRgba[outputPixelOffset + 3] = clampByte(
-      Math.max(currentAlpha, currentAlpha * (1 - weight) + originalAlpha * weight),
-    );
-  };
-
-  const enclosedRestoreWeight = clampUnit((105 - strength) / 70);
-  const edgeRestoreWeight = clampUnit((62 - strength) / 85) * 0.55;
-
-  for (let pixelIndex = 0; pixelIndex < pixelCount; pixelIndex++) {
-    if (!isOutputTransparent(pixelIndex)) continue;
-
-    if (!backgroundMask[pixelIndex]) {
-      restorePixel(pixelIndex, enclosedRestoreWeight);
-      continue;
-    }
-
-    if (edgeRestoreWeight > 0 && hasForegroundNeighbor(pixelIndex) && hasOriginalDetailNeighbor(pixelIndex)) {
-      restorePixel(pixelIndex, edgeRestoreWeight);
-    }
-  }
-
-  return sharp(outputRgba, {
-    raw: {
-      width,
-      height,
-      channels: 4,
-    },
-  })
-    .png()
-    .toBuffer();
-}
-
-async function removeSpriteBackgroundPng(
-  input: Buffer,
-  cleanupStrength = 35,
-  engine: SpriteCleanupEngine = "auto",
-): Promise<{ buffer: Buffer; engine: UsedSpriteCleanupEngine }> {
-  const configuredEngine = engine === "auto" ? getBackgroundRemoverStatus().engine : engine;
-  if (configuredEngine === "backgroundremover") {
-    const aiOutput = await tryRemoveBackgroundWithBackgroundRemover(input, {
-      required: true,
-    });
-    if (aiOutput) {
-      return {
-        buffer: await softenBackgroundRemoverMask(input, aiOutput, cleanupStrength),
-        engine: "backgroundremover",
-      };
-    }
-  }
-
-  const matteOutput = await removeUniformSpriteBackgroundPng(input, cleanupStrength);
-  if (configuredEngine === "builtin" || matteOutput.alreadyTransparent || matteOutput.confidence >= 0.62) {
-    return { buffer: matteOutput.buffer, engine: "builtin" };
-  }
-
-  const aiOutput = await tryRemoveBackgroundWithBackgroundRemover(input, { required: false });
-  if (aiOutput) {
-    return {
-      buffer: await softenBackgroundRemoverMask(input, aiOutput, cleanupStrength),
-      engine: "backgroundremover",
-    };
-  }
-
-  return { buffer: matteOutput.buffer, engine: "builtin" };
 }
 
 function looksLikeBase64(input: string): boolean {
@@ -1178,7 +1221,7 @@ async function buildAnimatedExpressionPrompt(input: {
 }
 
 async function buildSpritePromptPlan(
-  app: FastifyInstance,
+  db: DB,
   body: SpriteGenerateSheetBody,
   imgModel: string,
 ): Promise<SpritePromptPlan> {
@@ -1198,7 +1241,7 @@ async function buildSpritePromptPlan(
     expressions = expressions.slice(0, MAX_INDIVIDUAL_SPRITE_EXPRESSIONS);
   }
   const expressionList = expressions.join(", ");
-  const promptOverridesStorage = createPromptOverridesStorage(app.db);
+  const promptOverridesStorage = createPromptOverridesStorage(db);
   const trimmedAppearance = body.appearance?.trim() || "";
   const nativeTransparentPng = resolveSpriteNativeTransparency(imgModel, body.nativeTransparentPng === true);
   const matte = selectSpriteChromaMatte(trimmedAppearance);
@@ -1253,7 +1296,7 @@ async function buildSpritePromptPlan(
     prompt = await loadPrompt(promptOverridesStorage, SPRITES_EXPRESSION_SHEET, {
       cols,
       rows,
-      expressionCount: expressions.length,
+      expressionCount: cols * rows,
       expressionList,
       appearance: trimmedAppearance,
       sheetWidth,
@@ -1276,6 +1319,7 @@ async function buildSpritePromptPlan(
     matte,
     nativeTransparentPng,
     backgroundContract: spriteBackgroundContract(backgroundOptions),
+    talkingHeadFaces: body.talkingHeadFaces === true && body.spriteType !== "full-body",
     sheetWidth,
     sheetHeight,
     cellWidth,
@@ -1337,6 +1381,142 @@ async function buildIndividualFullBodyExpressionRequest({
 }
 
 export async function spritesRoutes(app: FastifyInstance) {
+  const ownerParams = z.object({
+    characterId: z
+      .string()
+      .min(1)
+      .max(200)
+      .refine((id) => !id.includes("..") && !/[/\\\u0000]/u.test(id)),
+  });
+  const folderInput = z.object({
+    category: z.enum(["expressions", "full-body"]).optional(),
+    name: z.string().trim().min(1).max(100),
+  });
+  app.get<{ Params: { characterId: string } }>("/:characterId/catalog", async (req, reply) => {
+    if (!ownerParams.safeParse(req.params).success) return reply.code(400).send({ error: "Invalid sprite owner" });
+    return listSpriteCatalog(req.params.characterId);
+  });
+  app.post<{ Params: { characterId: string } }>("/:characterId/folders", async (req, reply) => {
+    const body = folderInput.safeParse(req.body);
+    if (!ownerParams.safeParse(req.params).success || !body.success)
+      return reply.code(400).send({ error: "Invalid sprite folder" });
+    return withSpriteCatalogLock(req.params.characterId, async () => {
+      const catalog = readSpriteCatalog(req.params.characterId);
+      if (
+        catalog.folders.some(
+          (folder) =>
+            folder.name.toLowerCase() === body.data.name.toLowerCase() &&
+            folder.category === (body.data.category ?? "expressions"),
+        )
+      )
+        return reply.code(409).send({ error: "A folder with that name already exists" });
+      catalog.folders.push({ id: randomUUID(), ...body.data, category: body.data.category ?? "expressions" });
+      await writeSpriteCatalog(req.params.characterId, catalog);
+      return listSpriteCatalog(req.params.characterId);
+    });
+  });
+  app.post<{ Params: { characterId: string } }>("/:characterId/folders/reorder", async (req, reply) => {
+    const body = z
+      .object({ category: z.enum(["expressions", "full-body"]), orderedIds: z.array(z.string().uuid()).max(400) })
+      .safeParse(req.body);
+    if (!ownerParams.safeParse(req.params).success || !body.success)
+      return reply.code(400).send({ error: "Invalid sprite folder order" });
+    return withSpriteCatalogLock(req.params.characterId, async () => {
+      const catalog = readSpriteCatalog(req.params.characterId);
+      const folders = catalog.folders.filter((folder) => folder.category === body.data.category);
+      const ids = new Set(body.data.orderedIds);
+      if (
+        ids.size !== body.data.orderedIds.length ||
+        ids.size !== folders.length ||
+        folders.some((folder) => !ids.has(folder.id))
+      )
+        return reply.code(409).send({ error: "Sprite folders changed; refresh before reordering" });
+      const byId = new Map(folders.map((folder) => [folder.id, folder]));
+      // The editor displays this array in reverse, keeping newly appended folders first.
+      const reordered = body.data.orderedIds
+        .slice()
+        .reverse()
+        .map((id) => byId.get(id)!);
+      let index = 0;
+      catalog.folders = catalog.folders.map((folder) =>
+        folder.category === body.data.category ? reordered[index++]! : folder,
+      );
+      await writeSpriteCatalog(req.params.characterId, catalog);
+      return listSpriteCatalog(req.params.characterId);
+    });
+  });
+  app.patch<{ Params: { characterId: string; folderId: string } }>(
+    "/:characterId/folders/:folderId",
+    async (req, reply) => {
+      const body = folderInput.safeParse(req.body);
+      if (!ownerParams.safeParse(req.params).success || !body.success)
+        return reply.code(400).send({ error: "Invalid sprite folder" });
+      return withSpriteCatalogLock(req.params.characterId, async () => {
+        const catalog = readSpriteCatalog(req.params.characterId);
+        const folder = catalog.folders.find((entry) => entry.id === req.params.folderId);
+        if (!folder) return reply.code(404).send({ error: "Sprite folder not found" });
+        if (
+          catalog.folders.some(
+            (entry) =>
+              entry.id !== folder.id &&
+              entry.category === folder.category &&
+              entry.name.toLowerCase() === body.data.name.toLowerCase(),
+          )
+        )
+          return reply.code(409).send({ error: "A folder with that name already exists" });
+        if (body.data.category && body.data.category !== folder.category)
+          return reply.code(400).send({ error: "A folder cannot change sprite type" });
+        Object.assign(folder, body.data);
+        await writeSpriteCatalog(req.params.characterId, catalog);
+        return listSpriteCatalog(req.params.characterId);
+      });
+    },
+  );
+  app.delete<{ Params: { characterId: string; folderId: string } }>(
+    "/:characterId/folders/:folderId",
+    async (req, reply) => {
+      if (!ownerParams.safeParse(req.params).success) return reply.code(400).send({ error: "Invalid sprite owner" });
+      return withSpriteCatalogLock(req.params.characterId, async () => {
+        const catalog = readSpriteCatalog(req.params.characterId);
+        if (!catalog.folders.some((folder) => folder.id === req.params.folderId))
+          return reply.code(404).send({ error: "Sprite folder not found" });
+        catalog.folders = catalog.folders.filter((folder) => folder.id !== req.params.folderId);
+        for (const sprite of Object.values(catalog.sprites))
+          if (sprite.folderId === req.params.folderId) sprite.folderId = null;
+        await writeSpriteCatalog(req.params.characterId, catalog);
+        return listSpriteCatalog(req.params.characterId);
+      });
+    },
+  );
+  app.post<{ Params: { characterId: string } }>("/:characterId/move", async (req, reply) => {
+    const body = z
+      .object({ expressions: z.array(z.string()).min(1).max(5000), folderId: z.string().uuid().nullable() })
+      .safeParse(req.body);
+    if (!ownerParams.safeParse(req.params).success || !body.success)
+      return reply.code(400).send({ error: "Invalid sprite move" });
+    return withSpriteCatalogLock(req.params.characterId, async () => {
+      const catalog = readSpriteCatalog(req.params.characterId);
+      const sprites = listSpriteInfos(req.params.characterId);
+      if (body.data.folderId && !catalog.folders.some((folder) => folder.id === body.data.folderId))
+        return reply.code(404).send({ error: "Sprite folder not found" });
+      if (body.data.expressions.some((expression) => !sprites.some((sprite) => sprite.expression === expression)))
+        return reply.code(404).send({ error: "Sprite not found" });
+      const destination = catalog.folders.find((folder) => folder.id === body.data.folderId);
+      if (
+        destination &&
+        body.data.expressions.some(
+          (handle) => (handle.startsWith("full_") ? "full-body" : "expressions") !== destination.category,
+        )
+      )
+        return reply.code(400).send({ error: "Sprites and destination folder must have the same type" });
+      for (const expression of body.data.expressions) {
+        const sprite = sprites.find((entry) => entry.expression === expression)!;
+        catalog.sprites[expression] = { label: sprite.label, folderId: body.data.folderId };
+      }
+      await writeSpriteCatalog(req.params.characterId, catalog);
+      return listSpriteCatalog(req.params.characterId);
+    });
+  });
   app.get("/capabilities", async () => ({
     ...(await getSpriteCapabilities()),
     backgroundRemover: getBackgroundRemoverStatus(),
@@ -1344,6 +1524,7 @@ export async function spritesRoutes(app: FastifyInstance) {
 
   app.get("/cleanup/status", async () => ({
     backgroundRemover: getBackgroundRemoverStatus(),
+    cleanupRevision: SPRITE_CLEANUP_REVISION,
   }));
 
   /**
@@ -1392,9 +1573,20 @@ export async function spritesRoutes(app: FastifyInstance) {
 
     const folderName = sanitizeSpriteExportName(body.folderName, `sprites-${characterId}`);
     const zip = new AdmZip();
-    for (const filename of targets) {
-      zip.addFile(`${folderName}/${filename}`, readFileSync(join(dir, filename)));
+    const catalog = listSpriteCatalog(characterId);
+    const metadata = readOptionalSpriteCatalog(characterId);
+    const selected = catalog.sprites.filter((sprite) => targets.includes(sprite.filename));
+    for (const sprite of selected) {
+      const folder = sprite.folderName ? sanitizeSpriteExportName(sprite.folderName, sprite.folderId!) : "Unfiled";
+      zip.addFile(`${folderName}/${folder}/${sprite.filename}`, readFileSync(join(dir, sprite.filename)));
     }
+    metadata.sprites = Object.fromEntries(
+      selected.map((sprite) => [sprite.expression, { label: sprite.label, folderId: sprite.folderId }]),
+    );
+    if (selected.length !== catalog.sprites.length) {
+      metadata.folders = metadata.folders.filter((folder) => selected.some((sprite) => sprite.folderId === folder.id));
+    }
+    zip.addFile(`${folderName}/catalog.json`, Buffer.from(JSON.stringify(metadata, null, 2)));
 
     return reply
       .header("Content-Type", "application/zip")
@@ -1405,54 +1597,92 @@ export async function spritesRoutes(app: FastifyInstance) {
   /**
    * POST /api/sprites/:characterId
    * Upload a sprite image for a given expression.
-   * Body: { expression: string, image: string (base64 data URL) }
+   * Body: { expression: string, image: string (base64 data URL), folderId?: string | null, replaceExisting?: boolean }
    */
   app.post<{ Params: { characterId: string } }>("/:characterId", async (req, reply) => {
-    const { characterId } = req.params;
+    if (!ownerParams.safeParse(req.params).success) return reply.status(400).send({ error: "Invalid character ID" });
+    const characterId = basename(req.params.characterId);
+    return withSpriteCatalogLock(characterId, async () => {
+      const body = req.body as {
+        expression?: string;
+        image?: string;
+        folderId?: string | null;
+        replaceExisting?: boolean;
+      };
 
-    // Prevent path traversal
-    if (characterId.includes("..") || characterId.includes("/") || characterId.includes("\\")) {
-      return reply.status(400).send({ error: "Invalid character ID" });
-    }
-
-    const body = req.body as { expression?: string; image?: string };
-
-    if (!body.expression?.trim()) {
-      return reply.status(400).send({ error: "Expression label is required" });
-    }
-    if (!body.image) {
-      return reply.status(400).send({ error: "No image data provided" });
-    }
-
-    const expression = normalizeSpriteExpression(body.expression);
-    if (!expression) {
-      return reply.status(400).send({ error: "Expression label must include at least one letter or number" });
-    }
-
-    // Parse base64
-    let base64 = body.image;
-    let ext = "png";
-    if (base64.startsWith("data:")) {
-      const match = base64.match(/^data:image\/([\w+]+);base64,/);
-      if (match?.[1]) {
-        ext = match[1].replace("+xml", "");
-        base64 = base64.slice(base64.indexOf(",") + 1);
+      if (!body || typeof body.expression !== "string" || !body.expression.trim()) {
+        return reply.status(400).send({ error: "Expression label is required" });
       }
-    }
+      if (typeof body.image !== "string" || !body.image) {
+        return reply.status(400).send({ error: "No image data provided" });
+      }
 
-    const dir = join(SPRITES_ROOT, characterId);
-    await mkdir(dir, { recursive: true });
+      let expression = normalizeSpriteExpression(body.expression);
+      if (!expression) {
+        return reply.status(400).send({ error: "Expression label must include at least one letter or number" });
+      }
+      if (expression.length > 160)
+        return reply.code(400).send({ error: "Expression label must be at most 160 characters" });
 
-    const filename = `${expression}.${ext}`;
-    const filepath = join(dir, filename);
-    await writeFile(filepath, Buffer.from(base64, "base64"));
+      // Parse base64
+      let base64 = body.image;
+      let ext = "png";
+      if (base64.startsWith("data:")) {
+        const match = base64.match(/^data:image\/([\w+]+);base64,/);
+        if (match?.[1]) {
+          ext = match[1].replace("+xml", "").toLowerCase();
+          base64 = base64.slice(base64.indexOf(",") + 1);
+        }
+      }
 
-    const mtime = statSync(filepath).mtimeMs;
-    return {
-      expression,
-      filename,
-      url: `/api/sprites/${characterId}/file/${encodeURIComponent(filename)}?v=${Math.floor(mtime)}`,
-    };
+      const image = Buffer.from(base64, "base64");
+      if (!SPRITE_FILE_RE.test(`.${ext}`) || !validateImageAssetBuffer(image, `sprite.${ext}`, { allowSvg: true }))
+        return reply.code(400).send({ error: "Unsupported sprite image" });
+
+      const dir = assertInsideDir(SPRITES_ROOT, join(SPRITES_ROOT, characterId));
+      await mkdir(dir, { recursive: true });
+
+      const catalog = readSpriteCatalog(characterId);
+      const current = listSpriteInfos(characterId);
+      const label = expression;
+      if (Object.hasOwn(body, "folderId")) {
+        if (body.folderId !== null && !catalog.folders.some((folder) => folder.id === body.folderId))
+          return reply.code(400).send({ error: "Invalid destination folder" });
+        const destination = catalog.folders.find((folder) => folder.id === body.folderId);
+        if (destination && destination.category !== (label.startsWith("full_") ? "full-body" : "expressions"))
+          return reply.code(400).send({ error: "Sprite and destination folder must have the same type" });
+        const matches = current.filter(
+          (sprite) => sprite.label.toLowerCase() === label.toLowerCase() && sprite.folderId === body.folderId,
+        );
+        if (matches.length > 0) {
+          if (body.replaceExisting !== true)
+            return reply.code(409).send({ error: "An expression with that name already exists in this folder" });
+          if (matches.length > 1)
+            return reply.code(409).send({
+              error: "More than one sprite has that name in this folder. Replace a specific sprite instead.",
+            });
+          expression = matches[0]!.expression;
+        } else if (current.some((sprite) => sprite.expression.toLowerCase() === expression.toLowerCase()))
+          expression = `${expression}_sprite_${randomUUID().replace(/-/g, "").slice(0, 12)}`;
+      }
+      const previous = current.find((sprite) => sprite.expression.toLowerCase() === expression.toLowerCase());
+      if (previous) expression = previous.expression;
+      const filename = basename(
+        previous && extname(previous.filename).toLowerCase() === `.${ext}` ? previous.filename : `${expression}.${ext}`,
+      );
+      const filepath = assertInsideDir(dir, join(dir, filename));
+      if (lstatSync(filepath, { throwIfNoEntry: false })?.isSymbolicLink())
+        return reply.code(400).send({ error: "Linked sprite file refused" });
+      await writeFile(filepath, image);
+      if (previous && previous.filename !== filename)
+        await unlink(assertInsideDir(dir, join(dir, basename(previous.filename))));
+      catalog.sprites[expression] = {
+        label: previous?.label ?? label,
+        folderId: previous ? previous.folderId : (body.folderId ?? null),
+      };
+      await writeSpriteCatalog(characterId, catalog);
+      return listSpriteInfos(characterId).find((sprite) => sprite.expression === expression);
+    });
   });
 
   /**
@@ -1712,12 +1942,11 @@ export async function spritesRoutes(app: FastifyInstance) {
   app.patch<{ Params: { characterId: string; expression: string } }>(
     "/:characterId/:expression",
     { config: { rateLimit: SPRITE_RENAME_RATE_LIMIT } },
-    async (req, reply) =>
-      withSpriteRenameLock(req.params.characterId, async () => {
-        const { characterId, expression } = req.params;
-        if (characterId.includes("..") || characterId.includes("/") || characterId.includes("\\")) {
-          return reply.status(400).send({ error: "Invalid character ID" });
-        }
+    async (req, reply) => {
+      if (!ownerParams.safeParse(req.params).success) return reply.status(400).send({ error: "Invalid character ID" });
+      const characterId = basename(req.params.characterId);
+      return withSpriteCatalogLock(characterId, async () => {
+        const { expression } = req.params;
 
         const body = req.body;
         const nextExpression =
@@ -1730,8 +1959,10 @@ export async function spritesRoutes(app: FastifyInstance) {
         if (!nextExpression) {
           return reply.status(400).send({ error: "Expression label must include at least one letter or number" });
         }
+        if (nextExpression.length > 160)
+          return reply.code(400).send({ error: "Expression label must be at most 160 characters" });
 
-        const dir = join(SPRITES_ROOT, characterId);
+        const dir = assertInsideDir(SPRITES_ROOT, join(SPRITES_ROOT, characterId));
         if (!existsSync(dir)) return reply.status(404).send({ error: "No sprites found" });
 
         const files = readdirSync(dir);
@@ -1741,25 +1972,26 @@ export async function spritesRoutes(app: FastifyInstance) {
         });
         if (!source) return reply.status(404).send({ error: "Expression not found" });
 
-        const extension = extname(source);
-        const target = `${nextExpression}${extension}`;
-        const hasNameCollision = files.some((filename) => {
-          if (!SPRITE_FILE_RE.test(filename)) return false;
-          const filenameExpression = filename.slice(0, -extname(filename).length);
-          return filename !== source && filenameExpression.toLowerCase() === nextExpression.toLowerCase();
-        });
+        const catalog = readSpriteCatalog(characterId);
+        const sprites = listSpriteInfos(characterId);
+        const sprite = sprites.find((entry) => entry.expression === expression)!;
+        if (nextExpression.startsWith("full_") !== expression.startsWith("full_"))
+          return reply.code(400).send({ error: "Keep the sprite category when renaming" });
+        const hasNameCollision = sprites.some(
+          (entry) =>
+            entry.expression !== expression &&
+            entry.folderId === sprite.folderId &&
+            entry.label.toLowerCase() === nextExpression.toLowerCase(),
+        );
         if (hasNameCollision) {
           return reply.status(409).send({ error: "An expression with that name already exists" });
         }
 
-        if (target !== source) await rename(join(dir, source), join(dir, target));
-        const mtime = statSync(join(dir, target)).mtimeMs;
-        return {
-          expression: nextExpression,
-          filename: target,
-          url: `/api/sprites/${characterId}/file/${encodeURIComponent(target)}?v=${Math.floor(mtime)}`,
-        };
-      }),
+        catalog.sprites[expression] = { label: nextExpression, folderId: sprite.folderId };
+        await writeSpriteCatalog(characterId, catalog);
+        return listSpriteInfos(characterId).find((entry) => entry.expression === expression);
+      });
+    },
   );
 
   /**
@@ -1769,31 +2001,24 @@ export async function spritesRoutes(app: FastifyInstance) {
   app.delete<{ Params: { characterId: string; expression: string } }>(
     "/:characterId/:expression",
     async (req, reply) => {
-      const { characterId, expression } = req.params;
-
-      // Prevent path traversal
-      if (characterId.includes("..") || characterId.includes("/") || characterId.includes("\\")) {
+      const { expression } = req.params;
+      if (!ownerParams.safeParse(req.params).success) {
         return reply.status(400).send({ error: "Invalid character ID" });
       }
-
-      const dir = join(SPRITES_ROOT, characterId);
-
-      if (!existsSync(dir)) {
-        return reply.status(404).send({ error: "No sprites found" });
-      }
-
-      const files = readdirSync(dir);
-      const match = files.find((f) => {
-        const ext = extname(f);
-        return f.slice(0, -ext.length) === expression;
+      const characterId = basename(req.params.characterId);
+      return withSpriteCatalogLock(characterId, async () => {
+        const dir = assertInsideDir(SPRITES_ROOT, join(SPRITES_ROOT, characterId));
+        if (!existsSync(dir)) return reply.status(404).send({ error: "No sprites found" });
+        const match = readdirSync(dir).find(
+          (file) => SPRITE_FILE_RE.test(file) && file.slice(0, -extname(file).length) === expression,
+        );
+        if (!match) return reply.status(404).send({ error: "Expression not found" });
+        const catalog = readSpriteCatalog(characterId);
+        delete catalog.sprites[expression];
+        await unlink(assertInsideDir(dir, join(dir, basename(match))));
+        await writeSpriteCatalog(characterId, catalog);
+        return reply.status(204).send();
       });
-
-      if (!match) {
-        return reply.status(404).send({ error: "Expression not found" });
-      }
-
-      unlinkSync(join(dir, match));
-      return reply.status(204).send();
     },
   );
 
@@ -1861,7 +2086,7 @@ export async function spritesRoutes(app: FastifyInstance) {
     const imgModel = conn.model || "";
     const imageDefaults = resolveConnectionImageDefaults(conn);
     const imageSettings = await loadImageGenerationUserSettings(app.db);
-    const plan = await buildSpritePromptPlan(app, body, imgModel);
+    const plan = await buildSpritePromptPlan(app.db, body, imgModel);
     if (plan.expressions.length === 0) {
       return reply.status(400).send({ error: "No expressions remain after applying the requested grid size" });
     }
@@ -1925,7 +2150,11 @@ export async function spritesRoutes(app: FastifyInstance) {
             plan.promptOverrides.get(spritePromptReviewId("expression", plan.spriteType, expression)),
             compiledPrompt,
           );
-          const finalPrompt = withSpriteBackgroundContract(reviewedPrompt.value, plan);
+          const finalPrompt = withTalkingHeadFaceContract(
+            withSpriteBackgroundContract(reviewedPrompt.value, plan),
+            plan,
+            [expression],
+          );
           const previewSize = resolveImagePromptReviewSize({
             connection: conn,
             prompt: finalPrompt.prompt,
@@ -1960,10 +2189,13 @@ export async function spritesRoutes(app: FastifyInstance) {
     );
     const reviewedPrompt = resolveSpritePromptOverride(plan.promptOverrides.get(sheetPromptId), compiledPrompt);
     const finalPrompt = withFullBodyCompositionContract(
-      withSpriteBackgroundContract(
-        withSpriteSheetLayoutContract(reviewedPrompt.value, plan, {
-          reviewedOverride: reviewedPrompt.overridden,
-        }),
+      withTalkingHeadFaceContract(
+        withSpriteBackgroundContract(
+          withSpriteSheetLayoutContract(reviewedPrompt.value, plan, {
+            reviewedOverride: reviewedPrompt.overridden,
+          }),
+          plan,
+        ),
         plan,
       ),
       plan.spriteType,
@@ -2230,7 +2462,7 @@ export async function spritesRoutes(app: FastifyInstance) {
     const imageSettings = await loadImageGenerationUserSettings(app.db);
     const nativeTransparentPng = resolveSpriteNativeTransparency(imgModel, body.nativeTransparentPng === true);
     const shouldCleanBackground = body.noBackground === true || body.nativeTransparentPng === true;
-    const plan = await buildSpritePromptPlan(app, body, imgModel);
+    const plan = await buildSpritePromptPlan(app.db, body, imgModel);
     if (plan.expressions.length === 0) {
       return reply.status(400).send({ error: "No expressions remain after applying the requested grid size" });
     }
@@ -2250,10 +2482,13 @@ export async function spritesRoutes(app: FastifyInstance) {
       compiledSheetPrompt,
     );
     const sheetPrompt = withFullBodyCompositionContract(
-      withSpriteBackgroundContract(
-        withSpriteSheetLayoutContract(reviewedSheetPrompt.value, plan, {
-          reviewedOverride: reviewedSheetPrompt.overridden,
-        }),
+      withTalkingHeadFaceContract(
+        withSpriteBackgroundContract(
+          withSpriteSheetLayoutContract(reviewedSheetPrompt.value, plan, {
+            reviewedOverride: reviewedSheetPrompt.overridden,
+          }),
+          plan,
+        ),
         plan,
       ),
       plan.spriteType,
@@ -2299,6 +2534,7 @@ export async function spritesRoutes(app: FastifyInstance) {
                   referenceImage: request.references[0],
                   referenceImages: request.references.length > 1 ? request.references : undefined,
                   transparentBackground: nativeTransparentPng,
+                  preserveProviderOutput: true,
                   imageEndpointId: conn.imageEndpointId || undefined,
                   comfyWorkflow: conn.comfyuiWorkflow || undefined,
                   imageDefaults,
@@ -2384,7 +2620,11 @@ export async function spritesRoutes(app: FastifyInstance) {
                   plan.promptOverrides.get(spritePromptReviewId("expression", plan.spriteType, expression)),
                   compiledExpressionPrompt,
                 );
-                const finalExpressionPrompt = withSpriteBackgroundContract(reviewedExpressionPrompt.value, plan);
+                const finalExpressionPrompt = withTalkingHeadFaceContract(
+                  withSpriteBackgroundContract(reviewedExpressionPrompt.value, plan),
+                  plan,
+                  [expression],
+                );
 
                 const targetSize = 1024;
                 const imageResult = await generateImage(imgModel, imgBaseUrl, imgApiKey, imgServiceHint, {
@@ -2396,6 +2636,7 @@ export async function spritesRoutes(app: FastifyInstance) {
                   referenceImage: resolvedRefs[0],
                   referenceImages: resolvedRefs.length > 1 ? resolvedRefs : undefined,
                   transparentBackground: nativeTransparentPng,
+                  preserveProviderOutput: true,
                   imageEndpointId: conn.imageEndpointId || undefined,
                   comfyWorkflow: conn.comfyuiWorkflow || undefined,
                   imageDefaults,
@@ -2464,6 +2705,7 @@ export async function spritesRoutes(app: FastifyInstance) {
             referenceImage: resolvedRefs[0],
             referenceImages: resolvedRefs.length > 1 ? resolvedRefs : undefined,
             transparentBackground: nativeTransparentPng,
+            preserveProviderOutput: true,
             imageEndpointId: conn.imageEndpointId || undefined,
             comfyWorkflow: conn.comfyuiWorkflow || undefined,
             imageDefaults,
@@ -2471,70 +2713,10 @@ export async function spritesRoutes(app: FastifyInstance) {
             fallback: imageFallback,
           });
 
-          // Decode the generated image
-          let sheetBuffer: Buffer = Buffer.from(imageResult.base64, "base64");
-          const sharp = await getSharp();
-          let metadata = await sharp(sheetBuffer).metadata();
-
-          // Native transparency is preferred; a flat matte is removed automatically when a provider cannot return alpha.
-          // Keep this resilient: if cleanup fails, continue with the original image rather than throwing.
-          if (shouldCleanBackground) {
-            const originalSheetBuffer = sheetBuffer;
-            try {
-              sheetBuffer = (await removeSpriteBackgroundPng(sheetBuffer, cleanupStrength)).buffer;
-              metadata = await sharp(sheetBuffer).metadata();
-            } catch (bgErr) {
-              logger.warn(bgErr, "Sprite background cleanup failed; continuing with original image");
-              sheetBuffer = originalSheetBuffer;
-              metadata = await sharp(sheetBuffer).metadata();
-            }
-          }
-
-          const imgWidth = metadata.width ?? (plan.cols <= 2 ? 1024 : 1536);
-          const imgHeight = metadata.height ?? (plan.rows <= 2 ? 1024 : 1536);
-
-          const cellWidth = Math.floor(imgWidth / plan.cols);
-          const cellHeight = Math.floor(imgHeight / plan.rows);
-
-          const cellPromises: Promise<{ expression: string; base64: string }>[] = [];
-
-          for (let row = 0; row < plan.rows; row++) {
-            for (let col = 0; col < plan.cols; col++) {
-              const idx = row * plan.cols + col;
-              if (idx >= plan.expressions.length) break;
-
-              const expression = plan.expressions[idx]!;
-              const left = col * cellWidth;
-              const top = row * cellHeight;
-
-              cellPromises.push(
-                (async () => {
-                  let cellBuffer = await sharp(sheetBuffer)
-                    .extract({ left, top, width: cellWidth, height: cellHeight })
-                    .png()
-                    .toBuffer();
-                  if (shouldCleanBackground) {
-                    try {
-                      cellBuffer = (await removeSpriteBackgroundPng(cellBuffer, cleanupStrength)).buffer;
-                    } catch (bgErr) {
-                      logger.warn(bgErr, 'Sprite background cleanup failed for "%s"; using the sheet crop', expression);
-                    }
-                  }
-                  return {
-                    expression,
-                    base64: cellBuffer.toString("base64"),
-                  };
-                })(),
-              );
-            }
-          }
-
-          const cells = await Promise.all(cellPromises);
-
-          return {
-            sheetBase64: sheetBuffer.toString("base64"),
-            cells,
-          };
+          return cutSpriteSheet(Buffer.from(imageResult.base64, "base64"), plan, {
+            clean: shouldCleanBackground,
+            cleanupStrength,
+          });
         })(),
       );
     } catch (err: any) {
@@ -2597,6 +2779,7 @@ export async function spritesRoutes(app: FastifyInstance) {
         engine: cleanupEngine,
         backgroundRemoverProcessed: engineCounts.backgroundremover,
         builtinProcessed: engineCounts.builtin,
+        cleanupRevision: SPRITE_CLEANUP_REVISION,
       };
     } catch (err: any) {
       logger.error(err, "Sprite cleanup failed");

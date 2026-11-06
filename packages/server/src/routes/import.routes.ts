@@ -15,6 +15,7 @@ import {
   inspectSTCharacter,
   inspectCharX,
   getExistingCharacterTagKeys,
+  IMPORT_BODY_LIMIT_BYTES,
   type STCharacterImportPreview,
   type STCharacterTagImportMode,
 } from "../services/import/st-character.importer.js";
@@ -30,11 +31,11 @@ import { getImportAllowedRoots } from "../config/runtime-config.js";
 import { requirePrivilegedAccess } from "../middleware/privileged-gate.js";
 import { assertInsideDir, safeCompareString, tokenForPath } from "../utils/security.js";
 import { logger } from "../lib/logger.js";
+import { openZipArchive, type ZipArchive } from "../lib/zip-reader.js";
 import { parseJsonBytes } from "../utils/large-json.js";
 
 const PICK_FOLDER_TIMEOUT_MS = 60_000; // 60s — prevents infinite hang on headless servers
 const FOLDER_TOKEN_TTL_MS = 15 * 60_000;
-const IMPORT_BODY_LIMIT_BYTES = 256 * 1024 * 1024;
 const NATIVE_PACKAGE_UPLOAD_LIMIT_BYTES = 1024 * 1024 * 1024;
 const MAX_BATCH_IMPORT_FILES = 128;
 const NATIVE_PACKAGE_ENTRY_LIMIT_BYTES = 256 * 1024 * 1024;
@@ -445,6 +446,7 @@ async function importCharacterBuffer(
   tagImportMode?: STCharacterTagImportMode,
   existingTagKeys?: ReadonlySet<string>,
   regexScriptScope?: "character" | "global",
+  splitDescription?: boolean,
 ) {
   if (fileName.toLowerCase().endsWith(".png")) {
     const charData = extractCharaFromPng(buffer);
@@ -465,6 +467,7 @@ async function importCharacterBuffer(
           tagImportMode,
           existingTagKeys,
           regexScriptScope,
+          splitDescription,
         }),
         charData,
       );
@@ -480,12 +483,13 @@ async function importCharacterBuffer(
       tagImportMode,
       existingTagKeys,
       regexScriptScope,
+      splitDescription,
     });
   }
 
   let json: Record<string, unknown>;
   try {
-    json = JSON.parse(buffer.toString("utf-8"));
+    json = parseJsonBytes(buffer) as Record<string, unknown>;
   } catch {
     return {
       success: false,
@@ -501,6 +505,7 @@ async function importCharacterBuffer(
         tagImportMode,
         existingTagKeys,
         regexScriptScope,
+        splitDescription,
       }),
       json,
     );
@@ -528,7 +533,7 @@ async function inspectCharacterBuffer(fileName: string, buffer: Buffer) {
   }
 
   try {
-    const json = JSON.parse(buffer.toString("utf-8"));
+    const json = parseJsonBytes(buffer) as Record<string, unknown>;
     return inspectSTCharacter(json);
   } catch {
     return {
@@ -750,25 +755,24 @@ export async function importRoutes(app: FastifyInstance) {
       }
       return importEnvelope(envelope);
     }
-    const AdmZip = (await import("adm-zip")).default;
-    let zip: InstanceType<typeof AdmZip>;
-    try {
-      zip = new AdmZip(buffer);
-    } catch {
-      return reply.status(400).send({ success: false, error: "Could not read .marinara package" });
-    }
     // Native packages contain data.json plus an optional avatar. Keep the
-    // structural entry boundary, but do not reject legitimate large embedded
-    // galleries or avatars by byte size.
+    // structural entry boundary, checked before the file list is read, but do
+    // not reject legitimate large embedded galleries or avatars by byte size.
     const MAX_PACKAGE_ENTRIES = 8;
-    const entries = zip.getEntries();
-    if (entries.length > MAX_PACKAGE_ENTRIES) {
-      return reply.status(400).send({ success: false, error: ".marinara package has too many entries" });
+    const tooManyEntries = ".marinara package has too many entries";
+    let zip: ZipArchive;
+    try {
+      zip = openZipArchive(buffer, { maxEntries: MAX_PACKAGE_ENTRIES, tooManyEntries });
+    } catch (error) {
+      const tooMany = error instanceof Error && error.message === tooManyEntries;
+      const message = tooMany ? tooManyEntries : "Could not read .marinara package";
+      return reply.status(400).send({ success: false, error: message });
     }
+    const entries = zip.getEntries();
     let totalUncompressedBytes = 0;
     for (const entry of entries) {
       if (entry.isDirectory) continue;
-      const size = entry.header.size;
+      const size = entry.size;
       if (!Number.isSafeInteger(size) || size < 0 || size > NATIVE_PACKAGE_ENTRY_LIMIT_BYTES) {
         return reply.status(413).send({ success: false, error: ".marinara package entry is too large" });
       }
@@ -783,7 +787,8 @@ export async function importRoutes(app: FastifyInstance) {
     }
     let envelope: Record<string, unknown>;
     try {
-      envelope = JSON.parse(dataEntry.getData().toString("utf-8")) as Record<string, unknown>;
+      const dataJson = dataEntry.read(NATIVE_PACKAGE_ENTRY_LIMIT_BYTES).toString("utf-8");
+      envelope = JSON.parse(dataJson) as Record<string, unknown>;
     } catch {
       return reply.status(400).send({ success: false, error: "data.json is not valid JSON" });
     }
@@ -800,7 +805,7 @@ export async function importRoutes(app: FastifyInstance) {
               : ext === "avif"
                 ? "image/avif"
                 : "image/png";
-      const dataUrl = `data:${mime};base64,${avatarEntry.getData().toString("base64")}`;
+      const dataUrl = `data:${mime};base64,${avatarEntry.read(NATIVE_PACKAGE_ENTRY_LIMIT_BYTES).toString("base64")}`;
       (envelope.data as Record<string, unknown>).avatar = dataUrl;
     }
     return importEnvelope(envelope);
@@ -830,6 +835,7 @@ export async function importRoutes(app: FastifyInstance) {
         : rawRegexScriptScopeField?.value;
       const regexScriptScope = readMultipartRegexScriptScope(file as any);
       if (rawRegexScriptScope !== undefined && regexScriptScope === undefined) return invalidRegexScriptScopeResponse();
+      const splitDescription = readMultipartBooleanField(file as any, "splitDescription");
       return importCharacterBuffer(
         file.filename ?? "",
         await file.toBuffer(),
@@ -839,6 +845,7 @@ export async function importRoutes(app: FastifyInstance) {
         tagImportMode,
         undefined,
         regexScriptScope,
+        splitDescription,
       );
     }
 
@@ -851,15 +858,18 @@ export async function importRoutes(app: FastifyInstance) {
     const rawRegexScriptScope = body.regexScriptScope;
     const regexScriptScope = readRegexScriptScope(rawRegexScriptScope);
     if (rawRegexScriptScope !== undefined && regexScriptScope === undefined) return invalidRegexScriptScopeResponse();
+    const splitDescription = readBooleanOption(body.splitDescription);
     delete body.importEmbeddedLorebook;
     delete body.tagImportMode;
     delete body.regexScriptScope;
+    delete body.splitDescription;
     try {
       return await importSTCharacter(body, app.db, {
         timestampOverrides: readTimestampOverridesFromBody(body),
         importEmbeddedLorebook,
         tagImportMode,
         regexScriptScope,
+        splitDescription,
       });
     } catch (err) {
       return { success: false, error: err instanceof Error ? err.message : String(err) };
@@ -918,6 +928,7 @@ export async function importRoutes(app: FastifyInstance) {
     let invalidTagImportMode = false;
     let regexScriptScope: "character" | "global" | undefined;
     let invalidRegexScriptScope = false;
+    let splitDescription: boolean | undefined;
 
     for await (const part of parts) {
       if (part.type === "file") {
@@ -961,6 +972,10 @@ export async function importRoutes(app: FastifyInstance) {
         regexScriptScope = readRegexScriptScope(part.value);
         invalidRegexScriptScope ||= part.value !== undefined && regexScriptScope === undefined;
       }
+
+      if (part.fieldname === "splitDescription") {
+        splitDescription = readBooleanOption(part.value);
+      }
     }
 
     if (invalidTagImportMode) return { ...invalidTagImportModeResponse(), results: [] };
@@ -997,6 +1012,7 @@ export async function importRoutes(app: FastifyInstance) {
           tagImportMode,
           existingTagKeys,
           regexScriptScope,
+          splitDescription,
         );
         results.push({ filename: file.filename, ...result });
       } catch (error) {

@@ -1,17 +1,26 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { z } from "zod";
+import { partialInput } from "@marinara-engine/shared";
 import { advancedMemorySettingsSchema } from "@marinara-engine/shared";
 import { createAdvancedMemoryService } from "../services/advanced-memory.js";
 import { logger } from "../lib/logger.js";
 
 const operationSchema = z.object({
-  settings: advancedMemorySettingsSchema.partial().optional(),
+  settings: partialInput(advancedMemorySettingsSchema).optional(),
   debugMode: z.boolean().optional(),
   sceneId: z.string().min(1).optional(),
+  /** Repair every flagged scene in one run instead of stopping at the first one that needs review. */
+  fixAll: z.boolean().optional(),
+  /** Find scenes again between these message numbers (1-based, inclusive). */
+  range: z
+    .object({ start: z.number().int().min(1), end: z.number().int().min(1) })
+    .refine((range) => range.start <= range.end, "The first message must come before the last one")
+    .optional(),
 });
 const recordPatchSchema = z
   .object({
-    content: z.string().min(1).max(500_000).optional(),
+    // An empty recollection deletes it; the service refuses empty text for everything else.
+    content: z.string().max(500_000).optional(),
     timeline: z.string().max(2000).optional(),
     enabled: z.boolean().optional(),
     audienceCharacterIds: z.array(z.string().min(1)).max(100).optional(),
@@ -19,11 +28,12 @@ const recordPatchSchema = z
   .strict();
 
 const validationErrors = new Set([
-  "Advanced Memory is available only for Roleplay chats",
+  "Advanced Memory is available only for Roleplay and Game chats",
   "Minimum recalled messages cannot exceed the maximum",
   "The continuity summary budget must be smaller than the total context limit",
   "Select a narrator from this chat's characters",
   "Select a saved Decision connection for Advanced Memory",
+  "That local model cannot answer decisions right now",
   "A character knowledge range points to a message that no longer exists",
   "Memory text must contain between 1 and 500000 characters",
   "Memory update must include content, timeframe, enabled or audience",
@@ -60,12 +70,18 @@ export async function advancedMemoryRoutes(app: FastifyInstance) {
     withMemoryDomainErrors(reply, () => service.reset(req.params.id)),
   );
   app.patch<{ Params: { id: string } }>(`${prefix}/settings`, async (req, reply) =>
-    withMemoryDomainErrors(reply, () => service.updateSettings(req.params.id, req.body)),
+    withMemoryDomainErrors(reply, () =>
+      service.updateSettings(req.params.id, req.body, {
+        debugMode: (req.body as { debugMode?: unknown } | null)?.debugMode === true,
+      }),
+    ),
   );
   app.post<{ Params: { id: string } }>(`${prefix}/initialize`, async (req, reply) =>
     withMemoryDomainErrors(reply, async () => {
       const options = operationSchema.parse(req.body ?? {});
-      if (options.settings) await service.updateSettings(req.params.id, options.settings);
+      // Preparation writes any recollections the settings turn on.
+      if (options.settings)
+        await service.updateSettings(req.params.id, options.settings, { startRecollections: false });
       const status = await service.status(req.params.id);
       if (!status.settings.enabled)
         return reply.status(400).send({ error: "Enable Advanced Memory before initialization" });
@@ -79,6 +95,11 @@ export async function advancedMemoryRoutes(app: FastifyInstance) {
         .initialize(req.params.id, {
           debugMode: options.debugMode,
           sceneId: options.sceneId,
+          fixAll: options.sceneId ? undefined : options.fixAll,
+          range:
+            options.range && !options.sceneId
+              ? { start: options.range.start - 1, end: options.range.end - 1 }
+              : undefined,
           blocking: true,
           onProgress: acknowledgeStart,
         })

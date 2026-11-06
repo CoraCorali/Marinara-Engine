@@ -220,6 +220,7 @@ try {
       optionId: tossOption.id,
       label: "Coldfire Toss",
       catalog: "knacks",
+      entry: "knacks/coldfire-toss",
     });
     assert.deepEqual(window.waiting, ["pell"]);
     assert.deepEqual(eventsOf(held.events, "window")[0], {
@@ -246,11 +247,19 @@ try {
       window: window.id,
     });
     assert.deepEqual(eventsOf(smothered.events, "cancelled"), [
-      { type: "cancelled", actorId: "kindler", optionId: tossOption.id, label: "Coldfire Toss", byId: "pell" },
+      {
+        type: "cancelled",
+        actorId: "kindler",
+        optionId: tossOption.id,
+        label: "Coldfire Toss",
+        byId: "pell",
+        with: "Smother",
+      },
     ]);
     assert.deepEqual(eventsOf(smothered.events, "damage"), [], "the toss never happens");
     assert.deepEqual(eventsOf(smothered.events, "spend"), [
-      { type: "spend", actorId: "pell", pool: "luck", label: "Luck", amount: 1 },
+      // On what, so the line names it (laptop level-4 pass 2026-10-26).
+      { type: "spend", actorId: "pell", pool: "luck", label: "Luck", amount: 1, on: "Smother" },
     ]);
     assert.equal(smothered.state.window, undefined);
     assert.notEqual(luck(), rulesetCombatant(smothered.state, "pell")!.sheet!.live.pools?.luck?.value);
@@ -320,6 +329,66 @@ try {
       eventsOf(answered.events, "damage").map((event) => event.targetId),
       ["kindler", "juno"],
       "the answer first, then the toss it did not stop",
+    );
+  }
+
+  // ── A fake held while it is answered (Capability API 1.79) ──
+  {
+    // Juno presses a fake poultice on herself (a balm that heals by a flat 3, not the poultice's dice);
+    // the Kindler's Backfire answers the use first, and once the window closes the use goes on as what
+    // it truly is.
+    const doc = JSON.parse(emberText);
+    doc.catalogs
+      .find((catalog: { id: string }) => catalog.id === "knacks")
+      .entries.push({
+        id: "backfire",
+        label: "Backfire",
+        rows: [{ list: "knacks", values: { name: "Backfire", notes: "Burn whoever starts a knack near you." } }],
+        mechanics: {
+          kind: "attack",
+          free: true,
+          range: 8,
+          targets: "enemy",
+          autoHit: true,
+          amount: { flat: 1 },
+          damageType: "coldfire",
+          reaction: { on: "used" },
+        },
+      });
+    const variant = parsedOrThrow(doc, "a variant with an answer that strikes back");
+    const entries = variant.catalogs!.find((catalog) => catalog.id === "knacks")!.entries!;
+    const poultice = variant
+      .catalogs!.find((catalog) => catalog.id === "outfitter")!
+      .entries!.find((entry) => entry.id === "poultice")!.item!;
+    const balm = { ...poultice, use: { ...poultice.use!, amount: { flat: 3 } } };
+    const state = createRulesetEncounter({
+      definition: variant,
+      seed: 7,
+      combatants: [
+        {
+          ...juno(entries),
+          items: [{ item: poultice, quantity: 1, worn: false, name: "Poultice", truly: { item: balm, name: "Balm" } }],
+        },
+        kindler(entries, ["backfire"]),
+      ],
+      roller: dice(6, 6, 1, 1),
+      bestiary: { knacks: entries },
+    });
+    assert.equal(state.order[state.turn], "juno");
+    const held = act(variant, state, { actorId: "juno", optionId: "use:0", targetIds: ["juno"] });
+    assert.equal(held.state.window?.trigger.kind, "used", JSON.stringify(held.events));
+    const through = act(
+      variant,
+      held.state,
+      { actorId: "kindler", optionId: RULESET_PASS_OPTION, targetIds: [], window: held.state.window!.id },
+      4,
+      3,
+    );
+    const healed = eventsOf(through.events, "heal");
+    assert.deepEqual(
+      healed.map((event) => [event.targetId, event.rolls, event.flat]),
+      [["juno", [], 3]],
+      JSON.stringify(through.events),
     );
   }
 
@@ -426,15 +495,73 @@ try {
     assert.ok(eventsOf(landed.events, "damage").length > 0);
     // Pell smothers it instead: nobody is asked about it being aimed, because it never is.
     const smother = rulesetCombatant(first.state, "pell")!.actions.find((action) => action.label === "Smother")!;
-    const stopped = act(variant, first.state, {
+    const smothering = act(variant, first.state, {
       actorId: "pell",
       optionId: smother.id,
       targetIds: [],
       window: first.state.window!.id,
     });
+    // The Kindler holds a Smother too, and Pell's is a spell it may answer (counter-the-counter).
+    assert.equal(smothering.state.window?.resume?.kind, "answer");
+    assert.deepEqual(smothering.state.window?.waiting, ["kindler"]);
+    const stopped = act(variant, smothering.state, {
+      actorId: "kindler",
+      optionId: RULESET_PASS_OPTION,
+      targetIds: [],
+      window: smothering.state.window!.id,
+    });
     assert.equal(stopped.state.window, undefined, "no aimed window for something that was called off");
-    // The Kindler holds a Smother too, yet Pell's own counter opens nothing for it: no chain.
-    assert.deepEqual(eventsOf(stopped.events, "window"), []);
+    assert.equal(eventsOf(stopped.events, "cancelled")[0]?.label, "Coldfire Toss");
+    assert.deepEqual(eventsOf(stopped.events, "window"), [], "and nothing more is asked");
+    // The Kindler smothers Pell's Smother instead: only Pell's is stopped, and the toss goes on to be
+    // aimed (laptop playtest 2026-10-25: a log that said both counters stopped what they answered).
+    const kindlerSmother = rulesetCombatant(smothering.state, "kindler")!.actions.find(
+      (action) => action.label === "Smother",
+    )!;
+    const countered = act(
+      variant,
+      smothering.state,
+      {
+        actorId: "kindler",
+        optionId: kindlerSmother.id,
+        targetIds: [],
+        window: smothering.state.window!.id,
+      },
+      4,
+      3,
+      4,
+      3,
+      4,
+      3,
+    );
+    const allEvents = [...countered.events];
+    let after = countered;
+    for (let guard = 0; guard < 6 && after.state.window; guard++) {
+      const waiter = after.state.window.waiting[0];
+      if (!waiter) break;
+      after = act(
+        variant,
+        after.state,
+        {
+          actorId: waiter,
+          optionId: RULESET_PASS_OPTION,
+          targetIds: [],
+          window: after.state.window.id,
+        },
+        4,
+        3,
+        4,
+        3,
+        4,
+        3,
+      );
+      allEvents.push(...after.events);
+    }
+    const cancels = eventsOf(allEvents, "cancelled");
+    assert.equal(cancels.length, 1, `one thing stopped: ${JSON.stringify(cancels)}`);
+    assert.equal(cancels[0]!.label, "Smother", "Pell's Smother");
+    assert.equal(cancels[0]!.actorId, "pell");
+    assert.equal(cancels[0]!.byId, "kindler");
   }
 
   // ── What the screen says ──

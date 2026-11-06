@@ -14,7 +14,6 @@ import type { CombatSkill } from "../../types/game.js";
 import {
   catalogRowRef,
   RULESET_CATALOG_ROW_KEY,
-  rulesetSheetEnvelopeSchema,
   type RulesetCatalogEntriesById,
   type RulesetCatalogEntry,
   type RulesetCatalogMechanics,
@@ -22,9 +21,12 @@ import {
   type RulesetSheetBuild,
 } from "../../schemas/ruleset.schema.js";
 import { normalizeCharacterLookupName } from "../../utils/character-lookup-name.js";
+import { readRulesetSheetEnvelope, type RulesetSheetItem } from "./sheet-math.js";
 import {
   applyRulesetSheetOp,
   readRulesetLive,
+  rulesetTrackHealth,
+  rulesetTrackHealthOp,
   type RulesetLiveState,
   type RulesetSheetOp,
   type RulesetSheetRefusal,
@@ -70,21 +72,40 @@ export interface RulesetCombatWriteBack {
  * and missed by the other. A card with no sheet, or one holding a sheet this version cannot read,
  * is absent: there is nothing to read from it and nothing to write back to it.
  */
-export function rulesetSheetBuildsByName(cards: unknown, playerName?: string | null): Map<string, RulesetSheetBuild> {
+export function rulesetSheetBuildsByName(
+  definition: RulesetDefinition,
+  cards: unknown,
+  playerName?: string | null,
+): Map<string, RulesetSheetBuild> {
   const player = typeof playerName === "string" ? playerName.trim() : "";
   const builds = new Map<string, RulesetSheetBuild>();
   for (const card of Array.isArray(cards) ? (cards as Array<Record<string, unknown>>) : []) {
     const name = typeof card?.name === "string" ? card.name.trim() : "";
     const key = name ? normalizeCharacterLookupName(name) : "";
     if (!key) continue;
-    const envelope = rulesetSheetEnvelopeSchema.safeParse(card.rulesetSheet);
-    if (!envelope.success) continue;
+    // Read on this version's layout, migrated where the ruleset says how (Capability API 1.77).
+    const envelope = readRulesetSheetEnvelope(definition, card.rulesetSheet);
+    if (!envelope) continue;
     // Setup keeps ONE sheet per normalized name and lets the persona's win a name it shares with a
     // party member, because the persona is the player. The same order holds here.
     if (builds.has(key) && name !== player) continue;
-    builds.set(key, envelope.data.build);
+    builds.set(key, envelope.build);
   }
   return builds;
+}
+
+/** The party cards that are a bestiary creature rather than a sheet (a copy of one, 5e's
+ *  Simulacrum), keyed by normalized name: the creature each fights as. */
+export function rulesetCardCreaturesByName(cards: unknown): Map<string, { catalogId: string; entryId: string }> {
+  const creatures = new Map<string, { catalogId: string; entryId: string }>();
+  for (const card of Array.isArray(cards) ? (cards as Array<Record<string, unknown>>) : []) {
+    const name = typeof card?.name === "string" ? card.name.trim() : "";
+    const ref = card?.rulesetCreature as { catalogId?: unknown; entryId?: unknown } | undefined;
+    if (!name || !ref || typeof ref.catalogId !== "string" || typeof ref.entryId !== "string") continue;
+    const key = normalizeCharacterLookupName(name);
+    if (!creatures.has(key)) creatures.set(key, { catalogId: ref.catalogId, entryId: ref.entryId });
+  }
+  return creatures;
 }
 
 function own(row: Record<string, unknown>, key: string): unknown {
@@ -113,8 +134,8 @@ function livePool(live: ReturnType<typeof readRulesetLive>, id: string) {
 /**
  * The health a `battle` block names, on whichever shape the ruleset gave it.
  *
- * A pool is its value out of its maximum. A WOUND TRACK is the levels it has LEFT out of its
- * length, which is the only reading that keeps the share honest: a share of a track is a fraction
+ * A pool is its value out of its maximum. A WOUND TRACK, or a plain track that fills up (1.383),
+ * is the levels it has LEFT out of its length, which is the only reading that keeps the share honest: a share of a track is a fraction
  * of its length, a full track is zero, and an unmarked one is the whole of it. That is also exactly
  * what `rulesetCombatHealth` reports, so the two seams cannot come to different answers about
  * whether somebody is still standing.
@@ -125,8 +146,7 @@ function liveHealth(
 ): { value: number; max: number; temp: number } | undefined {
   if (!("track" in health)) return livePool(live, health.pool);
   const track = live.tracks.find((entry) => entry.id === health.track);
-  if (!track?.wound) return undefined;
-  return { value: track.wound.levels.length - track.wound.filled, max: track.wound.levels.length, temp: 0 };
+  return track ? rulesetTrackHealth(track) : undefined;
 }
 
 /**
@@ -144,6 +164,76 @@ export function carryHealthShare(value: number, fromMax: number, toMax: number):
   if (!(fromMax > 0)) return toMax;
   if (!(value > 0)) return 0;
   return Math.max(1, Math.round((toMax * value) / fromMax));
+}
+
+/** The ruleset's own name for what a fight damages, for naming a party health widget's rows ("Grit"):
+ *  a pool's label, since a pool counts what remains, as such a row does. A track counts the marks
+ *  taken ("Wounds"), the opposite reading, so it names none. */
+export function rulesetHealthWords(definition: RulesetDefinition): string[] {
+  const health = definition.battle?.health;
+  if (!health || !("pool" in health)) return [];
+  const label = definition.sheet.live?.pools?.find((pool) => pool.id === health.pool)?.label?.trim();
+  return label ? [label] : [];
+}
+
+/** Whether a sheet is dead by the ruleset's dying saves: every failure it allows marked. False for a
+ *  ruleset with none. */
+export function rulesetSheetDead(
+  definition: RulesetDefinition,
+  build: RulesetSheetBuild,
+  storedLive: unknown,
+  items?: ReadonlyArray<RulesetSheetItem>,
+): boolean {
+  const failures = definition.combat?.dying?.failures;
+  if (!failures) return false;
+  const track = readRulesetLive(definition, build, storedLive, items).tracks.find((entry) => entry.id === failures);
+  return !!track && track.max > 0 && track.value >= track.max;
+}
+
+/** A sheet's health as it stands, read from the pool or track the ruleset's `battle` block names, or
+ *  undefined for a ruleset with none. What a party health widget is kept in step with. */
+export function rulesetSheetHealth(
+  definition: RulesetDefinition,
+  build: RulesetSheetBuild,
+  storedLive: unknown,
+): { value: number; max: number } | undefined {
+  const battle = definition.battle;
+  if (!battle) return undefined;
+  const health = liveHealth(readRulesetLive(definition, build, storedLive), battle.health);
+  return health ? { value: health.value, max: health.max } : undefined;
+}
+
+/** What a sheet has left to spend in a fight, by the ruleset's `battle` block: its energy pool (with that
+ *  pool's label) and its slots taken together, each as value out of max, or undefined for one it has none
+ *  of. What tells a Game Master that a party has spent itself (Alyssa 2026-10-26). */
+export function rulesetSheetSpendables(
+  definition: RulesetDefinition,
+  build: RulesetSheetBuild,
+  storedLive: unknown,
+): {
+  energy?: { value: number; max: number; label: string };
+  slots?: { value: number; max: number };
+} {
+  const battle = definition.battle;
+  if (!battle) return {};
+  const live = readRulesetLive(definition, build, storedLive);
+  const out: ReturnType<typeof rulesetSheetSpendables> = {};
+  const energyPool = battle.energy?.pool;
+  const energy = energyPool ? livePool(live, energyPool) : undefined;
+  if (energyPool && energy && energy.max > 0) {
+    const label = definition.sheet.live?.pools?.find((pool) => pool.id === energyPool)?.label ?? energyPool;
+    out.energy = { value: energy.value, max: energy.max, label };
+  }
+  let value = 0;
+  let max = 0;
+  for (const slot of battle.slots ?? []) {
+    const pool = livePool(live, slot.pool);
+    if (!pool || pool.max <= 0) continue;
+    value += pool.value;
+    max += pool.max;
+  }
+  if (max > 0) out.slots = { value, max };
+  return out;
 }
 
 /**
@@ -244,8 +334,9 @@ function powerFromAmount(amount: RulesetCatalogMechanics["amount"]): number {
  *  as many units sideways as it does forward, and a line is one cell wide. */
 function areaRadius(area: NonNullable<RulesetCatalogMechanics["area"]>, perCell: number): number {
   const cells = inCells(area.size, perCell);
-  if (area.shape === "line") return 1;
-  return area.shape === "cone" ? Math.max(1, Math.round(cells / 2)) : cells;
+  if (area.shape === "line" || area.shape === "wall") return 1;
+  // A box reaches half its side from its middle (1.177).
+  return area.shape === "cone" || area.shape === "box" ? Math.max(1, Math.round(cells / 2)) : cells;
 }
 
 function combatSkillFromEntry(
@@ -390,16 +481,14 @@ function healthOp(
   delta: number,
 ): RulesetSheetOp | null {
   if (!("track" in health)) return poolOp(health.pool, delta, "damage");
-  const amount = Math.round(Math.abs(delta));
-  if (!Number.isFinite(delta) || amount < 1) return null;
   const declared = definition.sheet.live.tracks.find((entry) => entry.id === health.track);
-  const lightest = [...(declared?.kinds ?? [])].sort((a, b) => a.severity - b.severity)[0];
-  if (!lightest) return null;
+  if (!declared) return null;
+  // A plain track that fills up (1.383) has no kinds and moves by the number.
+  const lightest = [...(declared.kinds ?? [])].sort((a, b) => a.severity - b.severity)[0];
+  if (declared.kinds && !lightest) return null;
   // Fewer levels left is harm, so the sign turns over on the way to a number of marks. A heal names
   // no kind: one that did would clear only marks of that kind, and a fight's healing is any harm.
-  return delta < 0
-    ? { op: "damage", track: health.track, kind: lightest.id, amount }
-    : { op: "damage", track: health.track, kind: "", amount: -amount };
+  return rulesetTrackHealthOp(declared, delta, lightest?.id ?? "");
 }
 
 /**

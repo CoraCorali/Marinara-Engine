@@ -6,11 +6,13 @@ import {
   createPersonalExtensionSchema,
   externalExtensionsPolicyUpdateSchema,
   personalExtensionStoragePatchSchema,
+  personalExtensionRevisionRetentionSchema,
   rollbackPersonalExtensionSchema,
   updatePersonalExtensionSchema,
   PERSONAL_EXTENSION_CONTRIBUTION_KINDS,
   PERSONAL_EXTENSION_CONTRIBUTION_POSITIONS,
   PERSONAL_EXTENSION_CONTRIBUTION_SURFACES,
+  PERSONAL_EXTENSION_DICE_LIMITS,
   PERSONAL_EXTENSION_FULL_PAGE_CAPABILITY,
   PERSONAL_EXTENSION_UI_ELEMENT_KINDS,
   PERSONAL_EXTENSION_UI_LIMITS,
@@ -18,11 +20,13 @@ import {
   type CharacterData,
   type PersonalClientExtensionRuntime,
   type PersonalExtension,
+  type PersonalExtensionListItem,
   type PersonalExtensionCapability,
   type PersonalExtensionCharacterSnapshot,
   type PersonalExtensionPersonaSnapshot,
 } from "@marinara-engine/shared";
 import { requirePrivilegedAccess } from "../middleware/privileged-gate.js";
+import { EXTENSION_REVISION_HISTORY_RATE_LIMIT } from "../middleware/rate-limit.js";
 import { createPersonalExtensionsStorage } from "../services/extensions/personal-extension-storage.service.js";
 import { createPersonalExtensionSettingsStorage } from "../services/extensions/personal-extension-settings.service.js";
 import { createAppSettingsStorage } from "../services/storage/app-settings.storage.js";
@@ -222,11 +226,13 @@ export function browserWorkerSource(extension: PersonalExtension) {
     elementKinds: PERSONAL_EXTENSION_UI_ELEMENT_KINDS,
     limits: PERSONAL_EXTENSION_UI_LIMITS,
   });
+  const diceLimits = JSON.stringify(PERSONAL_EXTENSION_DICE_LIMITS);
   return `
 (() => {
   "use strict";
   const extension = ${identity};
   const contributionContract = ${contributionContract};
+  const diceLimits = ${diceLimits};
   const send = self.postMessage.bind(self);
   const cleanupFns = [];
   let requestId = 0;
@@ -589,6 +595,7 @@ export function browserWorkerSource(extension: PersonalExtension) {
     }
     let surface;
     let position;
+    let targetContributionId;
     if (kind === "button") {
       surface = options.surface == null ? "top-bar" : options.surface;
       if (!contributionSurfaces.has(surface)) throw new Error("unsupported contribution surface");
@@ -605,7 +612,17 @@ export function browserWorkerSource(extension: PersonalExtension) {
       throw new Error("only panel contributions may include elements");
     }
     const elements = kind === "panel" ? normalizeContributionElements(options.elements) : undefined;
-    return { id, kind, label, description, icon, surface, position, elements };
+    if (kind === "command") {
+      targetContributionId = contributionId(options.targetContributionId);
+      if (targetContributionId === id) throw new Error("command contribution cannot target itself");
+      if (options.onActivate !== undefined || options.onEvent !== undefined) {
+        throw new Error("command contributions cannot register callbacks");
+      }
+      return { id, kind, label, description, icon, targetContributionId };
+    } else if (options.targetContributionId !== undefined) {
+      throw new Error("only command contributions may select a target");
+    }
+    return { id, kind, label, description, icon, surface, position, elements, targetContributionId };
   };
   const registerContribution = (options) => {
     if (uiContributions.size >= contributionContract.limits.contributionsPerExtension) {
@@ -614,7 +631,7 @@ export function browserWorkerSource(extension: PersonalExtension) {
     const descriptor = normalizeContribution(options);
     if (uiContributions.has(descriptor.id)) throw new Error("contribution id is already registered");
     uiContributions.set(descriptor.id, descriptor);
-    if (typeof options.onActivate === "function") {
+    if (descriptor.kind !== "command" && typeof options.onActivate === "function") {
       uiContributionActivateHandlers.set(descriptor.id, options.onActivate);
     }
     if (typeof options.onEvent === "function") {
@@ -629,7 +646,7 @@ export function browserWorkerSource(extension: PersonalExtension) {
         const nextOptions = { ...current, ...(patch || {}), id: current.id, kind: current.kind };
         const next = normalizeContribution(nextOptions);
         uiContributions.set(next.id, next);
-        if (typeof patch?.onActivate === "function") {
+        if (next.kind !== "command" && typeof patch?.onActivate === "function") {
           uiContributionActivateHandlers.set(next.id, patch.onActivate);
         }
         if (typeof patch?.onEvent === "function") {
@@ -645,9 +662,120 @@ export function browserWorkerSource(extension: PersonalExtension) {
       },
     });
   };
+  // Dice formats: the extension reads its own notation and names the dice to throw. Marinara
+  // throws them with its own roller and hands the faces back to \`read\`, so an extension can say
+  // what a roll means but never what it rolled.
+  const diceFormats = new Map();
+  const diceRequests = new Map();
+  const MAX_DICE_REQUESTS = 16;
+  const diceErrorText = (error) => (error instanceof Error ? error.message : String(error)).slice(0, diceLimits.textLength);
+  const isDieSides = (value) =>
+    Number.isSafeInteger(value) && value >= diceLimits.minSides && value <= diceLimits.maxSides;
+  const registerDiceFormat = (options) => {
+    if (!options || typeof options !== "object") throw new Error("dice format options are required");
+    const id = contributionId(options.id);
+    if (diceFormats.has(id)) throw new Error("dice format id is already registered");
+    if (diceFormats.size >= diceLimits.formatsPerExtension) throw new Error("too many dice formats");
+    if (typeof options.parse !== "function" || typeof options.read !== "function") {
+      throw new Error("dice formats need parse and read functions");
+    }
+    const descriptor = {
+      id,
+      label: contributionText(options.label, contributionContract.limits.labelLength, true),
+      description: contributionText(options.description, contributionContract.limits.descriptionLength, false),
+    };
+    diceFormats.set(id, { parse: options.parse, read: options.read });
+    send({ type: "dice-format-register", format: descriptor });
+    return Object.freeze({
+      id,
+      remove: () => {
+        if (!diceFormats.delete(id)) return;
+        send({ type: "dice-format-remove", formatId: id });
+      },
+    });
+  };
+  const parseDiceRequest = (message) => {
+    const format = diceFormats.get(message.formatId);
+    const reply = (result) => send({ type: "dice-parse-result", requestId: message.requestId, ...result });
+    if (!format || typeof message.notation !== "string" || message.notation.length > diceLimits.notationLength) {
+      reply({ ok: false, error: "unknown dice format" });
+      return;
+    }
+    const notation = message.notation;
+    Promise.resolve()
+      .then(() => format.parse(notation))
+      .then((plan) => {
+        if (plan == null) {
+          reply({ ok: true, dice: null });
+          return;
+        }
+        const dice = Array.isArray(plan.dice) ? [...plan.dice] : null;
+        if (!dice || dice.length < 1 || dice.length > diceLimits.dice || !dice.every(isDieSides)) {
+          throw new Error(
+            "parse must return null or { dice: [sides, ...] } with 1-" + diceLimits.dice + " dice of " +
+              diceLimits.minSides + "-" + diceLimits.maxSides + " sides",
+          );
+        }
+        if (diceRequests.size >= MAX_DICE_REQUESTS) diceRequests.delete(diceRequests.keys().next().value);
+        diceRequests.set(message.requestId, { format, notation, dice, plan });
+        reply({ ok: true, dice });
+      })
+      .catch((error) => {
+        log("error", ["Dice format " + message.formatId + " could not read " + JSON.stringify(notation), diceErrorText(error)]);
+        reply({ ok: false, error: diceErrorText(error) });
+      });
+  };
+  const readDiceRequest = (message) => {
+    const request = diceRequests.get(message.requestId);
+    diceRequests.delete(message.requestId);
+    const reply = (result) => send({ type: "dice-read-result", requestId: message.requestId, ...result });
+    const rolls = Array.isArray(message.rolls) ? [...message.rolls] : null;
+    if (
+      !request ||
+      !rolls ||
+      rolls.length !== request.dice.length ||
+      !rolls.every((face, index) => Number.isSafeInteger(face) && face >= 1 && face <= request.dice[index])
+    ) {
+      reply({ ok: false, error: "unknown dice roll" });
+      return;
+    }
+    Promise.resolve()
+      .then(() =>
+        request.format.read(
+          Object.freeze({
+            notation: request.notation,
+            dice: Object.freeze(request.dice),
+            rolls: Object.freeze(rolls),
+            plan: request.plan,
+          }),
+        ),
+      )
+      .then((result) => {
+        if (!result || typeof result !== "object" || typeof result.total !== "number" || !Number.isFinite(result.total)) {
+          throw new Error("read must return { total: number, text?, kept? }");
+        }
+        if (result.text != null && (typeof result.text !== "string" || result.text.length > diceLimits.textLength)) {
+          throw new Error("read text must be a string of at most " + diceLimits.textLength + " characters");
+        }
+        const kept = result.kept == null ? undefined : Array.isArray(result.kept) ? [...result.kept] : null;
+        if (
+          kept === null ||
+          (kept &&
+            (kept.length > rolls.length ||
+              !kept.every((place, index) => Number.isSafeInteger(place) && place >= 0 && place < rolls.length && (index === 0 || place > kept[index - 1]))))
+        ) {
+          throw new Error("read kept must list places of thrown dice in ascending order");
+        }
+        reply({ ok: true, total: result.total, text: result.text ?? undefined, kept });
+      })
+      .catch((error) => {
+        log("error", ["Dice format could not read the roll for " + JSON.stringify(request.notation), diceErrorText(error)]);
+        reply({ ok: false, error: diceErrorText(error) });
+      });
+  };
   const marinara = Object.freeze({
     runtime: "client",
-    version: 5,
+    version: 6,
     estimateTextTokens: ${getSerializedTextTokenEstimator()},
     extensionId: extension.id,
     extensionName: extension.name,
@@ -676,6 +804,9 @@ export function browserWorkerSource(extension: PersonalExtension) {
     ui: Object.freeze({
       showWindow,
       registerContribution,
+    }),
+    dice: Object.freeze({
+      registerFormat: registerDiceFormat,
     }),
     setTimeout: managedTimeout,
     setInterval: managedInterval,
@@ -747,7 +878,16 @@ export function browserWorkerSource(extension: PersonalExtension) {
           .catch((error) => log("error", [error instanceof Error ? error.message : String(error)]));
       }
     }
+    if (message?.type === "dice-parse" && typeof message.requestId === "string") {
+      parseDiceRequest(message);
+    }
+    if (message?.type === "dice-read" && typeof message.requestId === "string") {
+      readDiceRequest(message);
+    }
     if (message?.type === "stop") {
+      for (const id of diceFormats.keys()) send({ type: "dice-format-remove", formatId: id });
+      diceFormats.clear();
+      diceRequests.clear();
       for (const id of uiContributions.keys()) {
         send({ type: "ui-contribution-remove", contributionId: id });
       }
@@ -797,9 +937,11 @@ export function sandboxDocument(extension: PersonalExtension, nonce: string) {
   "use strict";
   const extension = ${boot};
   const post = (message) => window.parent.postMessage({ channel: "marinara-personal-extension", ...message }, "*");
+  // Do not revoke this URL right after new Worker(): Safari/WebKit loads the
+  // worker script later, so the load fails and the extension never starts.
+  // The URL is released when this sandbox iframe is removed.
   const workerUrl = URL.createObjectURL(new Blob([extension.workerSource], { type: "text/javascript" }));
   const worker = new Worker(workerUrl);
-  URL.revokeObjectURL(workerUrl);
 
   // Host-rendered window layer. The worker only sends element descriptors;
   // everything below builds DOM with textContent (never parsed markup) inside
@@ -997,14 +1139,21 @@ export function sandboxDocument(extension: PersonalExtension, nonce: string) {
   };
 
   let lastHeartbeat = Date.now();
+  let lastWatchdogTick = Date.now();
   let stopped = false;
   let messageWindowStartedAt = Date.now();
   let messageCount = 0;
+  const workerStartedAt = Date.now();
+  let heartbeatCount = 0;
   worker.addEventListener("message", (event) => {
     const message = event.data;
     if (message?.type === "heartbeat") {
       lastHeartbeat = Date.now();
-      return;
+      // The worker sends one heartbeat a second. A backlog that arrives at
+      // once after a pause stays within that rate; any heartbeat beyond it
+      // counts toward the message limit, so a flood cannot freeze the page.
+      heartbeatCount += 1;
+      if (heartbeatCount <= (Date.now() - workerStartedAt) / 1_000 + 10) return;
     }
     if (Date.now() - messageWindowStartedAt > 10_000) {
       messageWindowStartedAt = Date.now();
@@ -1015,7 +1164,7 @@ export function sandboxDocument(extension: PersonalExtension, nonce: string) {
       stopped = true;
       worker.terminate();
       window.clearInterval(watchdog);
-      post({ type: "error", contentHash: extension.contentHash, message: "Browser extension was stopped for exceeding the sandbox message limit" });
+      post({ type: "error", contentHash: extension.contentHash, stopped: true, message: "Browser extension was stopped for exceeding the sandbox message limit" });
       return;
     }
     if (message?.type === "storage") {
@@ -1062,6 +1211,15 @@ export function sandboxDocument(extension: PersonalExtension, nonce: string) {
       });
       return;
     }
+    if (
+      message?.type === "dice-format-register" ||
+      message?.type === "dice-format-remove" ||
+      message?.type === "dice-parse-result" ||
+      message?.type === "dice-read-result"
+    ) {
+      post({ ...message, contentHash: extension.contentHash });
+      return;
+    }
     if (message?.type === "storage" || message?.type === "log" || message?.type === "ready" || message?.type === "error") {
       post(message);
     }
@@ -1070,11 +1228,19 @@ export function sandboxDocument(extension: PersonalExtension, nonce: string) {
     post({ type: "error", contentHash: extension.contentHash, message: event.message || "Browser extension worker failed" });
   });
   const watchdog = window.setInterval(() => {
-    if (stopped || Date.now() - lastHeartbeat <= 5_000) return;
+    const now = Date.now();
+    // Hidden tabs, system sleep and suspended mobile apps throttle or pause
+    // timers, so missed heartbeats there do not mean the worker hung. While
+    // the page is hidden, or when this tick itself arrives late, restart the
+    // silence window instead of stopping a healthy worker (#7260).
+    const throttled = document.hidden || now - lastWatchdogTick > 2_000;
+    lastWatchdogTick = now;
+    if (throttled) lastHeartbeat = now;
+    if (stopped || now - lastHeartbeat <= 5_000) return;
     stopped = true;
     worker.terminate();
     window.clearInterval(watchdog);
-    post({ type: "error", contentHash: extension.contentHash, message: "Browser extension was stopped because its sandbox became unresponsive" });
+    post({ type: "error", contentHash: extension.contentHash, stopped: true, message: "Browser extension was stopped because its sandbox became unresponsive" });
   }, 1_000);
   window.addEventListener("message", (event) => {
     if (event.source !== window.parent || event.data?.channel !== "marinara-personal-extension") return;
@@ -1089,6 +1255,9 @@ export function sandboxDocument(extension: PersonalExtension, nonce: string) {
       worker.postMessage({ type: "context-update", context: message.context });
     }
     if (message.type === "ui-contribution-activate" || message.type === "ui-contribution-event") {
+      worker.postMessage(message);
+    }
+    if ((message.type === "dice-parse" || message.type === "dice-read") && message.contentHash === extension.contentHash) {
       worker.postMessage(message);
     }
     if (message.type === "ui-theme" && message.theme && typeof message.theme === "object") {
@@ -1124,6 +1293,28 @@ export async function personalExtensionsRoutes(app: FastifyInstance) {
 
   app.get("/policy", async () => getPersonalExtensionPolicy(app.db));
 
+  app.get("/revision-history", { config: { rateLimit: EXTENSION_REVISION_HISTORY_RATE_LIMIT } }, async (req, reply) => {
+    if (!privileged(req, reply)) return;
+    return { limit: await storage.getRevisionRetention() };
+  });
+
+  app.patch(
+    "/revision-history",
+    { config: { rateLimit: EXTENSION_REVISION_HISTORY_RATE_LIMIT } },
+    async (req, reply) => {
+      if (!privileged(req, reply)) return;
+      const input = personalExtensionRevisionRetentionSchema.parse(req.body);
+      const result = await storage.setRevisionRetention(input);
+      if (!result) {
+        return reply.status(409).send({
+          error: "Confirm permanently removing older extension revisions before changing retention.",
+          code: "confirmation_required",
+        });
+      }
+      return result;
+    },
+  );
+
   app.patch("/policy/external", async (req, reply) => {
     if (!privileged(req, reply)) return;
     const input = externalExtensionsPolicyUpdateSchema.parse(req.body);
@@ -1143,7 +1334,16 @@ export async function personalExtensionsRoutes(app: FastifyInstance) {
     const policy = await getPersonalExtensionPolicy(app.db);
     return (await storage.list())
       .filter((extension) => canExecutePersonalExtension(extension, policy))
-      .map((extension) => personalServerExtensionRuntime.withRuntimeStatus(extension));
+      .map((extension): PersonalExtensionListItem => ({
+        ...personalServerExtensionRuntime.withRuntimeStatus(extension),
+        revisions: extension.revisions.map(({ contentHash, version, runtime, capabilities, savedAt }) => ({
+          contentHash,
+          version,
+          runtime,
+          capabilities,
+          savedAt,
+        })),
+      }));
   });
 
   app.get("/runtime/client", async (): Promise<PersonalClientExtensionRuntime[]> => {
@@ -1193,9 +1393,10 @@ export async function personalExtensionsRoutes(app: FastifyInstance) {
     reply.type("text/html; charset=utf-8");
     reply.header("Cache-Control", "no-store");
     reply.header("X-Frame-Options", "SAMEORIGIN");
+    // `sandbox` gives the document an opaque origin wherever it loads, not only inside the client's sandboxed iframe.
     reply.header(
       "Content-Security-Policy",
-      `default-src 'none'; script-src 'nonce-${nonce}'; worker-src blob:; style-src 'unsafe-inline'; img-src data:; connect-src 'none'; font-src 'none'; media-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'`,
+      `sandbox allow-scripts; default-src 'none'; script-src 'nonce-${nonce}'; worker-src blob:; style-src 'unsafe-inline'; img-src data:; connect-src 'none'; font-src 'none'; media-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'`,
     );
     return sandboxDocument(extension, nonce);
   });

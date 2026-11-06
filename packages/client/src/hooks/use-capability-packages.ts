@@ -1,8 +1,10 @@
 import { useEffect, useSyncExternalStore } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  EXPERIENCE_FILE_CONTENT_TYPE,
   isInstalledCapabilityReady,
   replaceBuiltInAgentDefinitions,
+  rulesetTranslationLanguages,
   type CapabilityCatalog,
   type CapabilityPackageManifest,
   type CapabilityPackageUpdate,
@@ -10,9 +12,11 @@ import {
   type BuiltInAgentManifest,
   type InstalledCapabilityPackage,
   type InstalledRuleset,
+  type StampedCapabilityCatalog,
   type RulesetCatalogPayload,
 } from "@marinara-engine/shared";
 import { api, ApiError } from "../lib/api-client";
+import { i18n } from "../localization/i18n";
 import {
   beginCapabilityClientImport,
   capabilityClientNeedsRefresh,
@@ -62,6 +66,45 @@ export function rulesetCatalogQuery(rulesetId: string, catalogId: string, versio
   };
 }
 
+/** The page's language, for the ruleset language packs (1.811) an install fetches. */
+function rulesetPackLanguage(): string {
+  return i18n.resolvedLanguage ?? i18n.language ?? "en";
+}
+
+/** Tells the Engine the page's language, so each installed catalog ruleset's language pack (1.811) is
+ *  fetched in it and the old one removed; then the fight screen's strings are read again. Quiet: a page
+ *  that may not ask, or an Engine offline, leaves the rulesets in English until the next try. */
+export async function syncRulesetLanguage(
+  locale: string,
+  queryClient: ReturnType<typeof useQueryClient>,
+): Promise<void> {
+  try {
+    await api.post("/capability-packages/rulesets/language", { locale });
+    await queryClient.invalidateQueries({ queryKey: [...capabilityPackageKeys.rulesets(), "strings"] });
+  } catch {
+    // English stays on screen; opening the page again tries again.
+  }
+}
+
+/** A ruleset's display strings in one language (1.811), as the fight screen swaps them in: empty when
+ *  none is kept in that language. Under `rulesets()`, so an install or an import refreshes it. */
+export function useRulesetStrings(rulesetId: string | undefined, version: number | undefined, locale: string) {
+  return useQuery({
+    queryKey: [...capabilityPackageKeys.rulesets(), "strings", rulesetId, version ?? "latest", locale] as const,
+    queryFn: () => {
+      const query = new URLSearchParams({ rulesetId: rulesetId!, locale });
+      if (version !== undefined) query.set("version", String(version));
+      return api.get<{ locale: string | null; strings: Record<string, string> }>(
+        `/capability-packages/rulesets/strings?${query.toString()}`,
+      );
+    },
+    enabled: !!rulesetId && locale !== "en",
+    staleTime: 30 * 60_000,
+    retry: (failures: number, error: unknown) =>
+      failures < 1 && !(error instanceof ApiError && error.status >= 400 && error.status < 500),
+  });
+}
+
 /** The picker's own query: only fetched while a picker is open. */
 export function useRulesetCatalog(rulesetId: string, catalogId: string, version: number | undefined, enabled: boolean) {
   return useQuery({
@@ -83,6 +126,57 @@ export function useImportRuleset() {
   });
 }
 
+/** What the Engine reads from a ruleset package file: on a dry run, for the review, nothing kept. */
+export interface RulesetPackageRead {
+  status: "checked" | "added" | "unchanged";
+  rulesetId: string;
+  version: number;
+  /** The package's ruleset.json, as read (on a dry run). */
+  ruleset?: string;
+  /** Each catalog file's number of entries, by catalog id. */
+  catalogs: Record<string, number>;
+  /** The translations it carries (a dry run), or the one kept (an import). */
+  locales?: string[];
+}
+
+/** A language pack picked with a ruleset package file (1.811): its file name, which says whose it is. */
+export interface RulesetPickedPack {
+  name: string;
+  document: Record<string, unknown>;
+}
+
+/** Of the language packs picked, the ones in the page's language (or the language it is a kind of): the
+ *  only ones an import keeps, so the rest are never sent. */
+export function rulesetPacksForPage(packs: readonly RulesetPickedPack[]): RulesetPickedPack[] {
+  const wanted = rulesetTranslationLanguages(rulesetPackLanguage());
+  return packs.filter((pack) => wanted.includes(String((pack.document._meta as { locale?: unknown })?.locale)));
+}
+
+/** Read a ruleset package file (a parsed `.ruleset.json`), with any language packs picked with it, without
+ *  keeping anything, for the review. */
+export function readRulesetPackage(file: Record<string, unknown>, packs: RulesetPickedPack[] = []) {
+  return api.post<RulesetPackageRead>("/game-rulesets/import-package", {
+    package: file,
+    dryRun: true,
+    ...(packs.length ? { packs } : {}),
+  });
+}
+
+/** Import a ruleset package file (RM): its ruleset and catalog files, as data, under `local/<id>`, and of
+ *  the translations it carries the one in the page's language (1.811). */
+export function useImportRulesetPackage() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ file, packs = [] }: { file: Record<string, unknown>; packs?: RulesetPickedPack[] }) =>
+      api.post<RulesetPackageRead>("/game-rulesets/import-package", {
+        package: file,
+        locale: rulesetPackLanguage(),
+        ...(packs.length ? { packs } : {}),
+      }),
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: capabilityPackageKeys.rulesets() }),
+  });
+}
+
 /** Remove every stored version of an imported ruleset. `force` is the answer to the server's
  *  `ruleset_in_use` 409, so a ruleset a game plays on is never removed by one click. */
 export function useRemoveRuleset() {
@@ -99,7 +193,7 @@ export function useRemoveRuleset() {
 export function useCapabilityCatalog(enabled = true) {
   return useQuery({
     queryKey: capabilityPackageKeys.catalog(),
-    queryFn: () => api.get<CapabilityCatalog>("/capability-packages/catalog"),
+    queryFn: () => api.get<StampedCapabilityCatalog>("/capability-packages/catalog"),
     enabled,
     staleTime: 5 * 60_000,
     retry: 1,
@@ -170,8 +264,53 @@ export function selectGameExperiencePackages(
     (pkg) =>
       isInstalledCapabilityReady(pkg) &&
       pkg.manifest.contributions?.slots?.includes("game-surface") &&
-      Boolean(pkg.manifest.entrypoints.client?.trim()),
+      // A data-only Experience (1.373) has no client: Game Mode's own view plays it.
+      (pkg.manifest.kind.includes("experience") || Boolean(pkg.manifest.entrypoints.client?.trim())),
   );
+}
+
+/** The chat's package integrations the user turned on (Calls, which keeps its header button, aside). */
+export function selectEnabledConversationPackages(
+  installed: InstalledCapabilityPackage[],
+  chatMeta: Record<string, any>,
+): InstalledCapabilityPackage[] {
+  if (chatMeta.enableAgents !== true) return [];
+  const activeAgentIds: string[] = Array.isArray(chatMeta.activeAgentIds) ? chatMeta.activeAgentIds : [];
+  return installed.filter((item) => {
+    if (item.status !== "active" || !item.manifest.entrypoints.client) return false;
+    if (item.manifest.kind.includes("conversation-calls")) return false;
+    const contributedAgentIds = item.manifest.contributions?.agentDetail?.agentIds ?? [];
+    return activeAgentIds.includes(item.id) || contributedAgentIds.some((id: string) => activeAgentIds.includes(id));
+  });
+}
+
+/** Turn games, whose surface (board) a Conversation chat mounts whether or not the game's agent is on. */
+export function selectConversationTurnGamePackages(
+  installed: InstalledCapabilityPackage[],
+): InstalledCapabilityPackage[] {
+  return installed.filter(
+    (item) => item.status === "active" && item.manifest.kind.includes("turn-game") && item.manifest.entrypoints.client,
+  );
+}
+
+/**
+ * Packages mounted in a Conversation chat's `conversation-surface` slot. Turn games declare that slot too, but their
+ * surface is already mounted by selectConversationTurnGamePackages, so they are left out here: with the game's agent
+ * on, the board would otherwise render twice.
+ */
+export function selectConversationSurfacePackages(
+  installed: InstalledCapabilityPackage[],
+  chatMeta: Record<string, any>,
+): InstalledCapabilityPackage[] {
+  return selectEnabledConversationPackages(installed, chatMeta).filter(
+    (item) =>
+      item.manifest.contributions?.slots?.includes("conversation-surface") && !item.manifest.kind.includes("turn-game"),
+  );
+}
+
+/** Whether a game-surface package draws a view of its own; a data-only Experience (1.373) never does. */
+export function capabilityPackageDrawsOwnSurface(pkg: InstalledCapabilityPackage | null | undefined): boolean {
+  return Boolean(pkg?.manifest.entrypoints.client?.trim());
 }
 
 /** A restart-required update keeps exposing the manifest paired with the runtime
@@ -417,7 +556,11 @@ export function useCapabilityClientModules() {
       });
       const source = `/api/capability-packages/${encodeURIComponent(item.id)}/client?v=${encodeURIComponent(item.version)}${attempt > 0 ? `&retry=${attempt}` : ""}`;
       if (!beginCapabilityClientImport(item.id, { version: item.version, attempt })) continue;
-      void import(/* @vite-ignore */ source)
+      // Packages take the Engine's stores and libraries from globalThis.__MARINARA_HOST__, so it is complete before any
+      // package client is evaluated (lib/marinara-host.ts).
+      void import("../lib/marinara-host")
+        .then(({ ensureMarinaraHost }) => ensureMarinaraHost())
+        .then(() => import(/* @vite-ignore */ source))
         .then(() => {
           if (!customElements.get(tag)) {
             throw new Error(`Client module did not register ${tag}`);
@@ -546,6 +689,7 @@ export function useInstallCapabilityPackage() {
         {
           expectedVersion,
           expectedArtifactSha256,
+          locale: rulesetPackLanguage(),
         },
       );
     },
@@ -553,13 +697,33 @@ export function useInstallCapabilityPackage() {
   });
 }
 
-export function useDeclineCapabilityPackageUpdate() {
+/** Imports an Experience file (1.373) the user reviewed. The file goes up as it is, streamed by the
+ *  browser from disk, and the server checks every byte of it against its manifest. */
+export function useImportExperienceFile() {
   const invalidate = useInvalidateCapabilityState();
   return useMutation({
-    mutationFn: ({ id, version }: Pick<CapabilityPackageUpdate, "id" | "version">) =>
-      api.post<{ declined: true }>(
-        `/capability-packages/${encodeURIComponent(id)}/updates/${encodeURIComponent(version)}/decline`,
-      ),
+    mutationFn: async (file: Blob) => {
+      const response = await api.raw("/capability-packages/experience-file", {
+        method: "POST",
+        headers: { "Content-Type": EXPERIENCE_FILE_CONTENT_TYPE },
+        body: file,
+      });
+      const body = (await response.json().catch(() => ({}))) as InstalledCapabilityPackage & { error?: string };
+      if (!response.ok) throw new ApiError(response.status, body.error || response.statusText, body);
+      return body;
+    },
+    onSettled: invalidate,
+  });
+}
+
+/** One request for all listed updates ("Not now"), so none of them returns on a reload right after. */
+export function useDeclineCapabilityPackageUpdates() {
+  const invalidate = useInvalidateCapabilityState();
+  return useMutation({
+    mutationFn: (updates: Array<Pick<CapabilityPackageUpdate, "id" | "version">>) =>
+      api.post<{ declined: string[] }>("/capability-packages/updates/decline", {
+        updates: updates.map(({ id, version }) => ({ id, version })),
+      }),
     onSuccess: invalidate,
   });
 }
@@ -588,6 +752,7 @@ export function useInstallAllCapabilityPackages() {
             {
               expectedVersion: entry.manifest.version,
               expectedArtifactSha256: entry.artifact.sha256,
+              locale: rulesetPackLanguage(),
             },
           );
           return { restartRequired: result.status === "restart-required", usesDecisions: result.usesDecisions };

@@ -1,3 +1,4 @@
+import { gamePartyRoster, rulesetAdvancementTurnStart } from "./ruleset-sheet-turn.service.js";
 import { currentRoomGeneration, roomHostIdentity } from "../multiplayer/generation-policy.js";
 // ──────────────────────────────────────────────
 // Service: Skill Check Resolution (chat-scoped)
@@ -15,10 +16,13 @@ import { currentRoomGeneration, roomHostIdentity } from "../multiplayer/generati
 
 import {
   applyRulesetSheetOp,
+  CHARACTER_NAME_PARTICLES,
+  uniqueCharacterKeyFor,
   planRulesetUse,
   rulesetEntryNamed,
   createSkillCheckTagRegex,
   formatPoolSlotName,
+  formatSkillCheckResultSummary,
   readGmTagAttributes,
   isEngineRollableSkillCheckTag,
   parseSkillCheckTagBody,
@@ -29,6 +33,12 @@ import {
   matchRulesetCheckTarget,
   parseDiceNotation,
   readRulesetWoundPenalty,
+  rollAgainstCheck,
+  rulesetCheckOverride,
+  rulesetDefinitionForCheck,
+  rollDiceHighestCheck,
+  rollSymbolPoolCheck,
+  rulesetSymbolPoolRatings,
   rollDicePoolCheck,
   resolveRulesetValueRef,
   RULESET_POOL_MAX_DICE,
@@ -40,11 +50,12 @@ import {
   rulesetPoolMaxSuccesses,
   rollDiceSumCheck,
   rulesetCheckModifier,
-  rulesetSheetEnvelopeSchema,
+  readRulesetSheetEnvelope,
   type EvaluatedRulesetSheet,
   type RPGAttributes,
   type RulesetCatalogEntriesById,
   type RulesetDefinition,
+  type RulesetSaveAgainst,
   type RulesetUntrained,
   type RulesetLiveState,
   type RulesetLiveStates,
@@ -57,10 +68,17 @@ import {
   rulesetCheckEffects,
   rulesetCheckRollMode,
   rulesetCheckSources,
+  rulesetTierAddsProficiency,
+  rulesetContextualCheck,
+  rulesetContextualItems,
   rollRulesetCheckModifiers,
+  type RulesetCheckSource,
+  type RulesetContextualItem,
   type RulesetCheckEffects,
   type RulesetCheckTarget,
   type RulesetSheetItem,
+  rulesetCheckStance,
+  rulesetSheetDead,
 } from "@marinara-engine/shared";
 import { loadGameInventoryItemBook } from "./game-inventory.service.js";
 import type { DB } from "../../db/connection.js";
@@ -98,6 +116,14 @@ export class SkillCheckUntrainedError extends Error {
   constructor(skill: string) {
     super(`The check ${skill} cannot be attempted untrained under this game's rules`);
     this.name = "SkillCheckUntrainedError";
+  }
+}
+
+/** A check whose `who=` looks like a party member but picks out no one of them, in a ruleset game. */
+export class SkillCheckRollerError extends Error {
+  constructor(who: string) {
+    super(`"${who}" does not name one party member`);
+    this.name = "SkillCheckRollerError";
   }
 }
 
@@ -157,6 +183,17 @@ export interface SkillCheckRulesetContext {
    *  not get this: it rolls with no modifier at all, because a ruleset's defaults are not neutral
    *  in every system and the Engine knows nothing about a stranger. */
   blank: EvaluatedRulesetSheet;
+  /** Each card's name as written, per normalized card name, so a roller the Engine picked itself is
+   *  written into the record the way the card spells it. */
+  names?: Map<string, string>;
+  /** Names two cards share, which a `who=` cannot pick between, so no shorter name reaches either. */
+  ambiguous?: Set<string>;
+  /** True when no card is the player's own and `playerKey` is only the first card. A check that
+   *  names nobody then picks its roller from the narration instead (laptop 2026-10-26). */
+  playerByPosition?: boolean;
+  /** Normalized names of the cards whose member was taken out of the party: a card stays when its
+   *  member leaves. Nobody is away in a game whose party list cannot be read in full. */
+  away?: Set<string>;
 }
 
 export interface SkillCheckRequest {
@@ -179,15 +216,29 @@ export interface SkillCheckRequest {
   who?: string;
   /** `with=`: roll the skill or save with another ability than its own. Ruleset games only. */
   withAbility?: string;
+  /** `for=`: what the check is made for (1.752), "climb" or "swim", for a change narrowed to it. */
+  purpose?: string;
   /** `threshold=`: the per-die target a pool check counts with, where the ruleset lets it move. */
   threshold?: number;
   /** `bonus=`: dice a pool check adds or takes, where the ruleset declares situational dice. */
   bonusDice?: number;
+  /** `dark=`: dark dice a keep-the-highest check adds (1.138), where the ruleset has them. */
+  darkDice?: number;
+  /** Difficulty dice upgraded to challenge dice (1.141). */
+  upgrades?: number;
+  /** Independent setback dice and optional own-pool upgrades (1.150). */
+  setback?: number;
+  upgradeOwn?: number;
   /** `spend=`: what the player said they were spending on this check, where the ruleset offers
    *  such a purchase. The Engine decides what it costs and what it buys. */
   spend?: { pool: string; amount: number };
   /** `use=`: a catalog entry the character has, whose `mechanics.check` changes this roll. */
   useEntry?: string;
+  /** `apply=`: rows or entries the character has that the Game Master says apply to this roll
+   *  (Capability API 1.156). Only those that do change it, and owning one is not enough. */
+  apply?: string[];
+  /** What a save is made against, where the Engine itself asks for it (1.364): a story's exposure. */
+  against?: RulesetSaveAgainst;
 }
 
 function parsePlayerStats(raw: unknown, chatId: string): Record<string, unknown> | null {
@@ -247,20 +298,88 @@ async function findPlayerCharacterCard(
   meta: Record<string, unknown>,
   chatId: string,
 ): Promise<Record<string, unknown> | undefined> {
-  if (cards.length === 0) return undefined;
+  return (await findPlayerCharacterCardMatch(db, cards, chatPersonaId, meta, chatId)).card;
+}
+
+/**
+ * The player's own card as a party roster is seeded with it (`gamePartyRoster`): the player is never
+ * on the party list, so this is what keeps them in it. The checks, the sheet commands and the fight
+ * brief all seed it here, so they count the same members away.
+ */
+export async function gamePlayerCardName(
+  db: DB,
+  chatId: string,
+  meta: Record<string, unknown>,
+  chatPersonaId: unknown,
+): Promise<string | null> {
+  const cards = Array.isArray(meta.gameCharacterCards)
+    ? (meta.gameCharacterCards as Array<Record<string, unknown>>)
+    : [];
+  return playerRosterCard(meta, await findPlayerCharacterCardMatch(db, cards, chatPersonaId, meta, chatId));
+}
+
+/**
+ * The name `gamePlayerCardName` seeds a roster with, from the card a check finds: a persona called by
+ * a shorter name than its card still names that card. Where nothing said whose card is whose, the first
+ * card is the player's only where the game's setup put it first (`setupPutsPlayerCardFirst`). Otherwise
+ * the first card is a companion's, and one taken out of the party must not be kept in it: null.
+ */
+function playerRosterCard(
+  meta: Record<string, unknown>,
+  { card, byPosition }: { card: Record<string, unknown> | undefined; byPosition: boolean },
+): string | null {
+  if (byPosition && !setupPutsPlayerCardFirst(meta)) return null;
+  return readTrimmedString(card?.name) || null;
+}
+
+/**
+ * Whether the game's setup made the player's card its first, read off the setup the game keeps
+ * (`gameInitialSetup`), so a companion recruited or a persona changed since never changes it. A setup
+ * with a persona asks for the player's card before the party's (gm-prompts' characterCardTargets), so
+ * the first card stays the player's when the persona is later renamed or deleted, or the card renamed.
+ * A setup with no party makes a card for nobody but the player (character_card_scope).
+ */
+function setupPutsPlayerCardFirst(meta: Record<string, unknown>): boolean {
+  type KeptSetup = { config?: { partyCharacterIds?: unknown; personaId?: unknown } } | null | undefined;
+  const kept = (meta.gameInitialSetup as KeptSetup)?.config;
+  const setupConfig = meta.gameSetupConfig as { personaId?: unknown } | null | undefined;
+  if (readTrimmedString(kept?.personaId ?? setupConfig?.personaId)) return true;
+  // ponytail: no card is marked as the player's, so this reads the setup, with three known misses. Where
+  // the model put a companion's card first despite the persona, and the persona no longer names a card,
+  // that companion is kept in the party after leaving it. The party list stands in for the setup only
+  // for metadata the setup did not write, if any (a ruleset pinned by a hand-made metadata PATCH): the
+  // Engine pins a ruleset (`gameRuleset`) only at setup, in the same update that keeps the setup, and
+  // setups were kept (2026-07) before a ruleset could be chosen at creation (2026-09). There, once a
+  // companion is recruited, the first card is only a stand-in again and the player is counted away. And
+  // a setup that made no card leaves a later recruit first, kept in the party after leaving it. The
+  // upgrade is to mark the player's own card as setup makes it, and seed the roster with that.
+  const ids = Array.isArray(kept?.partyCharacterIds) ? kept.partyCharacterIds : meta.gamePartyCharacterIds;
+  return Array.isArray(ids) && ids.length === 0;
+}
+
+/** The player's card, and whether it is only the first card because nothing said whose it is. */
+async function findPlayerCharacterCardMatch(
+  db: DB,
+  cards: Array<Record<string, unknown>>,
+  chatPersonaId: unknown,
+  meta: Record<string, unknown>,
+  chatId: string,
+): Promise<{ card: Record<string, unknown> | undefined; byPosition: boolean }> {
+  if (cards.length === 0) return { card: undefined, byPosition: false };
   const host = roomHostIdentity();
   if (host) {
     const matches = cards.filter(
       (card) => normalizeCharacterLookupName(readTrimmedString(card.name)) === normalizeCharacterLookupName(host.name),
     );
-    return matches.length === 1 ? matches[0] : undefined;
+    return { card: matches.length === 1 ? matches[0] : undefined, byPosition: false };
   }
+  const first = { card: cards[0], byPosition: true };
   const setupConfig =
     meta.gameSetupConfig && typeof meta.gameSetupConfig === "object" && !Array.isArray(meta.gameSetupConfig)
       ? (meta.gameSetupConfig as Record<string, unknown>)
       : null;
   const personaId = readTrimmedString(chatPersonaId) || readTrimmedString(setupConfig?.personaId);
-  if (!personaId) return cards[0];
+  if (!personaId) return first;
 
   let personaName = "";
   try {
@@ -269,16 +388,34 @@ async function findPlayerCharacterCard(
   } catch (err) {
     // An unreadable persona costs the check its identity lookup, never the turn.
     logger.warn(err, "[game/skill-check] Could not read the persona for chat %s; using the first card", chatId);
-    return cards[0];
+    return first;
   }
-  if (!personaName) return cards[0];
+  if (!personaName) return first;
 
   const wanted = normalizeCharacterLookupName(personaName);
   const playerCard = cards.find((card) => normalizeCharacterLookupName(readTrimmedString(card.name)) === wanted);
-  if (playerCard) return playerCard;
+  if (playerCard) return { card: playerCard, byPosition: false };
+  // laptop 2026-10-26: a persona called by a shorter name than its card ("Lethariel" for "Lethariel
+  // Moonwhisper") is still that card, when no other card answers to the same words.
+  const keys = cards.map((card) => normalizeCharacterLookupName(readTrimmedString(card.name)));
+  const shortKey = uniqueCardKeyFor(keys, personaName);
+  if (shortKey) return { card: cards[keys.indexOf(shortKey)], byPosition: false };
 
   logger.debug("[game/skill-check] Chat %s has no card for the player; using the first card's sheet", chatId);
-  return cards[0];
+  return first;
+}
+
+/** Words a name may carry that pick out nobody on their own. */
+const CARD_NAME_PARTICLES = CHARACTER_NAME_PARTICLES;
+
+/**
+ * The one card key a name picks out: the card's whole name, or a name every word of which is one of
+ * a single card's words ("Lethariel" for "Lethariel Moonwhisper", "Moonwhisper" too), read without a
+ * nickname written inside it where that is what finds the card. Null when no card answers, when two
+ * do, and for a name made only of particles like "the". Shared with the sheet commands.
+ */
+export function uniqueCardKeyFor(keys: Iterable<string>, name: string): string | null {
+  return uniqueCharacterKeyFor(keys, name);
 }
 
 /**
@@ -299,6 +436,7 @@ export async function loadSkillCheckModifierContext(
    * `POST /game/skill-check` endpoint.
    */
   turnStartLive?: RulesetLiveStates | null,
+  regenerateMessageId?: string | null,
 ): Promise<SkillCheckModifierContext> {
   const stateStore = createGameStateStorage(db);
   const snapshot = await stateStore.getLatest(chatId);
@@ -317,7 +455,12 @@ export async function loadSkillCheckModifierContext(
   // never seeded today), because the chat is also where a pinned ruleset lives.
   const chats = createChatsStorage(db);
   const chat = await chats.getById(chatId);
-  const meta = chat ? parseChatMetadata(chat.metadata, chatId) : {};
+  const meta = await rulesetAdvancementTurnStart(
+    db,
+    chatId,
+    chat ? parseChatMetadata(chat.metadata, chatId) : {},
+    regenerateMessageId,
+  );
   const cards = Array.isArray(meta.gameCharacterCards)
     ? (meta.gameCharacterCards as Array<Record<string, unknown>>)
     : [];
@@ -325,7 +468,13 @@ export async function loadSkillCheckModifierContext(
   if (meta.gameRuleset != null) {
     const pinned = resolveGameRuleset(meta, await loadRulesetRegistry());
     if (pinned.status === "ok") {
-      const playerCard = await findPlayerCharacterCard(db, cards, chat?.personaId, meta, chatId);
+      const { card: playerCard, byPosition } = await findPlayerCharacterCardMatch(
+        db,
+        cards,
+        chat?.personaId,
+        meta,
+        chatId,
+      );
       // What each card holds, when the ruleset has items at all: its sheet may read them, and what one
       // does while worn or carried changes a check. The player's card the player's bag, every other
       // card its own.
@@ -340,21 +489,35 @@ export async function loadSkillCheckModifierContext(
             playerCard ? readTrimmedString(playerCard.name) : null,
           )
         : undefined;
+      const ruleset = buildSkillCheckRulesetContext(
+        pinned.definition,
+        cards,
+        playerCard,
+        // The live state of this chat's sheets: it is where a wound track's marks live, and a
+        // check cannot know what a wound costs without them. The turn's own starting state when
+        // the caller handed one over, and otherwise the snapshot read above.
+        turnStartLive === undefined ? parseStoredRulesetLive(snapshot?.rulesetLive) : turnStartLive,
+        undefined,
+        itemsOf,
+      );
+      // Who left the party, off the same roster and the same seed for the player's own card as the
+      // sheet commands and the fight brief count it (`gamePlayerCardName`).
+      const present = await gamePartyRoster(db, chatId, meta, playerRosterCard(meta, { card: playerCard, byPosition }));
+      const away = present ? new Set([...ruleset.sheets.keys()].filter((key) => !present.has(key))) : undefined;
       return {
         skills: null,
         attributes: null,
         sheetAttributes: {},
-        // The live state of this chat's sheets: it is where a wound track's marks live, and a
-        // check cannot know what a wound costs without them. The turn's own starting state when
-        // the caller handed one over, and otherwise the snapshot read above.
-        ruleset: buildSkillCheckRulesetContext(
-          pinned.definition,
-          cards,
-          playerCard,
-          turnStartLive === undefined ? parseStoredRulesetLive(snapshot?.rulesetLive) : turnStartLive,
-          undefined,
-          itemsOf,
-        ),
+        ruleset: {
+          ...ruleset,
+          ...(away?.size ? { away } : {}),
+          // Nothing said which card is the player's, so the first card is only a stand-in for a check
+          // that names nobody (laptop 2026-10-26: Dorra's Stealth was rolled for Pip's sneak).
+          // Nor in a shared room, where the chat's persona is the host's and a check that names nobody
+          // may be any player's (laptop room playtest 2026-10-30: the guest's Deception rolled with
+          // the host's Charisma).
+          ...(byPosition || currentRoomGeneration() ? { playerByPosition: true } : {}),
+        },
       };
     }
     // A pin the install cannot honour must not be answered with another system's arithmetic.
@@ -421,6 +584,7 @@ export function buildSkillCheckRulesetContext(
   // Two cards that normalize to one name: `who=` cannot say which, so neither sheet answers it and
   // the check rolls unmodified. The player's own card is the exception; a name they share stays theirs.
   const ambiguous = new Set<string>();
+  const names = new Map<string, string>();
   for (const card of cards) {
     const key = normalizeCharacterLookupName(readTrimmedString(card.name));
     if (!key || ambiguous.has(key)) continue;
@@ -435,21 +599,23 @@ export function buildSkillCheckRulesetContext(
         builds.delete(key);
         penalties.delete(key);
         items.delete(key);
+        names.delete(key);
         ambiguous.add(key);
         logger.warn("[game/skill-check] Two party cards are named %s; checks for that name roll unmodified", key);
         continue;
       }
     }
-    const envelope = rulesetSheetEnvelopeSchema.safeParse(card.rulesetSheet);
-    if (card.rulesetSheet != null && !envelope.success) {
+    const envelope = readRulesetSheetEnvelope(definition, card.rulesetSheet);
+    if (card.rulesetSheet != null && !envelope) {
       logger.warn("[game/skill-check] The ruleset sheet for %s is unreadable; rolling on a blank sheet", key);
     }
-    const cardBuild = envelope.success ? envelope.data.build : blankBuild;
+    const cardBuild = envelope ? envelope.build : blankBuild;
     // Worked out against this character's live state as it stands, so a value that reads a track
     // or a pool rolls with the snapshot the turn began from.
     const held = itemsOf?.(readTrimmedString(card.name));
     sheets.set(key, evaluateRulesetSheetLive(definition, cardBuild, live?.[key], held));
     builds.set(key, cardBuild);
+    names.set(key, readTrimmedString(card.name));
     if (held?.length) items.set(key, held);
     if (penaltyTrack) {
       const penalty = readRulesetWoundPenalty(definition, cardBuild, live?.[key], penaltyTrack);
@@ -466,6 +632,8 @@ export function buildSkillCheckRulesetContext(
     penalties,
     items,
     blank: evaluateRulesetSheetLive(definition, blankBuild),
+    names,
+    ambiguous,
   };
 }
 
@@ -528,7 +696,7 @@ function planRulesetEntryCheck(
 ): RulesetCheckPurchase | null {
   const wanted = name?.trim();
   if (!wanted || ruleset.definition.resolution.kind !== "dice-pool") return null;
-  const key = who ? normalizeCharacterLookupName(who) : ruleset.playerKey;
+  const key = rulesetRollerKey(ruleset, who);
   const build = key ? ruleset.builds.get(key) : undefined;
   if (!key || !build) return null;
 
@@ -619,7 +787,7 @@ export function planRulesetCheckPurchase(
   // Whole purchases only. Half a point of will buys half a success in no system.
   if (!Number.isInteger(asked.amount) || asked.amount < offer.amount || asked.amount % offer.amount !== 0) return null;
 
-  const key = who ? normalizeCharacterLookupName(who) : ruleset.playerKey;
+  const key = rulesetRollerKey(ruleset, who);
   const build = key ? ruleset.builds.get(key) : undefined;
   // A stranger has no sheet to spend from, so there is nothing to pay with and nothing is bought.
   if (!key || !build) return null;
@@ -680,11 +848,73 @@ export function readRulesetDifficulty(request: SkillCheckRequest, definition?: R
   return step ? { ...request, dc: rulesetDifficultyStepDc(step) } : request;
 }
 
+/**
+ * The sheet key a `who=` names. The card's whole name first, then a shorter name only one card
+ * answers to: laptop 2026-10-26, `who="Lethariel"` for the card "Lethariel Moonwhisper" rolled with
+ * no modifier at all. A name two cards share stays theirs and nobody's, and a name no card answers
+ * to is kept as written, which is a stranger with no sheet.
+ */
+export function rulesetNamedKey(ruleset: SkillCheckRulesetContext, who: string): string {
+  const key = normalizeCharacterLookupName(who);
+  if (!key || ruleset.sheets.has(key) || ruleset.ambiguous?.has(key)) return key;
+  const keys = [...ruleset.sheets.keys(), ...(ruleset.ambiguous ?? [])];
+  // The name as written, so a nickname in quotes inside it can be read past.
+  const found = uniqueCardKeyFor(keys, who);
+  return found && ruleset.sheets.has(found) ? found : key;
+}
+
+/** Whose sheet answers a check: the card `who=` names, or the player's when it names nobody. */
+export function rulesetRollerKey(ruleset: SkillCheckRulesetContext, who?: string): string | null {
+  return who ? rulesetNamedKey(ruleset, who) : ruleset.playerKey;
+}
+
 /** What the roller's wound track costs this check. Always negative or 0, and 0 for a stranger, a
  *  ruleset that names no penalty track and anybody who is not marked. */
 export function rulesetCheckPenaltyFor(ruleset: SkillCheckRulesetContext, who?: string): number {
-  const key = who ? normalizeCharacterLookupName(who) : ruleset.playerKey;
+  const key = rulesetRollerKey(ruleset, who);
   return (key ? ruleset.penalties.get(key) : undefined) ?? 0;
+}
+
+/** What a check name means on the roller's own sheet: a skill, save or ability the ruleset declares, or
+ *  one of the roller's list rows that is a check of its own (1.161). */
+export function rulesetCheckTargetFor(
+  ruleset: SkillCheckRulesetContext,
+  skill: string,
+  who?: string,
+  withAbility?: string,
+  /** What it is made for (1.752), read without case. */
+  purpose?: string,
+): RulesetCheckTarget | null {
+  const key = rulesetRollerKey(ruleset, who);
+  const target = matchRulesetCheckTarget(
+    ruleset.definition,
+    skill,
+    withAbility,
+    key ? ruleset.builds.get(key) : undefined,
+  );
+  const named = purpose?.trim().toLowerCase();
+  const found = target ?? rulesetToolCheckTarget(ruleset, skill, key, withAbility);
+  return found && named ? { ...found, purpose: named } : found;
+}
+
+/** A tool, kit or set the sheet does not name, rolled with no `with=`: the roller's best ability
+ *  (laptop room playtest 2026-10-30: three leatherworking checks named Dexterity in the action, never
+ *  in the tag, and rolled +0). The Game Master's `with=` still decides when it writes one. */
+function rulesetToolCheckTarget(
+  ruleset: SkillCheckRulesetContext,
+  skill: string,
+  key: string | null,
+  withAbility?: string,
+): RulesetCheckTarget | null {
+  if (withAbility || !/\b(?:tools?|kit|supplies|set|utensils|instruments?)\b/i.test(skill)) return null;
+  const sheet = key ? ruleset.sheets.get(key) : undefined;
+  if (!sheet) return null;
+  let best: { id: string; value: number } | null = null;
+  for (const ability of ruleset.definition.sheet.abilities) {
+    const value = rulesetCheckModifier(sheet, { type: "ability", id: ability.id, label: ability.label });
+    if (!best || value > best.value) best = { id: ability.id, value };
+  }
+  return best ? { type: "ability", id: best.id, label: skill.trim().slice(0, 100) } : null;
 }
 
 /** The sheet modifier a ruleset game applies for `who` (or the player) on the named check. Under
@@ -695,10 +925,10 @@ export function rulesetCheckModifierFor(
   who?: string,
   withAbility?: string,
 ): number {
-  const target = matchRulesetCheckTarget(ruleset.definition, skill, withAbility);
+  const target = rulesetCheckTargetFor(ruleset, skill, who, withAbility);
   if (who) {
     // A name that matches nobody (or two cards at once) is a stranger: no modifier at all.
-    const named = ruleset.sheets.get(normalizeCharacterLookupName(who));
+    const named = ruleset.sheets.get(rulesetNamedKey(ruleset, who));
     return named ? rulesetCheckModifier(named, target) : 0;
   }
   const player = ruleset.playerKey ? ruleset.sheets.get(ruleset.playerKey) : undefined;
@@ -715,9 +945,9 @@ export function rulesetCheckAdjustFor(
 ): number {
   const { definition } = ruleset;
   if (!definition.resolution.adjust?.length) return 0;
-  const target = matchRulesetCheckTarget(definition, skill, withAbility);
+  const target = rulesetCheckTargetFor(ruleset, skill, who, withAbility);
   if (who) {
-    const key = normalizeCharacterLookupName(who);
+    const key = rulesetNamedKey(ruleset, who);
     const evaluated = ruleset.sheets.get(key);
     const build = ruleset.builds.get(key);
     return evaluated && build ? rulesetCheckAdjust(definition, build, evaluated, target) : 0;
@@ -728,6 +958,21 @@ export function rulesetCheckAdjustFor(
   return rulesetCheckAdjust(definition, build, evaluated, target);
 }
 
+/** A value off `who`'s sheet (or the player's), worked out the way every other value on it is. A
+ *  stranger has no sheet, so undefined. */
+export function rulesetCheckValueFor(
+  ruleset: SkillCheckRulesetContext,
+  ref: RulesetValueRef,
+  who?: string,
+): number | undefined {
+  const { definition } = ruleset;
+  const key = rulesetRollerKey(ruleset, who);
+  const evaluated = (key ? ruleset.sheets.get(key) : undefined) ?? (who ? undefined : ruleset.blank);
+  if (!evaluated) return undefined;
+  const build = (key ? ruleset.builds.get(key) : undefined) ?? defaultRulesetSheetBuild(definition);
+  return resolveRulesetValueRef(definition, build, ref, evaluated);
+}
+
 /** What `who`'s (or the player's) active conditions, reached levels and worn or carried items do to
  *  this check. A stranger has no sheet and a player with no card no conditions or bag, so neither has
  *  anything. */
@@ -735,12 +980,34 @@ export function rulesetCheckEffectsFor(
   ruleset: SkillCheckRulesetContext,
   target: RulesetCheckTarget | null,
   who?: string,
+  applied: readonly RulesetCheckSource[] = [],
+  against?: RulesetSaveAgainst,
 ): RulesetCheckEffects {
-  const key = who ? normalizeCharacterLookupName(who) : ruleset.playerKey;
+  const key = rulesetRollerKey(ruleset, who);
   const build = key ? ruleset.builds.get(key) : undefined;
   if (!key || !build) return { modifiers: [], advantage: [], disadvantage: [], fails: [] };
   const sources = rulesetCheckSources(ruleset.definition, build, ruleset.live[key], ruleset.items.get(key));
-  return rulesetCheckEffects(sources, target);
+  // Whether they add their whole proficiency to its skill (1.429), for a change narrowed to that.
+  const tier = target?.type === "skill" ? ruleset.sheets.get(key)?.skillTiers[target.id] : undefined;
+  return rulesetCheckEffects(
+    [...sources, ...applied],
+    target,
+    rulesetTierAddsProficiency(ruleset.definition, tier),
+    against,
+  );
+}
+
+/** What the Game Master's `apply=` names mean for this roller and this check (1.156). */
+export function rulesetContextualFor(
+  ruleset: SkillCheckRulesetContext,
+  target: RulesetCheckTarget | null,
+  request: Pick<SkillCheckRequest, "apply" | "who">,
+): RulesetContextualItem[] {
+  if (!request.apply?.length) return [];
+  const key = rulesetRollerKey(ruleset, request.who);
+  const build = key ? ruleset.builds.get(key) : undefined;
+  if (!key || !build) return [];
+  return rulesetContextualItems(ruleset.definition, build, ruleset.catalogs, request.apply, target);
 }
 
 /** Whether a check is thrown twice once what changes it is counted: the Game Master's `mode=` and the
@@ -748,8 +1015,12 @@ export function rulesetCheckEffectsFor(
 export function rulesetCheckThrowsTwice(ruleset: SkillCheckRulesetContext, request: SkillCheckRequest): boolean {
   const resolution = ruleset.definition.resolution;
   if (resolution.kind !== "dice-sum" || !resolution.advantage) return false;
-  const target = matchRulesetCheckTarget(ruleset.definition, request.skill, request.withAbility);
-  return rulesetCheckRollMode(request, rulesetCheckEffectsFor(ruleset, target, request.who)) !== "normal";
+  const target = rulesetCheckTargetFor(ruleset, request.skill, request.who, request.withAbility, request.purpose);
+  const applied = rulesetContextualFor(ruleset, target, request).map((item) => item.source);
+  return (
+    rulesetCheckRollMode(request, rulesetCheckEffectsFor(ruleset, target, request.who, applied, request.against)) !==
+    "normal"
+  );
 }
 
 /** The untrained rule a check falls under: null for an ability check, for a trained skill or save,
@@ -759,10 +1030,10 @@ export function rulesetUntrainedFor(
   request: SkillCheckRequest,
 ): RulesetUntrained | null {
   const { definition } = ruleset;
-  const target = matchRulesetCheckTarget(definition, request.skill, request.withAbility);
-  if (!target || target.type === "ability") return null;
+  const target = rulesetCheckTargetFor(ruleset, request.skill, request.who, request.withAbility);
+  if (!target || target.type === "ability" || target.row) return null;
   const sheet = request.who
-    ? ruleset.sheets.get(normalizeCharacterLookupName(request.who))
+    ? ruleset.sheets.get(rulesetNamedKey(ruleset, request.who))
     : ((ruleset.playerKey ? ruleset.sheets.get(ruleset.playerKey) : undefined) ?? ruleset.blank);
   if (!sheet) return null;
   const tier = (target.type === "skill" ? sheet.skillTiers : sheet.saveTiers)[target.id];
@@ -771,6 +1042,34 @@ export function rulesetUntrainedFor(
     (candidate) => candidate.id === target.id,
   );
   return entry ? rulesetUntrainedRule(definition, entry) : null;
+}
+
+/** The floors under this check (1.418), read off the roller's sheet: the highest face any of them
+ *  lifts a die to, and the highest total. A `proficient` one counts only on a skill the roller adds
+ *  their whole proficiency to. */
+export function rulesetCheckFloorsFor(
+  ruleset: SkillCheckRulesetContext,
+  request: SkillCheckRequest,
+  target: RulesetCheckTarget | null,
+  effects: RulesetCheckEffects,
+): { faceFloor?: number; totalFloor?: number; from: string[] } {
+  const out: { faceFloor?: number; totalFloor?: number; from: string[] } = { from: [] };
+  if (!effects.floors?.length) return out;
+  const { definition } = ruleset;
+  const sheet = request.who
+    ? ruleset.sheets.get(rulesetNamedKey(ruleset, request.who))
+    : ((ruleset.playerKey ? ruleset.sheets.get(ruleset.playerKey) : undefined) ?? ruleset.blank);
+  const tier = target?.type === "skill" ? sheet?.skillTiers[target.id] : undefined;
+  const trained = rulesetTierAddsProficiency(definition, tier);
+  for (const { from, floor } of effects.floors) {
+    if (floor.proficient && !trained) continue;
+    const total = floor.total ? rulesetCheckValueFor(ruleset, floor.total, request.who) : undefined;
+    if (floor.face === undefined && total === undefined) continue;
+    if (floor.face !== undefined) out.faceFloor = Math.max(out.faceFloor ?? floor.face, floor.face);
+    if (total !== undefined) out.totalFloor = Math.max(out.totalFloor ?? total, total);
+    out.from.push(from);
+  }
+  return out;
 }
 
 /** Whether this check is one the character may not attempt at all, untrained. */
@@ -806,9 +1105,16 @@ function resolveRulesetSkillCheck(
    *  every path that does not persist, which then rolls exactly as it would have with no spend. */
   onSpend?: (key: string, live: RulesetLiveState) => void,
 ): SkillCheckResult {
-  const { definition } = ruleset;
+  const target = rulesetCheckTargetFor(ruleset, request.skill, request.who, request.withAbility, request.purpose);
+  // A check the ruleset rolls its own way (1.140): its dice and rules come from the override, its
+  // sheet math from the ruleset, and `when` reads the roller's own sheet.
+  const override = rulesetCheckOverride(
+    ruleset.definition,
+    target,
+    (ref) => (rulesetCheckValueFor(ruleset, ref, request.who) ?? 0) !== 0,
+  );
+  const definition = rulesetDefinitionForCheck(ruleset.definition, override);
   const resolution = definition.resolution;
-  const target = matchRulesetCheckTarget(definition, request.skill, request.withAbility);
   // An ability nobody on this sheet answers to is ignored rather than refused, so the check still
   // happens with the skill's own ability. Said once, here, where the ruleset is actually in hand.
   // On an ability check it is also ignored wherever the ruleset does not add two abilities together.
@@ -839,7 +1145,33 @@ function resolveRulesetSkillCheck(
   // Every caller reads the ask against the ladder before it gets here, so this is a check nobody
   // could have rolled: thrown, so the turn saves it as the ask it still is.
   if (askedDc === undefined) throw new SkillCheckDifficultyError(request.skill);
-  const modifier = rulesetCheckModifierFor(ruleset, request.skill, request.who, request.withAbility);
+  let modifier = rulesetCheckModifierFor(ruleset, request.skill, request.who, request.withAbility);
+  const rollerKey = rulesetRollerKey(ruleset, request.who);
+  // A stranger rolls with no modifier, which is right for the guard and wrong for a party member the
+  // Game Master misnamed, so it is said rather than done silently (laptop 2026-10-26).
+  if (request.who && rollerKey && !ruleset.sheets.has(rollerKey)) {
+    logger.warn(
+      '[game/skill-check] who="%s" names no party card%s; rolling %s with no sheet modifier',
+      request.who,
+      ruleset.ambiguous?.has(rollerKey) ? " (two cards share it)" : "",
+      request.skill,
+    );
+  }
+  const rollerSheet =
+    (rollerKey ? ruleset.sheets.get(rollerKey) : undefined) ?? (request.who ? undefined : ruleset.blank);
+  const symbolRatings =
+    resolution.kind === "symbol-pool" && rollerSheet
+      ? rulesetSymbolPoolRatings(definition, rollerSheet, target)
+      : { ability: 0, rank: 0, bonusDice: 0 };
+  const purchaseBase =
+    resolution.kind === "symbol-pool"
+      ? Math.min(
+          resolution.pool.max,
+          resolution.pool.build === "sum"
+            ? Math.max(0, symbolRatings.ability) + Math.max(0, symbolRatings.rank)
+            : Math.max(0, symbolRatings.ability, symbolRatings.rank),
+        )
+      : modifier;
   // What the roller's wounds cost this check. It is applied the way the kind understands a number:
   // `dice-sum` adds it to the roll, `dice-pool` takes that many dice off the pool and the roller's
   // own clamp holds it at `pool.min`. Both go through the same `modifier` input, so there is one
@@ -850,7 +1182,14 @@ function resolveRulesetSkillCheck(
   const adjust = rulesetCheckAdjustFor(ruleset, request.skill, request.who, request.withAbility);
   // And what the character's conditions and worn or carried items do to it (#6832): a number, a lean
   // one way or the other, or a save failed without a roll.
-  const effects = rulesetCheckEffectsFor(ruleset, target, request.who);
+  const contextualAsked = rulesetContextualFor(ruleset, target, request);
+  let effects = rulesetCheckEffectsFor(
+    ruleset,
+    target,
+    request.who,
+    contextualAsked.map((item) => item.source),
+    request.against,
+  );
   const isSave = target?.type === "save";
   const who = request.who ? { who: request.who } : {};
   if (isSave && effects.fails.length > 0) {
@@ -869,9 +1208,21 @@ function resolveRulesetSkillCheck(
       criticalFailure: false,
       rollMode: "normal",
       resolution: pool ? "successes" : "sum",
-      dice: pool ? `0d${resolution.die.sides}` : `0d${resolution.dice.sides}`,
+      dice:
+        resolution.kind === "dice-sum" || resolution.kind === "roll-against"
+          ? `0d${resolution.dice.sides}`
+          : resolution.kind === "symbol-pool"
+            ? `0d${Math.max(...resolution.dice.map((die) => die.faces.length))}`
+            : `0d${resolution.die.sides}`,
+      ...(resolution.kind === "symbol-pool" ? { symbols: {}, thrown: [], symbolFaces: [], symbolLabels: {} } : {}),
+      ...(resolution.kind === "roll-against" ? { against: resolution.against } : {}),
+      ...(resolution.kind === "dice-highest" ? { highest: resolution.keep } : {}),
       automatic: true,
       from: effects.fails,
+      // The worst band, where the ruleset has bands: a save failed without a roll failed outright.
+      ...(resolution.outcomes
+        ? { outcome: resolution.outcomes.tiers[resolution.outcomes.tiers.length - 1]!.label }
+        : {}),
       ...who,
     };
   }
@@ -889,8 +1240,67 @@ function resolveRulesetSkillCheck(
     ? null
     : request.useEntry?.trim()
       ? planRulesetEntryCheck(ruleset, request.useEntry, request.spend, request.who)
-      : planRulesetCheckPurchase(ruleset, request.spend, request.who, modifier);
+      : planRulesetCheckPurchase(ruleset, request.spend, request.who, purchaseBase);
   if (purchase) onSpend!(purchase.key, purchase.live);
+  // What the applied rows and entries cost (1.156), paid after any purchase and from what it left.
+  // One that cannot be paid, or has nobody to persist the payment, applies nothing.
+  const contextual: RulesetContextualItem[] = [];
+  {
+    const key = rulesetRollerKey(ruleset, request.who);
+    const build = key ? ruleset.builds.get(key) : undefined;
+    let live = key ? (purchase?.key === key ? purchase.live : ruleset.live[key]) : undefined;
+    let paid = false;
+    for (const item of contextualAsked) {
+      if (!item.cost?.length) {
+        contextual.push(item);
+        continue;
+      }
+      if (!onSpend || !key || !build) continue;
+      let next = live ?? {};
+      let ok = true;
+      for (const cost of item.cost) {
+        // A pool pays or refuses; a track (1.218) is marked as far as it goes.
+        const applied = applyRulesetSheetOp(
+          definition,
+          build,
+          next,
+          "track" in cost
+            ? { op: "track", track: cost.track, by: cost.by }
+            : { op: "spend", pool: cost.pool, amount: cost.amount },
+        );
+        if (!applied.ok) {
+          ok = false;
+          break;
+        }
+        next = applied.live;
+      }
+      if (!ok) continue;
+      live = next;
+      paid = true;
+      contextual.push(item);
+    }
+    if (paid && key && live) onSpend!(key, live);
+    if (contextual.length !== contextualAsked.length)
+      effects = rulesetCheckEffectsFor(
+        ruleset,
+        target,
+        request.who,
+        contextual.map((item) => item.source),
+        request.against,
+      );
+  }
+  const contextualCheck = rulesetContextualCheck(contextual);
+  // The best rating in place of the asked one (1.217), on a skill check: never lower than it.
+  // Every skill the roller has counts, their row checks (1.161) among them.
+  if (contextualCheck?.best && target?.type === "skill") {
+    const roller = request.who
+      ? ruleset.sheets.get(rulesetNamedKey(ruleset, request.who))
+      : ((ruleset.playerKey ? ruleset.sheets.get(ruleset.playerKey) : undefined) ?? ruleset.blank);
+    if (roller) {
+      const ratings = [modifier, ...Object.values(roller.skillMods)].filter(Number.isFinite);
+      modifier = ratings.length > 0 ? Math.max(...ratings) : 0;
+    }
+  }
   // A standing re-throw the Game Master named. It costs nothing, so it needs no persisting caller;
   // beside one that was bought, the wider of the two is the one thrown.
   const standing = rulesetStandingReroll(definition, request.reroll);
@@ -898,7 +1308,32 @@ function resolveRulesetSkillCheck(
     logger.debug("[game/skill-check] No re-throw named %s in ruleset %s; ignoring it", request.reroll, definition.id);
   }
   const reroll = widerReroll(purchase?.bought.reroll, standing);
-  const bought = purchase || reroll ? { ...(purchase?.bought ?? {}), ...(reroll ? { reroll } : {}) } : undefined;
+  const lowest = (a: number | undefined, b: number | undefined) =>
+    a === undefined ? b : b === undefined ? a : Math.min(a, b);
+  const bought =
+    purchase || reroll || contextualCheck
+      ? {
+          ...(purchase?.bought ?? {}),
+          ...(reroll ? { reroll } : {}),
+          ...(contextualCheck
+            ? {
+                ...(contextualCheck.dice || purchase?.bought.dice
+                  ? { dice: (purchase?.bought.dice ?? 0) + (contextualCheck.dice ?? 0) }
+                  : {}),
+                ...(contextualCheck.successes || purchase?.bought.successes
+                  ? { successes: (purchase?.bought.successes ?? 0) + (contextualCheck.successes ?? 0) }
+                  : {}),
+                ...(lowest(purchase?.bought.double, contextualCheck.double) !== undefined
+                  ? { double: lowest(purchase?.bought.double, contextualCheck.double) }
+                  : {}),
+                ...(lowest(purchase?.bought.explode, contextualCheck.explode) !== undefined
+                  ? { explode: lowest(purchase?.bought.explode, contextualCheck.explode) }
+                  : {}),
+                ...(contextualCheck.cancel === false ? { cancel: false as const } : {}),
+              }
+            : {}),
+        }
+      : undefined;
   // What the record may say about `with=`: the ability's own label, and only when the swap
   // happened. An ability check has no other ability to swap in, and an unknown name was ignored.
   // On an ability check it is the second ability added, which is only ever set where the ruleset adds two.
@@ -907,6 +1342,8 @@ function resolveRulesetSkillCheck(
     : undefined;
   const applied = {
     ...(swapped ? { withAbility: swapped } : {}),
+    // What it was made for (1.752), kept on the record so a reload reads the same changes.
+    ...(target?.purpose ? { purpose: target.purpose } : {}),
     // Said even on a summed check, where it is also inside `modifier`: "-2 because you are Wounded"
     // is not something a player can read out of one number.
     ...(penalty !== 0 ? { penalty } : {}),
@@ -917,13 +1354,17 @@ function resolveRulesetSkillCheck(
   // The injected d20 (tests, the sighted pool) stands in only where a d20 is what is rolled.
   const rollDie = (sides: number) => (sides === 20 && rollD20 ? rollD20() : rollDieSecurely(sides));
   // The effects' own dice are never the check's: the sighted pool spent its d20s for the check alone.
-  const boost = rollRulesetCheckModifiers(effects.modifiers, rollDieSecurely).total;
+  const boost = rollRulesetCheckModifiers(effects.modifiers, rollDieSecurely, (ref) =>
+    rulesetCheckValueFor(ruleset, ref, request.who),
+  ).total;
   // Named when it changed anything this ruleset reads: a number, or a lean where it rolls twice.
   const leans = resolution.kind === "dice-sum" && resolution.advantage;
   const from = [
     ...new Set([
       ...effects.modifiers.map((entry) => entry.from),
       ...(leans ? [...effects.advantage, ...effects.disadvantage] : []),
+      // What the Game Master applied and the roll took (1.156), said even where it only moved dice.
+      ...contextual.filter((item) => item.check).map((item) => item.name),
     ]),
   ];
   const effected = {
@@ -937,6 +1378,12 @@ function resolveRulesetSkillCheck(
     // the sighted pool's own bound is applied before any ruleset is loaded, so this is the only
     // place that knows what this ruleset's ceiling is.
     const dc = Math.min(rulesetPoolMaxSuccesses(resolution), Math.max(1, Math.round(askedDc)));
+    // The target read off the roller's sheet, and the stance the check's skill is in (1.137).
+    const sheetTarget = resolution.target.from
+      ? rulesetCheckValueFor(ruleset, resolution.target.from, request.who)
+      : undefined;
+    // A row check takes its list's stance (1.212).
+    const stance = target?.type === "skill" ? rulesetCheckStance(ruleset.definition, target.id) : undefined;
     // The per-die target the ladder means, where the Game Master did not set one: the named step's,
     // or else the one step that needs exactly this many successes. A ladder step that names no
     // target leaves the ruleset's default.
@@ -961,6 +1408,8 @@ function resolveRulesetSkillCheck(
         bonusDice: request.bonusDice,
         explode: request.explode,
         double: request.double,
+        ...(sheetTarget !== undefined ? { sheetTarget } : {}),
+        ...(stance ? { stance: stance.count } : {}),
         ...(bought ? { bought } : {}),
       },
       rollDie,
@@ -981,6 +1430,8 @@ function resolveRulesetSkillCheck(
       explodeFrom: rolled.explodeFrom !== resolution.explode?.from ? rolled.explodeFrom : undefined,
       doubleFrom: rolled.doubleFrom !== resolution.double?.from ? rolled.doubleFrom : undefined,
       complication: rolled.complication || undefined,
+      exact: rolled.exact || undefined,
+      exactLabel: rolled.exact && resolution.exact ? resolution.exact.label : undefined,
       // Named only when it was the standing one that was thrown, and it actually threw something.
       reroll: standing && reroll === standing && rolled.rerolled > 0 ? standing.id : undefined,
       ...applied,
@@ -989,12 +1440,106 @@ function resolveRulesetSkillCheck(
     };
   }
 
+  if (resolution.kind === "roll-against") {
+    // Against the sheet's number (1.139): the sheet's number, with wounds, adjustments and what the
+    // character's conditions and items add, is the target. A named step may divide it, and `dc` moves
+    // it after that; `bonus=` is tens dice where the ruleset has them.
+    const divide = step && "divide" in step ? step.divide : undefined;
+    const rolled = rollAgainstCheck(
+      definition,
+      {
+        modifier: modifier + penalty + adjust + boost,
+        dc: Math.max(-1000, Math.min(1000, Math.round(askedDc))),
+        ...(divide ? { divide } : {}),
+        isSave,
+        tens: request.bonusDice,
+      },
+      rollDie,
+    );
+    const { target: aimed, against, tens, ...roll } = rolled;
+    return {
+      skill: request.skill,
+      // The record's difficulty is the number the roll was read against, which is what a reader needs.
+      dc: aimed,
+      modifier: 0,
+      resolution: "sum",
+      ...roll,
+      against,
+      ...(tens ? { tens } : {}),
+      ...applied,
+      ...effected,
+      ...who,
+    };
+  }
+
+  if (resolution.kind === "dice-highest") {
+    // Keep the highest (1.138). The DC is what the kept dice must reach, so it is held to what they
+    // can show; the sheet's number, its wounds and what it adjusts are the number of dice.
+    const dc = Math.min(resolution.keep * resolution.die.sides, Math.max(1, Math.round(askedDc)));
+    const rolled = rollDiceHighestCheck(
+      definition,
+      {
+        modifier: modifier + penalty + adjust + boost,
+        dc,
+        isSave,
+        bonusDice: request.bonusDice,
+        dark: request.darkDice,
+        ...(bought?.dice ? { bought: { dice: bought.dice } } : {}),
+      },
+      rollDie,
+    );
+    const { dark, darkHighest, zero, bonusDice, ...roll } = rolled;
+    return {
+      skill: request.skill,
+      dc,
+      // The sheet's number bought the dice; nothing is added to the kept die.
+      modifier: 0,
+      resolution: "sum",
+      ...roll,
+      highest: resolution.keep,
+      ...(resolution.dark?.outcome === "light" ? { darkOutcome: "light" as const } : {}),
+      ...(zero ? { zeroDice: true } : {}),
+      ...(bonusDice ? { bonusDice } : {}),
+      ...(dark > 0
+        ? {
+            dark,
+            ...(resolution.dark ? { darkLabel: resolution.dark.label } : {}),
+            ...(darkHighest ? { darkHighest } : {}),
+          }
+        : {}),
+      ...applied,
+      ...effected,
+      ...who,
+    };
+  }
+
+  if (resolution.kind === "symbol-pool") {
+    const dc = Math.min(resolution.difficulty.max, Math.max(0, Math.round(askedDc)));
+    const rolled = rollSymbolPoolCheck(
+      definition,
+      {
+        ...symbolRatings,
+        difficulty: dc,
+        upgrades: request.upgrades,
+        setback: request.setback,
+        upgradeOwn: request.upgradeOwn,
+        isSave,
+        bonusDice: symbolRatings.bonusDice + penalty + adjust + boost + (request.bonusDice ?? 0),
+        ...(bought?.dice ? { bought: { dice: bought.dice } } : {}),
+      },
+      rollDie,
+    );
+    return { skill: request.skill, dc, modifier: 0, resolution: "sum", ...rolled, ...applied, ...effected, ...who };
+  }
+
   const { sides, count } = resolution.dice;
   // A flat modifier on the roll, which is what a penalty IS in a summed system, so it belongs in
   // the number the record adds up rather than beside it.
   const summed = modifier + penalty + adjust + boost;
   // The Game Master's `mode=` and what leans the character's own roll, cancelling out together.
   const mode = rulesetCheckRollMode(request, effects);
+  // Floors under the check (1.418): Reliable Talent's 10, Indomitable Might's Strength score.
+  const floors = isSave ? { from: [] } : rulesetCheckFloorsFor(ruleset, request, target, effects);
   const rolled = rollDiceSumCheck(
     definition,
     {
@@ -1003,10 +1548,16 @@ function resolveRulesetSkillCheck(
       isSave,
       advantage: mode === "advantage",
       disadvantage: mode === "disadvantage",
-      preRolled: sides === 20 && count === 1 ? request.preRolledD20 : undefined,
+      preRolled:
+        sides === 20 && count === 1 && !resolution.dice.faces && !resolution.openEnded
+          ? request.preRolledD20
+          : undefined,
+      ...("faceFloor" in floors && floors.faceFloor !== undefined ? { faceFloor: floors.faceFloor } : {}),
+      ...("totalFloor" in floors && floors.totalFloor !== undefined ? { totalFloor: floors.totalFloor } : {}),
     },
     rollDie,
   );
+  const floored = floors.from.filter((name) => !effected.from?.includes(name));
   return {
     skill: request.skill,
     dc: askedDc,
@@ -1015,8 +1566,249 @@ function resolveRulesetSkillCheck(
     ...rolled,
     ...applied,
     ...effected,
+    ...(floored.length ? { from: [...(effected.from ?? []), ...floored] } : {}),
     ...who,
   };
+}
+
+/** How far back the narration is read for who a check that names nobody belongs to. */
+const CHECK_ROLLER_REACH = 1200;
+
+/** Where the last check tag in this text ends, or -1 when it has none. */
+function lastCheckTagEnd(text: string): number {
+  let end = -1;
+  for (const match of text.matchAll(/\[skill_check\b[^\]]*\]/gi)) end = match.index + match[0].length;
+  return end;
+}
+
+/**
+ * Who rolls a check that names nobody, in a game where no card is the player's own. laptop
+ * 2026-10-26: with no persona the first card stood in for the player, and Dorra's +1 Stealth was
+ * rolled for the sneak the narration gave Pip (+8). So: the party member the narration names last
+ * before the tag, since the check before it; else the one it names first after the tag, up to the
+ * paragraph's end. Undefined when the narration names nobody (cheap-GM playtest 2026-10-26: picking
+ * someone there rolled for a hero the story never sent; `rulesetCheckRollerRefused` refuses it), and
+ * wherever the player has a card of their own or there is one card to roll for: there the check is
+ * the player's, as it always was.
+ */
+export function inferRulesetCheckWho(
+  ruleset: SkillCheckRulesetContext,
+  content: string,
+  span: { start: number; end: number },
+): string | undefined {
+  if (!ruleset.playerByPosition || ruleset.sheets.size < 2) return undefined;
+  const keys = [...ruleset.sheets.keys()];
+  // A card answers to its whole name and to each word of it no other card has.
+  const owners = new Map<string, number>();
+  for (const key of new Set([...keys, ...(ruleset.ambiguous ?? [])])) {
+    for (const word of new Set(key.split(" "))) owners.set(word, (owners.get(word) ?? 0) + 1);
+  }
+  const callsFor = (key: string) => [
+    key,
+    ...key.split(" ").filter((word) => word.length >= 3 && !CARD_NAME_PARTICLES.has(word) && owners.get(word) === 1),
+  ];
+  // Tags are not narration: a name in another check's `who=` says nothing about this one.
+  const named = (text: string, last: boolean): string | undefined => {
+    const read = ` ${normalizeCharacterLookupName(text.replace(/\[[^\]]*\]/g, " "))} `;
+    let best: { key: string; at: number } | undefined;
+    for (const key of keys) {
+      for (const call of callsFor(key)) {
+        const at = last ? read.lastIndexOf(` ${call} `) : read.indexOf(` ${call} `);
+        if (at >= 0 && (!best || (last ? at > best.at : at < best.at))) best = { key, at };
+      }
+    }
+    return best?.key;
+  };
+  const before = content.slice(0, span.start);
+  // The nearest mention wins, so the window only has to stop at the check before this one, and at
+  // a reach no single action's telling needs.
+  const from = Math.max(0, before.length - CHECK_ROLLER_REACH, lastCheckTagEnd(before));
+  const after = content.slice(span.end);
+  const stops = [after.indexOf("\n\n"), after.search(/\[skill_check\b/i)].filter((at) => at >= 0);
+  const key =
+    named(before.slice(from), true) ?? named(stops.length ? after.slice(0, Math.min(...stops)) : after, false);
+  return key === undefined ? undefined : (ruleset.names?.get(key) ?? key);
+}
+
+/** Words a `who=` uses for the whole party, which is nobody's sheet. */
+const WHOLE_PARTY_WORDS: ReadonlySet<string> = new Set(["party", "everyone"]);
+
+/**
+ * Whether a `who=` that picks out no card still reads as a party member: it says the party, or shares
+ * a word of a member's name or nickname ("Pip" for two Pips, "Mars Hollow" for `Marigold "Mars"
+ * Thimblewick`). Anybody else, "A Guard", is somebody outside the party.
+ */
+function whoReadsAsPartyMember(ruleset: SkillCheckRulesetContext, who: string): boolean {
+  const words = normalizeCharacterLookupName(who)
+    .split(" ")
+    .filter((word) => word.length >= 2 && !CHARACTER_NAME_PARTICLES.has(word));
+  if (words.some((word) => WHOLE_PARTY_WORDS.has(word))) return true;
+  const cardWords = new Set([...ruleset.sheets.keys(), ...(ruleset.ambiguous ?? [])].flatMap((key) => key.split(" ")));
+  return words.some((word) => cardWords.has(word));
+}
+
+/**
+ * Whether a ruleset check is refused for want of one party member to roll it (cheap-GM playtest
+ * 2026-10-26): its `who=` reads as a party member but picks out no one card (a name or nickname
+ * several share, a name half-right, the party), which used to roll a silent flat die for a hero; or
+ * it names nobody where nobody is the player's own and the party has several members, which used to
+ * pick one. A `who=` naming somebody outside the party (an NPC) is still rolled, on a plain die.
+ * Never for a game with no party cards at all.
+ */
+export function rulesetCheckRollerRefused(ruleset: SkillCheckRulesetContext, who?: string): boolean {
+  if (ruleset.sheets.size === 0) return false;
+  if (who?.trim()) return !ruleset.sheets.has(rulesetNamedKey(ruleset, who)) && whoReadsAsPartyMember(ruleset, who);
+  return !!ruleset.playerByPosition && ruleset.sheets.size >= 2;
+}
+
+/** Words beside the party's own that a group check may also use: "the whole party", "the entire group". */
+const GROUP_CHECK_WORDS: ReadonlySet<string> = new Set([...WHOLE_PARTY_WORDS, "whole", "all", "entire", "group", "us"]);
+
+/**
+ * Whether a card's member is with the party and alive, by its normalized name: what the whole party
+ * does (a group check, a story's exposure) is never done by one taken out of it or dead on their
+ * sheet, as a whole-party sheet command passes them by.
+ */
+export function rulesetPartyMemberActive(ruleset: SkillCheckRulesetContext, key: string): boolean {
+  const build = ruleset.builds.get(key);
+  return (
+    !ruleset.away?.has(key) &&
+    !(build && rulesetSheetDead(ruleset.definition, build, ruleset.live[key], ruleset.items.get(key)))
+  );
+}
+
+/**
+ * The party members a group check rolls for (Alyssa 2026-10-30), in party order. A ruleset check
+ * whose `who=` names the whole party ("party", "everyone", "the whole party") is everyone's, each
+ * on their own sheet, and the party succeeds when at least half of them do. Nobody who left the
+ * party or is dead rolls or counts. Undefined for any other `who=`, and in a game with no party cards.
+ */
+export function rulesetGroupCheckRollers(ruleset: SkillCheckRulesetContext, who?: string): string[] | undefined {
+  if (ruleset.sheets.size === 0 || !who?.trim()) return undefined;
+  const words = normalizeCharacterLookupName(who)
+    .split(" ")
+    .filter((word) => word.length >= 2 && !CHARACTER_NAME_PARTICLES.has(word));
+  if (!words.some((word) => WHOLE_PARTY_WORDS.has(word)) || !words.every((word) => GROUP_CHECK_WORDS.has(word))) {
+    return undefined;
+  }
+  const rollers = [...ruleset.sheets.keys()]
+    .filter((key) => rulesetPartyMemberActive(ruleset, key))
+    .map((key) => ruleset.names?.get(key) ?? key);
+  // A party with nobody left to roll is no group: the check is refused for want of a roller, never "0 of 0 passed".
+  return rollers.length > 0 ? rollers : undefined;
+}
+
+/** A group check rolled: each member's own result, who could not attempt it, and the party's outcome. */
+export interface RulesetGroupCheck {
+  results: SkillCheckResult[];
+  /** Members the ruleset does not let attempt it untrained. Each counts as a failure. */
+  untrained: string[];
+  passed: number;
+  success: boolean;
+}
+
+/**
+ * Roll a group check: every member rolls on their own sheet, and the party succeeds when at least
+ * half of them pass, as the 5e SRD's group check does. Nothing a single roller brought is shared: no
+ * die the player threw and no purchase is spent on everyone's roll.
+ */
+export function resolveRulesetGroupCheck(
+  context: SkillCheckModifierContext,
+  request: SkillCheckRequest,
+  members: readonly string[],
+  rollD20?: () => number,
+): RulesetGroupCheck {
+  const { preRolledD20: _die, spend: _spend, ...shared } = request;
+  const results: SkillCheckResult[] = [];
+  const untrained: string[] = [];
+  for (const member of members) {
+    const one = { ...shared, who: member };
+    if (context.ruleset && rulesetRefusesUntrained(context.ruleset, one)) untrained.push(member);
+    else results.push(resolveSkillCheckWithContext(context, one, rollD20));
+  }
+  const passed = results.filter((result) => result.success).length;
+  return { results, untrained, passed, success: members.length > 0 && passed * 2 >= members.length };
+}
+
+/** The visible line that says how a group check came out for the whole party. */
+export function rulesetGroupCheckLine(request: SkillCheckRequest, group: RulesetGroupCheck): string {
+  const count = group.results.length + group.untrained.length;
+  const against = request.dc !== undefined ? ` against ${request.dc}` : "";
+  return `(Group ${request.skill} check${against}: ${group.passed} of ${count} passed, so the party ${group.success ? "succeeds" : "fails"}.)`;
+}
+
+/** A group check as it is saved: each member's own record (an untrained one's ask with its reason),
+ *  then the line with the party's outcome. */
+export function serializeRulesetGroupCheck(
+  request: SkillCheckRequest,
+  group: RulesetGroupCheck,
+  extras?: Parameters<typeof serializeSparseSkillCheckTag>[1],
+): string {
+  const records = group.results.map((result) => serializeResolvedSkillCheckTag(result));
+  for (const member of group.untrained) {
+    records.push(
+      serializeSparseSkillCheckTag(
+        { skill: request.skill, dc: request.dc, advantage: request.advantage, disadvantage: request.disadvantage },
+        { ...(extras ?? {}), who: member, reason: "untrained" },
+      ),
+    );
+  }
+  return `${records.join(" ")} ${rulesetGroupCheckLine(request, group)}`;
+}
+
+/**
+ * The d20 faces a check record written into this turn may stand on. In a ruleset game, only the
+ * player's own and the ones a branch check rolled: the Game Master is told never to roll a check
+ * with the dice tool, and a tool die is one it can throw again until the face suits it. Elsewhere the
+ * tool's and the placeholders' d20s too, as the brief for those games asks.
+ */
+export function checkIssuedD20s(
+  rulesetPinned: boolean,
+  thrown: readonly number[],
+  engineRolls: ReadonlyArray<{ notation: string; rolls: number[] }>,
+): number[] {
+  return rulesetPinned ? [...thrown] : [...thrown, ...engineIssuedD20Faces(engineRolls)];
+}
+
+/**
+ * The d20 faces a player's own message threw for this turn, read off its `[dice: ...]` records:
+ * `[dice: 1d20 = 14]`, or `[dice: 1d20+3 = 17 (14 +3)]` with the faces in brackets. A die of any
+ * other size is no d20 a check could stand on.
+ */
+export function playerSubmittedD20Faces(content: string): number[] {
+  const faces: number[] = [];
+  for (const match of content.matchAll(/\[dice:\s*(\d*)d20([+-]\d+)?\s*=\s*(-?\d+)(?:\s*\(([^)\]]*)\))?/gi)) {
+    const count = match[1] ? Number(match[1]) : 1;
+    const thrown = match[4]
+      ? match[4]
+          .split(",")
+          .map((part) => /^\s*(\d+)/.exec(part)?.[1])
+          .map(Number)
+      : count === 1 && !match[2]
+        ? [Number(match[3])]
+        : [];
+    faces.push(...thrown.filter((face) => Number.isInteger(face) && face >= 1 && face <= 20));
+  }
+  return faces;
+}
+
+/** The d20 faces the Engine itself threw this turn, from its own roll records (the dice tool, a
+ *  roll placeholder). */
+export function engineIssuedD20Faces(rolls: ReadonlyArray<{ notation: string; rolls: number[] }>): number[] {
+  return rolls.filter((roll) => /^\s*\d*d20(?!\d)/i.test(roll.notation)).flatMap((roll) => roll.rolls);
+}
+
+/** Take these faces out of the dice issued for this turn, all or none. False, and nothing taken,
+ *  when any of them is not there: it is not a die anybody but the Game Master threw. */
+export function takeIssuedD20s(issued: number[], faces: readonly number[]): boolean {
+  const left = [...issued];
+  for (const face of faces) {
+    const at = left.indexOf(face);
+    if (at < 0) return false;
+    left.splice(at, 1);
+  }
+  issued.splice(0, issued.length, ...left);
+  return true;
 }
 
 /** Whether a ruleset game rolls this tag: a `sum` check whose dice label, when the GM wrote one,
@@ -1026,7 +1818,7 @@ function isRulesetRollableSkillCheckTag(tag: SkillCheckTag, definition: RulesetD
   // a `dice=` or `resolution=` the model wrote from habit describes nothing the Engine has to
   // honour, and `mode=` names an advantage this kind does not have. All three are ignored, which
   // is safe here and nowhere else: the Engine is not guessing at the rules, it has them.
-  if (definition.resolution.kind === "dice-pool") return true;
+  if (definition.resolution.kind !== "dice-sum") return true;
   // Refused on purpose, exactly as `isEngineRollableSkillCheckTag` refuses it: a tag that declares
   // both modes names no roll, and the guide promises a check is never rolled with both at once.
   if (tag.advantage && tag.disadvantage) return false;
@@ -1046,17 +1838,32 @@ function rulesetVouchesFor(ruleset: SkillCheckRulesetContext, tag: SkillCheckTag
   // A pool is never vouched for. Its numbers are auditable, but a handful of dice has so many
   // consistent outcomes that an audit constrains nothing: the model could pick eight favourable
   // faces and count them correctly. So a pool check is always the Engine's own roll.
-  if (resolution.kind === "dice-pool") return false;
+  // Nor keep-the-highest dice (1.138), for the same reason.
+  if (resolution.kind !== "dice-sum") return false;
+  // A ruleset with outcome bands is never vouched for either: the band a total lands in is the
+  // Engine's to read, and a record that names none is not one it wrote.
+  if (resolution.outcomes) return false;
+  // Nor one whose faces are worth other numbers, roll on, or mark a face: the record a Game Master
+  // writes cannot be audited against those (1.136).
+  if (resolution.dice.faces || resolution.openEnded || resolution.unmodified) return false;
+  // Rows the Game Master applies (1.156) change the roll and cost something: always the Engine's own.
+  if (tag.apply?.length) return false;
   const result = tag.resolvedResult;
   if (!result || result.resolution !== "sum") return false;
   // A check the character's conditions or items change is always the Engine's own: the Game Master
   // cannot have counted what it is not shown, and a bonus in dice has no one right number.
   const changed = rulesetCheckEffectsFor(
     ruleset,
-    matchRulesetCheckTarget(ruleset.definition, tag.skill, tag.withAbility),
+    rulesetCheckTargetFor(ruleset, tag.skill, tag.who, tag.withAbility, tag.purpose),
     tag.who,
   );
-  if (changed.modifiers.length || changed.advantage.length || changed.disadvantage.length || changed.fails.length) {
+  if (
+    changed.modifiers.length ||
+    changed.advantage.length ||
+    changed.disadvantage.length ||
+    changed.fails.length ||
+    changed.floors?.length
+  ) {
     return false;
   }
   const { count, sides } = resolution.dice;
@@ -1082,7 +1889,7 @@ function rulesetVouchesFor(ruleset: SkillCheckRulesetContext, tag: SkillCheckTag
     rulesetCheckAdjustFor(ruleset, tag.skill, tag.who, tag.withAbility);
   if (result.modifier !== expected) return false;
   if (result.usedRoll + result.modifier !== result.total) return false;
-  const target = matchRulesetCheckTarget(ruleset.definition, tag.skill);
+  const target = rulesetCheckTargetFor(ruleset, tag.skill, tag.who);
   const policy = target?.type === "save" ? resolution.naturals.save : resolution.naturals.check;
   const single = count === 1;
   const autoSuccess = single && result.usedRoll === sides && (policy === "both" || policy === "max-only");
@@ -1136,6 +1943,10 @@ export async function resolveChatSkillCheck(
   rollD20?: () => number,
 ): Promise<SkillCheckResult> {
   const context = await loadSkillCheckModifierContext(db, chatId);
+  // Only a name nobody answers to: a check naming nobody is the player's, as a roll they ask for is.
+  if (context.ruleset && request.who?.trim() && rulesetCheckRollerRefused(context.ruleset, request.who)) {
+    throw new SkillCheckRollerError(request.who.trim());
+  }
   return resolveSkillCheckWithContext(context, request, rollD20);
 }
 
@@ -1161,6 +1972,9 @@ export function isResolvableSkillCheckRequest(request: SkillCheckRequest, defini
   if (resolution?.kind === "dice-pool") {
     return Number.isInteger(dc) && dc >= 1 && dc <= rulesetPoolMaxSuccesses(resolution);
   }
+  // A roll against the sheet's number takes `dc` as a move of that number (1.139), either way.
+  if (resolution?.kind === "symbol-pool") return Number.isInteger(dc) && dc >= 0 && dc <= resolution.difficulty.max;
+  if (resolution?.kind === "roll-against") return Number.isInteger(dc) && dc >= -100 && dc <= 100;
   // A ruleset's own difficulty ladder may reach past the Engine's d20 bounds in either direction.
   const ladder = resolution?.difficultyLadder.map((step) => step.dc) ?? [];
   const min = Math.min(SKILL_CHECK_MIN_DC, ...ladder);
@@ -1202,10 +2016,24 @@ export interface SkillCheckTagResolutionOptions {
    * cannot know what a charm costs and will not guess, so the roll is the one it would have been.
    */
   loadCatalogs?: () => Promise<RulesetCatalogEntriesById>;
+  /**
+   * The d20 faces somebody other than the Game Master threw for this turn: the player's own
+   * `[dice: ...]` and the Engine's own rolls. Supplied by generation only.
+   *
+   * laptop 2026-10-26: a die the Game Master wrote was honoured whenever its sums held up, so it
+   * could pick its own face. With this given, a sparse `rolls="N"` is the player's die only when N
+   * is one of these, and a ruleset game's complete record is vouched for only when its dice are;
+   * each face answers one check. Anything else the Engine rolls. Absent, every written die is read
+   * as it always was, which is what a re-read of a saved turn needs.
+   */
+  issuedD20s?: readonly number[];
 }
 
 export interface SkillCheckTagResolution {
   content: string;
+  /** Re-rolled checks whose outcome was not the one the model's own `result=` claimed; each has a
+   *  correction line after its record. */
+  corrected?: number;
   /** Newly rolled checks, for narration that must wait for these outcomes. */
   results?: SkillCheckResult[];
   /** How many tags this pass rewrote. */
@@ -1234,6 +2062,12 @@ export interface SkillCheckTagResolution {
    */
   untrained?: number;
   /**
+   * How many were not rolled because they pick out no one party member to roll them (`reason=
+   * "unknown-roller"`), with the `who=` each wrote ("" for none). Counted inside `left` and `sparse`,
+   * and settled like an untrained one: the Game Master names a party member and asks again.
+   */
+  unknownRoller?: { count: number; written: string[] };
+  /**
    * The live sheet state after every purchase this pass paid for, when any did.
    *
    * Absent when nothing was bought, which is every game that does not use `spend=`. The caller
@@ -1242,6 +2076,54 @@ export interface SkillCheckTagResolution {
    * narration's own `[sheet: ...]` commands run.
    */
   live?: RulesetLiveStates;
+}
+
+/** The outcome a check tag's own `result=` claims: true for a success, false for a failure, undefined
+ *  for none or one this cannot read. */
+function claimedCheckOutcome(body: string): boolean | undefined {
+  if (!/\bresult\s*=/i.test(body)) return undefined;
+  const value = readGmTagAttributes(body)
+    .find((attribute) => attribute.key.toLowerCase() === "result")
+    ?.rawValue.replace(/^['"]|['"]$/g, "")
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, "_");
+  if (value === "success" || value === "critical_success") return true;
+  if (value === "failure" || value === "critical_failure") return false;
+  return undefined;
+}
+
+/** The visible line that says a check came out unlike the outcome the model wrote. */
+export function skillCheckCorrectionLine(result: SkillCheckResult, claimed: boolean): string {
+  const whose = result.who ? `${result.who}'s ` : "";
+  const numbers = result.resolution === "sum" ? ` (${result.total} against ${result.dc})` : "";
+  const outcome = result.success ? "a success" : "a failure";
+  return `(Correction: ${whose}${result.skill} check is ${outcome}${numbers}, not the ${claimed ? "success" : "failure"} first written. The Engine's roll stands.)`;
+}
+
+/**
+ * An earlier turn as the Game Master reads it back: each check the Engine settled is a plain line
+ * saying what it came to, not the record it was saved as. Cheap-GM playtest 2026-10-26: models copied
+ * the saved `rolls=`/`total=`/`result=` records into new turns, picking their own dice. A check still
+ * owed is left as written, and so is anything that does not read as a check.
+ */
+export function checkRecordsAsHistoryNotes(content: string): string {
+  if (!content || !/\[skill_check\b/i.test(content)) return content;
+  return content.replace(createSkillCheckTagRegex(), (whole, body: string | undefined) => {
+    const tag = parseSkillCheckTagBody(body ?? "");
+    if (!tag) return whole;
+    const who = tag.who?.trim();
+    if (tag.resolvedResult) {
+      return `(Engine roll${who ? ` for ${who}` : ""}: ${formatSkillCheckResultSummary(tag.resolvedResult)})`;
+    }
+    if (tag.reason === "untrained") {
+      return `(Engine: ${who ? `${who}'s ` : ""}${tag.skill} check not rolled: untrained.)`;
+    }
+    if (tag.reason === "unknown-roller") {
+      return `(Engine: ${tag.skill} check not rolled: ${who ? `"${who}" does not name` : "it named no"} one party member.)`;
+    }
+    return whole;
+  });
 }
 
 /**
@@ -1320,7 +2202,12 @@ export async function resolveSkillCheckTagsInContent(
       ...(tag.threshold != null && Number.isFinite(tag.threshold) ? { threshold: tag.threshold } : {}),
       ...(tag.who ? { who: tag.who } : {}),
       ...(tag.withAbility ? { with: tag.withAbility } : {}),
+      ...(tag.purpose ? { for: tag.purpose } : {}),
       ...(tag.bonusDice != null ? { bonus: tag.bonusDice } : {}),
+      ...(tag.darkDice != null ? { dark: tag.darkDice } : {}),
+      ...(tag.upgrades != null ? { upgrade: tag.upgrades } : {}),
+      ...(tag.setback != null ? { setback: tag.setback } : {}),
+      ...(tag.upgradeOwn != null ? { upgradeOwn: tag.upgradeOwn } : {}),
       ...(tag.difficulty ? { difficulty: tag.difficulty } : {}),
       ...(tag.explode != null ? { explode: tag.explode } : {}),
       ...(tag.double != null ? { double: tag.double } : {}),
@@ -1345,10 +2232,16 @@ export async function resolveSkillCheckTagsInContent(
         preRolledD20: tag.preRolledD20,
         who: tag.who,
         withAbility: tag.withAbility,
+        ...(tag.purpose ? { purpose: tag.purpose } : {}),
         threshold: tag.threshold,
         bonusDice: tag.bonusDice,
+        ...(tag.darkDice != null ? { darkDice: tag.darkDice } : {}),
+        ...(tag.upgrades != null ? { upgrades: tag.upgrades } : {}),
+        ...(tag.setback != null ? { setback: tag.setback } : {}),
+        ...(tag.upgradeOwn != null ? { upgradeOwn: tag.upgradeOwn } : {}),
         ...(tag.spend ? { spend: tag.spend } : {}),
         ...(tag.useEntry ? { useEntry: tag.useEntry } : {}),
+        ...(tag.apply?.length ? { apply: tag.apply } : {}),
       },
       definition,
     );
@@ -1372,10 +2265,31 @@ export async function resolveSkillCheckTagsInContent(
     return out + content.slice(cursor);
   };
 
+  /** What is left of the dice issued for this turn, spent one check at a time. */
+  const issued = options.issuedD20s ? [...options.issuedD20s] : null;
+  /** The outcome each tag's own `result=` claimed, by where the tag starts, for the correction below. */
+  const claims = new Map<number, boolean>();
+  let corrected = 0;
+  /** The record the Engine writes, and where its outcome is not the one the model wrote and narrated,
+   *  a line saying so right after it (cheap-GM playtest 2026-10-26: a check re-rolled for a wrong
+   *  modifier came out 22, a success, and the reply still told it as the failure the model had
+   *  written). The narration is the model's and is not rewritten; the record and this line are the
+   *  Engine's, and the next turn reads both. */
+  const withCorrection = (entry: { start: number; end: number }, result: SkillCheckResult, record: string) => {
+    const claimed = claims.get(entry.start);
+    if (claimed === undefined || claimed === result.success) return record;
+    corrected += 1;
+    const note = skillCheckCorrectionLine(result, claimed);
+    const after = content.slice(entry.end, entry.end + 2);
+    return `${record}\n\n${note}${after === "" || after.startsWith("\n") ? "" : "\n\n"}`;
+  };
+
   try {
     const regex = createSkillCheckTagRegex();
     for (let match = regex.exec(content); match; match = regex.exec(content)) {
-      const tag = parseSkillCheckTagBody(match[1] ?? "");
+      const claimed = claimedCheckOutcome(match[1] ?? "");
+      if (claimed !== undefined) claims.set(match.index, claimed);
+      let tag = parseSkillCheckTagBody(match[1] ?? "");
       // Not a check at all (no skill or DC) — leave whatever the model wrote.
       if (!tag) {
         left += 1;
@@ -1413,6 +2327,16 @@ export async function resolveSkillCheckTagsInContent(
         );
         left += 1;
         continue;
+      }
+      // A `rolls="N"` on a sparse check is the player's die only when the player threw it this turn.
+      if (tag.preRolledD20 !== undefined && issued && !takeIssuedD20s(issued, [tag.preRolledD20])) {
+        logger.info(
+          "[game/skill-check] rolls=%d on %s is no die thrown this turn for chat %s; the Engine rolls it",
+          tag.preRolledD20,
+          tag.skill,
+          options.chatId ?? "unknown",
+        );
+        tag = { ...tag, preRolledD20: undefined };
       }
       if (options.rulesetPinned) {
         deferred.push({ start: match.index, end: match.index + match[0].length, tag });
@@ -1498,7 +2422,11 @@ export async function resolveSkillCheckTagsInContent(
       }
       // A check that names an entry needs the ruleset's catalogs, and nothing else on this path
       // does, so they are fetched here and only here. A failure costs the effect, never the turn.
-      if (loadedContext.ruleset && options.loadCatalogs && deferred.some((entry) => entry.tag.useEntry)) {
+      if (
+        loadedContext.ruleset &&
+        options.loadCatalogs &&
+        deferred.some((entry) => entry.tag.useEntry || entry.tag.apply?.length)
+      ) {
         try {
           loadedContext.ruleset.catalogs = await options.loadCatalogs();
         } catch (err) {
@@ -1508,19 +2436,41 @@ export async function resolveSkillCheckTagsInContent(
       const ruleset = loadedContext.ruleset;
       keepWho = !!ruleset;
       for (const entry of deferred) {
-        const { tag } = entry;
+        let { tag } = entry;
+        // A check that names nobody, where nobody is the player's own card, is rolled for the party
+        // member the narration gives it to, and the record says so.
+        const inferredWho = ruleset && !tag.who ? inferRulesetCheckWho(ruleset, content, entry) : undefined;
+        if (inferredWho) tag = { ...tag, who: inferredWho };
         const request = toRequest(tag, ruleset?.definition);
         // A record claiming a save failed without a roll carries no dice to vouch for and a label no
         // ruleset throws, so it is always the Engine's to decide again from the sheet.
         const claimsNoRoll = !!tag.resolvedResult?.automatic;
+        // The numbers must be the sheet's, and the dice somebody else's: the player's, or the Engine's.
+        // A check with no one party member to roll it is refused below, whatever it carries: a flat die
+        // is not the roll the story asked of a hero.
+        // A check the whole party makes is rolled for each of them below, whatever it carries.
+        const group =
+          !!ruleset &&
+          isRulesetRollableSkillCheckTag(tag, ruleset.definition) &&
+          !!rulesetGroupCheckRollers(ruleset, tag.who);
+        const noRoller =
+          !!ruleset &&
+          !group &&
+          isRulesetRollableSkillCheckTag(tag, ruleset.definition) &&
+          rulesetCheckRollerRefused(ruleset, tag.who);
+        const vouched =
+          !!ruleset &&
+          !noRoller &&
+          !group &&
+          rulesetVouchesFor(ruleset, tag) &&
+          (!issued || takeIssuedD20s(issued, tag.resolvedResult!.rolls));
         const owesRoll = ruleset
-          ? claimsNoRoll ||
-            (!rulesetVouchesFor(ruleset, tag) && isRulesetRollableSkillCheckTag(tag, ruleset.definition))
+          ? claimsNoRoll || (!vouched && isRulesetRollableSkillCheckTag(tag, ruleset.definition))
           : !tag.resolvedResult && isEngineRollableSkillCheckTag(tag);
         // A check the character cannot attempt untrained is refused below whatever it carries: no
         // numbers, dice or difficulty the Game Master wrote on it gets it past the sheet.
-        const refused = !!ruleset && rulesetRefusesUntrained(ruleset, request);
-        if (refused || (owesRoll && isResolvableSkillCheckRequest(request, ruleset?.definition))) {
+        const refused = !!ruleset && !group && rulesetRefusesUntrained(ruleset, request);
+        if (noRoller || refused || (owesRoll && isResolvableSkillCheckRequest(request, ruleset?.definition))) {
           pending.push({ start: entry.start, end: entry.end, request, tag });
         } else if ((owesRoll || claimsNoRoll) && tag.resolvedResult) {
           // This ruleset's own kind of check, carrying numbers the sheet does not vouch for, that
@@ -1579,11 +2529,41 @@ export async function resolveSkillCheckTagsInContent(
     // Checks the character may not attempt untrained. Saved as the ask with the reason on it, which
     // settles them: nothing later rolls a check the Engine said could not be made.
     let untrained = 0;
+    // Checks that pick out no one party member to roll them, by the `who=` each wrote.
+    const unknownRoller: string[] = [];
     const rolled = rewrite((entry) => {
       // A pool check bound before the ruleset was loaded may have named its difficulty by a ladder
       // step; it is read now, with the ruleset in hand, so the pool serves it like any other check.
-      const request =
+      let request =
         entry.poolBody != null ? readRulesetDifficulty(entry.request, context.ruleset?.definition) : entry.request;
+      // And names its roller now, as the other checks did above, when it names nobody.
+      if (entry.poolBody != null && context.ruleset && !request.who) {
+        const inferred = inferRulesetCheckWho(context.ruleset, content, entry);
+        if (inferred) {
+          request = { ...request, who: inferred };
+          entry.tag = { ...entry.tag, who: inferred };
+        }
+      }
+      const groupRollers = context.ruleset ? rulesetGroupCheckRollers(context.ruleset, request.who) : undefined;
+      if (groupRollers && request.dc !== undefined) {
+        const group = resolveRulesetGroupCheck(context, request, groupRollers, options.rollD20);
+        results.push(...group.results);
+        const { who: _party, ...extras } = askExtras(entry.tag) ?? {};
+        return serializeRulesetGroupCheck(request, group, extras);
+      }
+      if (!groupRollers && context.ruleset && rulesetCheckRollerRefused(context.ruleset, request.who)) {
+        unknownRoller.push(request.who?.trim() ?? "");
+        return serializeSparseSkillCheckTag(
+          {
+            skill: request.skill,
+            dc: entry.request.dc,
+            advantage: request.advantage,
+            disadvantage: request.disadvantage,
+            declaredDice: entry.tag.declaredDice,
+          },
+          { ...(askExtras(entry.tag) ?? {}), reason: "unknown-roller" },
+        );
+      }
       if (context.ruleset && rulesetRefusesUntrained(context.ruleset, request)) {
         untrained += 1;
         return serializeSparseSkillCheckTag(
@@ -1620,7 +2600,7 @@ export async function resolveSkillCheckTagsInContent(
         poolTagIndex += 1;
         if (spent) {
           results.push(spent.result);
-          return spent.record;
+          return withCorrection(entry, spent.result, spent.record);
         }
         // Overflow: no value exists, so nothing is written. The ask is kept, every number
         // is dropped, and the outcome is owed to the next turn — never a second request.
@@ -1640,16 +2620,34 @@ export async function resolveSkillCheckTagsInContent(
       results.push(result);
       // The result carries what the roll applied (who, the other ability, the dice added), so a
       // saved turn says exactly that. None of it is set outside a ruleset game, byte for byte.
-      return serializeResolvedSkillCheckTag(result);
+      return withCorrection(entry, result, serializeResolvedSkillCheckTag(result));
     });
+    if (corrected > 0) {
+      logger.info(
+        "[game/skill-check] %d re-rolled check(s) came out unlike the outcome the model wrote for chat %s; a correction line follows each",
+        corrected,
+        options.chatId ?? "unknown",
+      );
+    }
+    const refusedRoller = unknownRoller.length;
+    if (refusedRoller > 0) {
+      logger.info(
+        "[game/skill-check] %d check(s) pick out no one party member to roll them for chat %s (%s); not rolled",
+        refusedRoller,
+        options.chatId ?? "unknown",
+        unknownRoller.map((who) => who || "nobody").join(", "),
+      );
+    }
     return {
       content: rolled,
       results,
-      resolved: pending.length - overflowed - unread - untrained,
+      resolved: pending.length - overflowed - unread - untrained - refusedRoller,
       trusted,
-      left: left + overflowed + unread + untrained,
-      sparse: overflowed + unread + untrained + stripped.length,
+      left: left + overflowed + unread + untrained + refusedRoller,
+      sparse: overflowed + unread + untrained + refusedRoller + stripped.length,
       ...(untrained > 0 ? { untrained } : {}),
+      ...(refusedRoller > 0 ? { unknownRoller: { count: refusedRoller, written: unknownRoller } } : {}),
+      ...(corrected > 0 ? { corrected } : {}),
       ...(spentLive ? { live: spentLive } : {}),
     };
   } catch (err) {
@@ -1762,8 +2760,13 @@ export function boundPoolCheckRequest(tag: SkillCheckTag): SkillCheckRequest | n
     // say it applied, whether the pool serves the check or the Engine rolls it blind.
     who: tag.who,
     withAbility: tag.withAbility,
+    ...(tag.purpose ? { purpose: tag.purpose } : {}),
     threshold: tag.threshold,
     bonusDice: tag.bonusDice,
+    ...(tag.darkDice != null ? { darkDice: tag.darkDice } : {}),
+    ...(tag.upgrades != null ? { upgrades: tag.upgrades } : {}),
+    ...(tag.setback != null ? { setback: tag.setback } : {}),
+    ...(tag.upgradeOwn != null ? { upgradeOwn: tag.upgradeOwn } : {}),
     // The step a difficulty was named by still sets a pool's target, and the faces a check moved
     // are the same ask, so whichever path rolls it rolls what the tag asked for.
     ...(tag.difficulty ? { difficulty: tag.difficulty } : {}),

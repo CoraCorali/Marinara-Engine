@@ -23,6 +23,8 @@ with tempfile.TemporaryDirectory(prefix="marinara-terminal-shutdown-") as temp:
                MARINARA_ENV_FILE=str(data / ".env"), MARINARA_LITE="true",
                LOG_LEVEL="info", LOG_DISABLE_REQUEST_LOGGING="false",
                AUTO_CREATE_DEFAULT_CONNECTION="false", AUTO_OPEN_BROWSER="false")
+    # A terminal gets readable lines, which development already covers; production keeps the direct JSON stdout path.
+    env["LOG_FORMAT"] = "json" if node_env == "production" else "pretty"
     child, master = pty.fork()
     if child == 0:
         os.chdir(root)
@@ -45,7 +47,9 @@ with tempfile.TemporaryDirectory(prefix="marinara-terminal-shutdown-") as temp:
             time.sleep(0.025)
 
     try:
-        deadline = time.monotonic() + 20
+        # Starting from source takes about 20 s on the slowest CI runner (macOS Intel), so allow 30 (within
+        # the caller's 50 s).
+        deadline = time.monotonic() + 30
         while time.monotonic() < deadline:
             pump()
             for line in output.decode(errors="replace").splitlines():

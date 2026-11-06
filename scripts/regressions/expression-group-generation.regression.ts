@@ -4,6 +4,7 @@ import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { randomUUID } from "node:crypto";
 
 const dir = mkdtempSync(join(tmpdir(), "marinara-expression-group-"));
 process.env.DATA_DIR = dir;
@@ -15,6 +16,9 @@ const requireServer = createRequire(new URL("../../packages/server/package.json"
 const Fastify = requireServer("fastify") as typeof import("fastify").default;
 const { getDB, closeDB } = await import("../../packages/server/src/db/connection.js");
 const { generateRoutes } = await import("../../packages/server/src/routes/generate.routes.js");
+const { playerTurnAwaitsExpression } =
+  await import("../../packages/server/src/routes/generate/expression-agent-utils.js");
+const { resolveLatestSpriteExpressionTurn } = await import("../../packages/client/src/lib/sprite-expression-state.js");
 const { createChatsStorage } = await import("../../packages/server/src/services/storage/chats.storage.js");
 const { createCharactersStorage } = await import("../../packages/server/src/services/storage/characters.storage.js");
 const { createAgentsStorage } = await import("../../packages/server/src/services/storage/agents.storage.js");
@@ -141,6 +145,12 @@ try {
         expectedIds.includes(character.id),
         `${JSON.parse(character.data).name} sprite availability matches this turn`,
       );
+    for (const id of expectedIds.filter((id) => roster.some((character) => character.id === id))) {
+      const line = available.split(/\\n|\n/u).find((line) => line.includes(`(${id})`));
+      assert(line, "eligible owner is listed");
+      for (const expression of ["happy", "sad", "neutral"])
+        assert(line.includes(expression), "loose and both folder expressions remain in the model choices");
+    }
     const message = retryMessageId
       ? await chats.getMessage(retryMessageId)
       : (await chats.listMessages(chat.id)).at(-1)!;
@@ -155,6 +165,25 @@ try {
     return message;
   };
   const merged = await run([alice.id, bob.id]);
+  // Organizational folders must not change the real generation/retry availability or persisted choices.
+  for (const character of roster) {
+    const happyFolder = randomUUID();
+    const sadFolder = randomUUID();
+    writeFileSync(
+      join(dir, "sprites", character.id, "catalog.json"),
+      JSON.stringify({
+        version: 1,
+        folders: [
+          { id: happyFolder, name: "Front", category: "expressions" },
+          { id: sadFolder, name: "Side", category: "expressions" },
+        ],
+        sprites: {
+          happy: { label: "happy", folderId: happyFolder },
+          sad: { label: "sad", folderId: sadFolder },
+        },
+      }),
+    );
+  }
   await run([alice.id, bob.id], {}, merged.id);
   await run([alice.id, bob.id], { regenerateMessageId: merged.id });
   await chats.patchMetadata(chat.id, { spriteCharacterIds: [bob.id] });
@@ -203,6 +232,21 @@ try {
   await chats.patchMetadata(chat.id, { groupChatMode: "individual" });
   const individual = await run([bob.id], { forCharacterId: bob.id });
   await run([bob.id], {}, individual.id);
+  // One Expression Engine call per Individual turn; each reply keeps its own character's expression (#7712).
+  await chats.patchMetadata(chat.id, { groupResponseOrder: "sequential" });
+  const turnLast = await run([alice.id, bob.id]);
+  const [aliceReply, bobReply] = (await chats.listMessages(chat.id)).slice(-2);
+  assert(aliceReply && bobReply);
+  assert.deepEqual([aliceReply.characterId, bobReply.characterId, bobReply.id], [alice.id, bob.id, turnLast.id]);
+  const aliceExtra = JSON.parse(aliceReply.extra);
+  assert.deepEqual(aliceExtra.spriteExpressions, { [alice.id]: "happy" }, "an earlier reply has its own expression");
+  assert.equal(aliceExtra.expressionSpriteIds, undefined, "the turn's sprite list stays on its last reply");
+  assert.notEqual(
+    resolveLatestSpriteExpressionTurn((await chats.listMessages(chat.id)).slice(0, -1))?.messageId,
+    aliceReply.id,
+    "with the last reply deleted, an earlier reply is not read as the whole finished turn",
+  );
+  await chats.patchMetadata(chat.id, { groupResponseOrder: "manual" });
   await chats.update(chat.id, { characterIds: [alice.id] });
   await chats.patchMetadata(chat.id, { groupChatMode: "merged" });
   await run([alice.id]);
@@ -237,6 +281,87 @@ try {
       assert.deepEqual(JSON.parse(user.extra).spriteExpressions, { [persona.id]: "happy" });
     }
   }
+  // Replies with no new message from the player leave the persona to the Expression Engine: a persona the model
+  // leaves out stays hidden under "Only show active sprites", although an older message of theirs is still in the
+  // recent context. The same holds when the Expression Engine is retried on such a reply.
+  expressionOutput = expressionOutput.filter((entry) => entry.characterId !== persona.id);
+  for (let reply = 0; reply < 2; reply++) {
+    const response = await app.inject({ method: "POST", url: "/api/generate/", payload: { chatId: chat.id } });
+    assert.equal(response.statusCode, 200, response.body);
+    assert(!response.body.includes('"type":"error"'), response.body);
+    const latest = (await chats.listMessages(chat.id)).at(-1)!;
+    assert.equal(latest.role, "assistant");
+    // The first reply still answers the message impersonation wrote for the player; the next one does not.
+    assert.equal(
+      JSON.parse(latest.extra).expressionSpriteIds.includes(persona.id),
+      reply === 0,
+      reply === 0
+        ? "the reply to the player's message keeps the persona"
+        : "a persona who did not write this turn is not added back",
+    );
+  }
+  const quiet = (await chats.listMessages(chat.id)).at(-1)!;
+  const quietRetry = await app.inject({
+    method: "POST",
+    url: "/api/generate/retry-agents",
+    payload: { chatId: chat.id, agentTypes: ["expression"], forMessageId: quiet.id },
+  });
+  assert.equal(quietRetry.statusCode, 200, quietRetry.body);
+  assert(!quietRetry.body.includes('"type":"error"'), quietRetry.body);
+  assert(
+    !JSON.parse((await chats.getMessage(quiet.id))!.extra).expressionSpriteIds.includes(persona.id),
+    "retrying the Expression Engine on such a reply does not add the persona either",
+  );
+  // A retry still finds the player's message when the agents read only one message of context.
+  const agentsStore = createAgentsStorage(db);
+  const expressionAgent = (await agentsStore.list()).find((agent) => agent.type === "expression")!;
+  // Selected sprites leave the persona out, so only the player's turn can offer it to the retry.
+  await agentsStore.update(expressionAgent.id, { settings: { contextSize: 1 } });
+  await chats.patchMetadata(chat.id, { spriteCharacterIds: [alice.id, bob.id] });
+  const answeredTurn = await app.inject({
+    method: "POST",
+    url: "/api/generate/",
+    payload: { chatId: chat.id, userMessage: "I wave from the doorway." },
+  });
+  assert.equal(answeredTurn.statusCode, 200, answeredTurn.body);
+  const answeredReply = (await chats.listMessages(chat.id)).at(-1)!;
+  const answeredRetry = await app.inject({
+    method: "POST",
+    url: "/api/generate/retry-agents",
+    payload: { chatId: chat.id, agentTypes: ["expression"], forMessageId: answeredReply.id },
+  });
+  assert.equal(answeredRetry.statusCode, 200, answeredRetry.body);
+  assert(!answeredRetry.body.includes('"type":"error"'), answeredRetry.body);
+  assert(
+    JSON.parse((await chats.getMessage(answeredReply.id))!.extra).expressionSpriteIds.includes(persona.id),
+    "a retried reply to the player's message keeps the persona, even with one message of agent context",
+  );
+  // A swipe of a reply to the player's message is still that turn, so the persona stays.
+  const swiped = await app.inject({
+    method: "POST",
+    url: "/api/generate/",
+    payload: { chatId: chat.id, regenerateMessageId: answeredReply.id },
+  });
+  assert.equal(swiped.statusCode, 200, swiped.body);
+  assert(!swiped.body.includes('"type":"error"'), swiped.body);
+  const swipedReply = (await chats.getMessage(answeredReply.id))!;
+  assert(
+    JSON.parse(swipedReply.extra).expressionSpriteIds.includes(persona.id),
+    "a swipe of a reply to the player's message keeps the persona",
+  );
+  await agentsStore.update(expressionAgent.id, { settings: {} });
+  await chats.patchMetadata(chat.id, { spriteCharacterIds: [] });
+  // The player's turn lasts until a reply after it has its own Expression Engine result (#7378).
+  const shown = JSON.stringify({ expressionSpriteIds: [alice.id] });
+  const player = { role: "user", content: "I wave." };
+  assert(playerTurnAwaitsExpression([player], 1), "the reply to the player's message");
+  assert(playerTurnAwaitsExpression([player, { role: "assistant", extra: "{}" }], 2), "a whole group turn");
+  assert(
+    !playerTurnAwaitsExpression([player, { role: "assistant", extra: shown }], 2),
+    "a later reply, after one that had its own expressions",
+  );
+  assert(playerTurnAwaitsExpression([player, { role: "assistant", extra: shown }], 1), "a swipe of that first reply");
+  assert(!playerTurnAwaitsExpression([{ role: "assistant", extra: "{}" }], 1), "no message from the player");
   for (const mode of ["conversation", "game"] as const) {
     await chats.update(chat.id, { mode, characterIds: [alice.id, bob.id] });
     const before = spritePrompts.length;
@@ -249,6 +374,70 @@ try {
     assert(!response.body.includes('"type":"error"'), response.body);
     assert.equal(spritePrompts.length, before, `${mode} keeps its existing Expression Engine exclusion`);
   }
+  // A label is resolved before SSE, then the concrete handle is checked again
+  // before persistence. The second pass must not reinterpret that handle as a label.
+  const familyOwner = await characters.create(characterDataSchema.parse({ name: "Family selection" }));
+  const familyDirectory = join(dir, "sprites", familyOwner.id);
+  mkdirSync(familyDirectory, { recursive: true });
+  for (const handle of ["happy", "full_happy", "full_cheer"])
+    writeFileSync(join(familyDirectory, `${handle}.png`), "fixture");
+  writeFileSync(
+    join(familyDirectory, "catalog.json"),
+    JSON.stringify({
+      version: 1,
+      folders: [],
+      sprites: {
+        happy: { label: "pleased", folderId: null },
+        full_happy: { label: "full_furious", folderId: null },
+        full_cheer: { label: "full_happy", folderId: null },
+      },
+    }),
+  );
+  const familyChat = await chats.create({
+    name: "Renamed family generation",
+    mode: "roleplay",
+    characterIds: [familyOwner.id],
+    connectionId: connection.id,
+    promptPresetId: null,
+  });
+  await chats.patchMetadata(familyChat.id, {
+    enableAgents: true,
+    activeAgentIds: ["expression"],
+    enableTools: false,
+    enableMemoryRecall: false,
+    spriteCharacterIds: [familyOwner.id],
+    spriteDisplayModes: ["expressions", "full-body"],
+    groupChatMode: "merged",
+  });
+  await chats.createMessage({ chatId: familyChat.id, role: "user", content: "Continue the scene." });
+  expressionOutput = [{ characterId: familyOwner.id, expression: "pleased" }];
+  const familyResponse = await app.inject({
+    method: "POST",
+    url: "/api/generate/",
+    payload: { chatId: familyChat.id },
+  });
+  assert.equal(familyResponse.statusCode, 200, familyResponse.body);
+  assert(!familyResponse.body.includes('"type":"error"'), familyResponse.body);
+  const familyReply = (await chats.listMessages(familyChat.id)).at(-1)!;
+  assert.equal(
+    JSON.parse(familyReply.extra).spriteExpressions[familyOwner.id],
+    "happy",
+    "an already resolved portrait handle is never mistaken for another sprite's current label",
+  );
+  assert(spritePrompts.at(-1)!.includes("pleased") && spritePrompts.at(-1)!.includes("furious"));
+  expressionOutput = [{ characterId: familyOwner.id, expression: "furious" }];
+  const familyRetry = await app.inject({
+    method: "POST",
+    url: "/api/generate/retry-agents",
+    payload: { chatId: familyChat.id, agentTypes: ["expression"], forMessageId: familyReply.id },
+  });
+  assert.equal(familyRetry.statusCode, 200, familyRetry.body);
+  assert(!familyRetry.body.includes('"type":"error"'), familyRetry.body);
+  assert.equal(
+    JSON.parse((await chats.getMessage(familyReply.id))!.extra).spriteExpressions[familyOwner.id],
+    "full_happy",
+  );
+
   console.log(
     "Expression group generation passed: merged active/selected cast, retry, regeneration, fallback completion, individual, single, persona/impersonation and Conversation/Game controls.",
   );

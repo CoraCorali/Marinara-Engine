@@ -6,6 +6,8 @@ import { activateLocale } from "../../../localization/i18n";
 import { APP_LANGUAGE_OPTIONS } from "../../../localization/locale-loader";
 import { useUIStore } from "../../../stores/ui.store";
 import { HelpTooltip } from "../../ui/HelpTooltip";
+import { LanguagePicker } from "../../ui/LanguagePicker";
+import { SETTINGS_BUTTON_CLASS } from "./SettingControls";
 
 export function UILanguageSetting({ anchorId }: { anchorId: string }) {
   const { t } = useTranslation();
@@ -33,33 +35,28 @@ export function UILanguageSetting({ anchorId }: { anchorId: string }) {
         {t("settings.application.language.label")}
         <HelpTooltip text={t("settings.application.language.help")} />
       </label>
-      <select
+      <LanguagePicker
         id={`${anchorId}-select`}
+        label={t("settings.application.language.label")}
         value={language}
-        onChange={(event) => void selectLanguage(event.target.value)}
+        onChange={(code) => void selectLanguage(code)}
         disabled={status.isLoading || download.isPending}
-        className="rounded-lg bg-[var(--secondary)] px-3 py-2 text-xs outline-none ring-1 ring-transparent transition-shadow focus:ring-[var(--primary)] disabled:opacity-50"
-      >
-        {APP_LANGUAGE_OPTIONS.map((option) => (
-          <option key={option.id} value={option.id}>
-            {option.label}
-          </option>
-        ))}
-      </select>
+        options={APP_LANGUAGE_OPTIONS.map((option) => ({ code: option.id, label: option.label }))}
+      />
       <p className="text-[0.625rem] text-[var(--muted-foreground)]">{t("settings.application.language.fallback")}</p>
       {(language !== "en" || download.isPending) && (
         <button
           type="button"
           onClick={() => void selectLanguage(language, true)}
           disabled={download.isPending}
-          className="flex items-center justify-center gap-1.5 rounded-lg bg-[var(--secondary)] px-3 py-2 text-xs transition-colors hover:bg-[var(--accent)] disabled:opacity-50"
+          className={SETTINGS_BUTTON_CLASS}
         >
           {download.isPending ? (
-            <Loader2 size="0.875rem" className="animate-spin" />
+            <Loader2 size="0.75rem" className="animate-spin" />
           ) : status.data?.installed.includes(language) ? (
-            <RefreshCw size="0.875rem" />
+            <RefreshCw size="0.75rem" />
           ) : (
-            <Download size="0.875rem" />
+            <Download size="0.75rem" />
           )}
           {t(
             download.isPending ? "settings.application.language.downloading" : "settings.application.language.refresh",

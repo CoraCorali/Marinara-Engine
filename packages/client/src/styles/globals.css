@@ -3,6 +3,9 @@
 @import "./themes/sillytavern.css";
 @import "./themes/chat-widgets.css";
 @import "./themes/chat-widget-surfaces.css";
+@import "./themes/seasonal-halloween.css";
+@import "./themes/seasonal-newyearseve.css";
+@import "./themes/seasonal-newyearsday.css";
 
 /* World state & tracker widgets: equal flex sizing on mobile */
 @media (max-width: 767px) {
@@ -37,6 +40,7 @@
     2.  Dark Theme Variables .............. colors, palette, fonts
     3.  Light Theme Variables ............. light-mode overrides
     4.  Light Theme Component Overrides ... glass, grid, scrollbar tweaks
+    4a1. Professor Mari ................. @import ./mari.css (kept in place for the cascade)
     4a2. Floating Windows & Drawers ..... .mari-window, .mari-drawer, --mari-window-*
     5.  Base Reset & Body ................. border reset, body defaults
     6.  Custom Cursors .................... Y2K SVG cursors
@@ -197,8 +201,9 @@
   --muted-foreground: #a1a1aa;
   --accent: #2a1a3e;
   --accent-foreground: #f0e8ff;
-  --destructive: var(--primary);
-  --destructive-foreground: var(--primary-foreground);
+  --destructive: #ff6b9d;
+  --warning: #eeaa37;
+  --destructive-foreground: #0a0a0a;
   --border: color-mix(in srgb, var(--primary) 20%, transparent);
   --input: var(--border);
   --ring: var(--primary);
@@ -213,6 +218,8 @@
 
   /* Theme hooks for shared chat, roleplay, and game chrome. */
   --marinara-topbar-surface: color-mix(in srgb, var(--card) 80%, transparent);
+  /* Home's page is this card wash over --background; Professor Mari's window and page paint the same. */
+  --marinara-home-page-wash: color-mix(in oklab, var(--card) 65%, transparent);
   --marinara-topbar-border: color-mix(in srgb, var(--border) 30%, transparent);
   --marinara-shell-edge-border: color-mix(in srgb, var(--primary) 14%, var(--background) 86%);
   --marinara-music-player-shell-bg: var(--marinara-topbar-surface);
@@ -460,8 +467,9 @@
   --muted-foreground: #65656f;
   --accent: #ede4f7;
   --accent-foreground: #1a1025;
-  --destructive: var(--primary);
-  --destructive-foreground: var(--primary-foreground);
+  --destructive: #c44040;
+  --warning: #b45309;
+  --destructive-foreground: #ffffff;
   --border: color-mix(in srgb, var(--primary) 27%, transparent);
   --input: var(--border);
   --ring: var(--primary);
@@ -653,6 +661,8 @@
   border-radius: 0.5rem;
 }
 
+@import "./mari.css";
+
 /* ─────────────────────────────────────────────
    4a2. FLOATING WINDOWS AND DRAWERS
    Every chat window (Chat Settings, the Trackers window, popped-out drawers)
@@ -668,7 +678,9 @@
                 .mari-drawer__popout, .mari-drawer__arrow, .mari-drawer__body;
                 .mari-drawer-ghost (the preview while a drawer is dragged out);
                 .mari-window-bubble (a minimized window's button, and every
-                phone bubble: [data-presentation="sheet"]) and
+                phone bubble: [data-presentation="sheet"]), .mari-window-bubble__banner
+                (a bubble's live summary, World State's date and time, on
+                [data-banner="true"]) and
                 .mari-window-snap-guide (the line shown while a bubble snaps)
    Attributes:  [data-window="<id>"], [data-drawer="<id>"], [data-pinned],
                 [data-locked], [data-detached], [data-presentation="window|sheet"],
@@ -933,10 +945,30 @@
     font-size: inherit !important;
   }
 
+  /* Agent activity's status wraps the drawer's own icon, which grows the same way. */
+  :root[data-chat-widget-button-size] .mari-window-bubble__icon > .mari-agent-activity-icon > svg {
+    width: 100% !important;
+    height: 100% !important;
+  }
+
   /* Phones draw bubbles like their toolbar buttons, in pixels so their default row lines up. */
   .mari-window-bubble[data-presentation="sheet"] {
     width: var(--mari-window-bubble-size, 36px);
     height: var(--mari-window-bubble-size, 36px);
+  }
+
+  /* A bubble showing a live summary (World State's date, time and weather) is as wide as the summary. */
+  .mari-window-bubble[data-banner="true"] {
+    width: auto;
+    padding-inline: 0.5rem;
+  }
+
+  .mari-window-bubble__banner {
+    display: inline-flex;
+    flex-shrink: 0;
+    align-items: center;
+    gap: 0.25rem;
+    white-space: nowrap;
   }
 
   /* Touch gets a 44px tap area around every bubble, centred on it, without changing its look. */
@@ -1267,6 +1299,46 @@
   font-weight: 400;
 }
 
+/* Inline token chip, such as a prompt variable: tighter sides so several fit on one row.
+   Pair with --small. */
+.mari-chrome-control--chip {
+  gap: 0.25rem;
+  padding-inline: 0.375rem;
+}
+
+/* Square icon-only button; pair with --small so the height matches. */
+.mari-chrome-control--icon {
+  width: 1.75rem;
+  padding: 0;
+}
+
+/* Row and card-heading buttons: no fill until hover or focus, so lists stay calm.
+   !important on purpose: theme and accent-mode rules kept outranking this and the
+   bubbles came back each time. scripts/regressions/quiet-row-buttons.regression.ts pins it. */
+.mari-chrome-control--quiet:not(:hover):not(:focus-visible):not([aria-expanded="true"]) {
+  background: transparent !important;
+  border-color: transparent !important;
+  box-shadow: none !important;
+}
+
+/* One-of-N choice card: title, description and optional preview stacked on the left.
+   Idle titles keep the body text colour so they stay readable; hover and aria-pressed tint them. */
+.mari-chrome-control--card {
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  border-radius: 0.5rem;
+  padding: 0.75rem;
+  color: var(--foreground);
+  font-weight: 400;
+  text-align: left;
+}
+
+.mari-chrome-control--card > span {
+  overflow: visible;
+  white-space: normal;
+}
+
 .mari-character-row-action {
   height: 1.75rem;
   min-height: 1.75rem;
@@ -1281,11 +1353,32 @@
 }
 
 .mari-chrome-control--selected,
+.mari-chrome-control[aria-current="page"],
 .mari-chrome-control[aria-pressed="true"] {
   border-color: var(--marinara-chat-chrome-button-border-active);
   background: var(--marinara-chat-chrome-button-bg-active);
   color: var(--marinara-chat-chrome-button-text-active);
   box-shadow: 0 0 0 1px var(--marinara-chat-chrome-focus-ring);
+}
+
+/* A selected choice card gets a solid 2px accent ring so the pick reads at a glance. It is a
+   box-shadow because the gradient-accent rules below own the selected border colour. */
+.mari-chrome-control--card[aria-pressed="true"] {
+  box-shadow: 0 0 0 2px var(--marinara-chat-chrome-accent);
+}
+
+.mari-chrome-control--card[aria-pressed="true"]:focus-visible {
+  box-shadow:
+    0 0 0 2px var(--marinara-chat-chrome-accent),
+    0 0 0 4px var(--marinara-chat-chrome-focus-ring);
+}
+
+/* Accent Pulse animates --primary, and --destructive defaults to it. Delete buttons hold the
+   steady accent instead, like the editor shells in 4c.
+   ponytail: a theme that sets its own --destructive shows the steady accent while Accent Pulse
+   runs; a dedicated --marinara-danger-* theme hook is the upgrade path. */
+[data-marinara-accent-animation] .mari-chrome-control--danger {
+  --destructive: var(--marinara-app-accent-static);
 }
 
 .mari-chrome-control--danger {
@@ -1429,6 +1522,113 @@
   box-shadow: 0 0.25rem 0.75rem color-mix(in srgb, var(--mari-panel-gradient-end) 18%, transparent);
 }
 
+/* Connection accounts share one quiet surface across the sidebar and model pickers. */
+.mari-connection-group {
+  border-radius: 1rem;
+  padding: 0.5rem;
+  /* One grey box for the Defaults and every connection; rows sit in neutral wells inside it. */
+  background-color: color-mix(in srgb, var(--foreground) 6%, transparent);
+}
+
+/* Phones: a thin card edge, so the rows get the width. */
+@media (width < 48rem) {
+  .mari-connection-group {
+    padding: 0.25rem;
+  }
+}
+
+/* Bundled marks use the theme's foreground; uploaded model pictures keep their own colours. */
+.mari-provider-icon {
+  background: color-mix(in srgb, var(--sidebar) 94%, var(--foreground));
+  color: var(--foreground);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--foreground) 10%, transparent);
+}
+
+/* Tiles: header 2.5rem, row 2rem, upstream mark 1rem. Text columns: header text, upstream headings and row text all
+   start 3.75rem in from the card edge (card padding 0.5rem + tile column + 0.75rem gap). */
+.mari-connection-card-head .mari-provider-icon {
+  width: 2.5rem;
+  height: 2.5rem;
+  border-radius: 0.625rem;
+  /* The Connection's own tile wears the "+ Add" blue; Model and provider marks stay on grey tiles. */
+  background: linear-gradient(135deg, var(--mari-panel-gradient-start), var(--mari-panel-gradient-end));
+  color: var(--mari-panel-gradient-text);
+  box-shadow: none;
+}
+.mari-connection-model-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+  margin-block-start: 0.25rem;
+}
+/* Models sit in an inset well; a proxy gets one per upstream, its heading as the well's tinted top strip. */
+.mari-connection-model-well {
+  overflow: hidden;
+  /* Concentric with the card: 1rem card radius - 0.5rem padding. */
+  border-radius: 0.5rem;
+  background: color-mix(in srgb, var(--background) 45%, transparent);
+}
+
+@media (width < 48rem) {
+  .mari-connection-model-well {
+    border-radius: 0.75rem;
+  }
+}
+/* The "+ Add" blue (#38bdf8 → #3b82f6) tints the Defaults box and the "via" headings. */
+:root {
+  --mari-connection-blue: #38bdf8;
+}
+/* Proxy wells keep the plain well background; only the "via" heading is tinted. */
+.mari-connection-model-section-head {
+  background: color-mix(in srgb, var(--mari-connection-blue) 14%, transparent);
+}
+.mari-connection-model-section-head:hover {
+  background: color-mix(in srgb, var(--mari-connection-blue) 20%, transparent);
+}
+.mari-connection-model-slot + .mari-connection-model-slot,
+.mari-connection-model-section-head + .mari-connection-model-slot {
+  border-block-start: 1px solid color-mix(in srgb, var(--foreground) 5%, transparent);
+}
+/* The Defaults box is the one blue box: the same box as a card, in a flat connection-blue tint. */
+.mari-connection-group.mari-connection-defaults-box {
+  background-color: color-mix(in srgb, var(--mari-connection-blue) 10%, transparent);
+}
+/* The empty state wears the connections tint, like .mari-suggestion-chip. A tint, no frame. */
+.mari-connection-empty {
+  border-radius: 0.875rem;
+  /* Flat: one even connection-blue tint, no gradient. */
+  background: color-mix(in srgb, var(--mari-panel-gradient-start) 7%, var(--card));
+}
+.mari-connection-defaults-job {
+  transition: background-color 150ms ease;
+}
+/* "All jobs" sections: a small muted caps label above each group. */
+.mari-connection-defaults-group {
+  padding: 0.625rem 0.5rem 0.25rem;
+  color: var(--muted-foreground);
+  font-size: 0.625rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+@media (prefers-reduced-motion: reduce) {
+  .mari-connection-defaults-job {
+    transition: none;
+  }
+}
+
+/* A bundled provider icon (decision 34c) drawn in the text colour; the size comes from the caller. */
+.brand-mark {
+  background-color: currentColor;
+  -webkit-mask: var(--brand-mark) center / contain no-repeat;
+  mask: var(--brand-mark) center / contain no-repeat;
+}
+.brand-mark[data-shaded] {
+  background: var(--brand-mark) center / contain no-repeat;
+  -webkit-mask: none;
+  mask: none;
+}
+
 .mari-panel-gradient-button {
   display: inline-flex;
   min-height: 2.5rem;
@@ -1461,7 +1661,9 @@
 }
 
 /* Resource sections keep their identifying palettes when the app accent changes. */
-.mari-panel-gradient--characters {
+.mari-panel-gradient--characters,
+.mari-field-review-line,
+[data-mari-field][data-mari-focus] {
   --mari-panel-gradient-start: #f472b6;
   --mari-panel-gradient-end: #f43f5e;
   --mari-panel-gradient-text: #fff7fb;
@@ -1479,12 +1681,189 @@
   --mari-panel-gradient-text: #fbf7ff;
 }
 
-.mari-panel-gradient--connections {
+.mari-panel-gradient--connections,
+.mari-connection-scope {
   --mari-panel-gradient-start: #38bdf8;
   --mari-panel-gradient-end: #3b82f6;
   --mari-panel-gradient-text: #f0f9ff;
+  /* Connection blue for text, rails and selected chips; leaning on the foreground keeps it legible in light and dark. */
+  --mari-connection-ink: color-mix(in srgb, var(--mari-panel-gradient-end) 80%, var(--foreground) 20%);
+  --mari-connection-tint: color-mix(in srgb, var(--mari-panel-gradient-start) 14%, transparent);
+  --mari-connection-ring: color-mix(in srgb, var(--mari-panel-gradient-start) 55%, transparent);
 }
 
+/*
+ * Every connection surface (panel, Add window, editors, picker, switcher) carries .mari-connection-scope. It points the
+ * shared chrome tokens at connection blue and quiet neutrals, so no app accent (pink) leaks in: focus rings, the step
+ * bar, checks and selected cards turn blue; buttons and cards lose their accent outlines.
+ * The second selector outranks the accent-animation rule that pins .mari-editor-shell to the app accent.
+ */
+.mari-connection-scope,
+[data-marinara-accent-animation] .mari-connection-scope {
+  --marinara-chat-chrome-accent: var(--mari-panel-gradient-start);
+  --marinara-chat-chrome-focus-ring: var(--mari-connection-ring);
+  --marinara-chat-chrome-button-bg: color-mix(in srgb, var(--foreground) 8%, transparent);
+  --marinara-chat-chrome-button-bg-hover: color-mix(in srgb, var(--foreground) 10%, transparent);
+  --marinara-chat-chrome-button-bg-active: var(--mari-connection-tint);
+  --marinara-chat-chrome-button-border: color-mix(in srgb, var(--foreground) 16%, transparent);
+  --marinara-chat-chrome-button-border-hover: color-mix(in srgb, var(--foreground) 28%, transparent);
+  --marinara-chat-chrome-button-border-active: transparent;
+  --marinara-chat-chrome-button-text: var(--foreground);
+  --marinara-chat-chrome-button-text-hover: var(--foreground);
+  --marinara-chat-chrome-button-text-active: var(--mari-connection-ink);
+  --marinara-chat-chrome-highlight-bg: color-mix(in srgb, var(--mari-panel-gradient-start) 10%, transparent);
+  --marinara-chat-chrome-highlight-bg-hover: var(--mari-connection-tint);
+  --marinara-chat-chrome-highlight-text: var(--mari-connection-ink);
+  --marinara-chat-chrome-input-border: color-mix(in srgb, var(--foreground) 14%, transparent);
+  --marinara-chat-chrome-input-border-focus: color-mix(in srgb, var(--mari-panel-gradient-start) 70%, transparent);
+  --marinara-chat-chrome-panel-border: color-mix(in srgb, var(--foreground) 10%, transparent);
+  --marinara-chat-chrome-panel-divider: color-mix(in srgb, var(--foreground) 8%, transparent);
+  --marinara-editor-accent: var(--mari-panel-gradient-start);
+  --marinara-editor-focus-ring: var(--mari-connection-ring);
+  --marinara-editor-border: color-mix(in srgb, var(--foreground) 10%, transparent);
+  --marinara-editor-border-strong: color-mix(in srgb, var(--foreground) 16%, transparent);
+  --ring: var(--mari-connection-ring);
+}
+/* The editor's main action (Save) wears the connection-blue gradient, like every primary here. */
+.mari-connection-scope .mari-editor-action--primary,
+[data-marinara-chat-chrome-accent-mode="gradient"] .mari-connection-scope .mari-editor-action--primary {
+  border-color: transparent;
+  background: linear-gradient(135deg, var(--mari-panel-gradient-start), var(--mari-panel-gradient-end));
+  color: var(--mari-panel-gradient-text);
+}
+.mari-connection-scope .mari-editor-action--primary:hover:not(:disabled) {
+  filter: brightness(1.06);
+}
+/* Selection is a light blue tint, never a ring. */
+.mari-connection-scope .mari-chrome-control[aria-pressed="true"],
+.mari-connection-scope .mari-chrome-control--card[aria-pressed="true"] {
+  box-shadow: none;
+}
+
+/* The one primary per screen wears the connection-blue gradient; touch gets the 44px target.
+ * Tokens, not properties: the shared gradient-mode rules read these. */
+.mari-connection-scope .mari-chrome-control--primary {
+  --marinara-chat-chrome-button-bg: linear-gradient(
+    135deg,
+    var(--mari-panel-gradient-start),
+    var(--mari-panel-gradient-end)
+  );
+  --marinara-chat-chrome-button-bg-hover: var(--marinara-chat-chrome-button-bg);
+  --marinara-chat-chrome-button-bg-active: var(--marinara-chat-chrome-button-bg);
+  --marinara-chat-chrome-button-border: transparent;
+  --marinara-chat-chrome-button-border-hover: transparent;
+  --marinara-chat-chrome-button-text: var(--mari-panel-gradient-text);
+  --marinara-chat-chrome-button-text-hover: var(--mari-panel-gradient-text);
+  --marinara-chat-chrome-button-text-active: var(--mari-panel-gradient-text);
+}
+.mari-connection-scope .mari-chrome-control--primary:hover:not(:disabled) {
+  filter: brightness(1.06);
+}
+
+.mari-connection-scope .mari-chrome-control {
+  font-size: 0.875rem;
+}
+@media (max-width: 47.9375rem), (pointer: coarse) {
+  .mari-connection-scope .mari-chrome-control {
+    min-height: 2.75rem;
+  }
+  .mari-connection-scope .mari-chrome-control--icon {
+    width: 2.75rem;
+  }
+}
+
+/* Badges (role, kind, cost, status): one shape, no outline. */
+.mari-connection-pill {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 0.25rem;
+  border-radius: 0.375rem;
+  padding-inline: 0.375rem;
+  background: color-mix(in srgb, var(--foreground) 7%, transparent);
+  color: var(--muted-foreground);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  line-height: 1.125rem;
+  white-space: nowrap;
+}
+.mari-connection-pill svg {
+  width: 0.6875rem;
+  height: 0.6875rem;
+}
+.mari-connection-pill--strong {
+  background: color-mix(in srgb, var(--foreground) 9%, transparent);
+  color: var(--foreground);
+}
+.mari-connection-pill--blue {
+  background: color-mix(in srgb, #38bdf8 14%, transparent);
+  color: color-mix(in srgb, #3b82f6 80%, var(--foreground) 20%);
+}
+.mari-connection-pill--good {
+  background: color-mix(in srgb, var(--color-emerald-500) 13%, transparent);
+  color: color-mix(in srgb, var(--color-emerald-500) 70%, var(--foreground) 30%);
+}
+.mari-connection-pill--warn {
+  background: color-mix(in srgb, var(--color-amber-500) 14%, transparent);
+  color: color-mix(in srgb, var(--color-amber-500) 72%, var(--foreground) 28%);
+}
+
+/* Filter chip (the catalog's provider filter); selected = a soft blue tint, no outline. */
+/* Connection editor tabs (Model / Generation): one calm segmented control, not separate small pills. */
+.mari-connection-scope .mari-editor-navigation-tabs {
+  gap: 2px;
+  padding: 3px;
+  border-radius: 0.625rem;
+  background: color-mix(in srgb, var(--foreground) 6%, transparent);
+}
+.mari-connection-scope .mari-editor-navigation-tabs .mari-editor-tab {
+  min-height: 1.875rem;
+  padding-inline: 0.875rem;
+  font-size: 0.8125rem;
+  border-radius: 0.5rem;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  color: var(--muted-foreground);
+}
+.mari-connection-scope .mari-editor-navigation-tabs .mari-editor-tab[data-active="true"] {
+  background: var(--card);
+  color: var(--foreground);
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.35);
+}
+@media (pointer: coarse) {
+  .mari-connection-scope .mari-editor-navigation-tabs .mari-editor-tab {
+    min-height: 2.5rem;
+  }
+}
+
+.mari-connection-chip {
+  display: inline-flex;
+  height: 1.75rem;
+  flex-shrink: 0;
+  align-items: center;
+  border-radius: 9999px;
+  border: 1px solid color-mix(in srgb, var(--foreground) 12%, transparent);
+  padding-inline: 0.625rem;
+  font-size: 0.75rem;
+  color: var(--muted-foreground);
+  transition:
+    background-color 120ms,
+    color 120ms;
+}
+.mari-connection-chip:hover {
+  background: color-mix(in srgb, var(--foreground) 5%, transparent);
+  color: var(--foreground);
+}
+.mari-connection-chip[aria-pressed="true"] {
+  background: var(--mari-connection-tint);
+  color: var(--mari-connection-ink);
+}
+@media (max-width: 47.9375rem), (pointer: coarse) {
+  .mari-connection-chip {
+    height: 2.75rem;
+  }
+}
 .mari-panel-gradient--agents {
   --mari-panel-gradient-start: #a78bfa;
   --mari-panel-gradient-end: #a855f7;
@@ -1527,12 +1906,11 @@
   --mari-suggestion-chips-fade-right: 0px;
 
   display: flex;
+  min-width: 0;
   flex-wrap: wrap;
   gap: 0.375rem;
   align-items: center;
-  overflow-x: auto;
   margin-bottom: 0.375rem;
-  padding-bottom: 0.1875rem;
   /* Keeps a chip reached by Tab from landing underneath its own edge fade. */
   scroll-padding-inline: var(--mari-suggestion-chips-fade);
 }
@@ -1591,7 +1969,7 @@
   gap: 0.3125rem;
   min-height: 2rem;
   padding: 0.375rem 0.6875rem;
-  border-radius: 999px;
+  border-radius: 0.75rem;
   /* Neutral tints are derived colors; mixing them with the derived --border can abort WebKit. */
   border: 1px solid color-mix(in srgb, var(--chip-tint) 24%, transparent);
   background: color-mix(in srgb, var(--chip-tint) 7%, var(--card) 93%);
@@ -1634,29 +2012,37 @@
 .mari-suggestion-chips--compact .mari-suggestion-chip {
   min-height: 1.75rem;
   padding: 0.3125rem 0.5625rem;
+  border-radius: 0.625rem;
   font-size: 0.6875rem;
 }
 
-@media (max-width: 767px) {
+.mari-suggestion-turn > :last-child:not(.mari-suggestion-question-turn) {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.mari-suggestion-turn .mari-suggestion-chips {
+  margin-top: 0.125rem;
+}
+
+@media (max-width: 39.99rem) {
   .mari-suggestion-chips {
     flex-wrap: nowrap;
     overflow-x: auto;
-    overflow-y: hidden;
-    scroll-snap-type: x proximity;
+    /* G8: room for the focus ring, pulled back so the first chip starts on L0. */
+    margin-inline-start: -0.125rem;
+    padding-inline: 0.125rem 0.75rem;
+    scroll-padding-inline: 0.125rem;
     scrollbar-width: none;
-    -webkit-overflow-scrolling: touch;
     overscroll-behavior-x: contain;
-    touch-action: pan-x;
   }
 
   .mari-suggestion-chips::-webkit-scrollbar {
     display: none;
   }
 
-  .mari-suggestion-chip {
+  .mari-suggestion-chips > * {
     flex: 0 0 auto;
-    max-width: calc(100% - 1rem);
-    scroll-snap-align: start;
   }
 }
 
@@ -2176,8 +2562,11 @@
   background: var(--marinara-chat-chrome-accent);
 }
 
+/* Quiet buttons keep their no-fill rest state; hover below still applies. */
 [data-marinara-chat-chrome-accent-mode="gradient"]
-  .mari-chrome-control:not(.mari-chrome-control--danger):not(.mari-chat-mode-action):not(.mari-panel-gradient-button) {
+  .mari-chrome-control:not(.mari-chrome-control--danger):not(.mari-chat-mode-action):not(
+    .mari-panel-gradient-button
+  ):not(.mari-chrome-control--quiet) {
   border-color: var(--marinara-chat-chrome-button-border);
   background: var(--marinara-chat-chrome-button-bg);
 }
@@ -2222,6 +2611,11 @@
   transition:
     opacity 180ms linear,
     transform 180ms linear;
+}
+
+/* Same specificity as the rule above and later, so delete icons keep their button's steady colour. */
+[data-marinara-accent-animation] .mari-chrome-control--danger svg {
+  color: inherit;
 }
 
 .mari-topbar-active-underline {
@@ -2308,6 +2702,10 @@
    Used by character, persona, preset, lorebook, connection, and agent editors.
    Custom themes can override --marinara-editor-* without touching component code.
    ───────────────────────────────────────────── */
+:root:where(:not([data-theme="light"], [data-visual-theme])) {
+  --marinara-editor-bg: var(--sidebar);
+}
+
 .mari-editor-shell {
   background: var(--marinara-editor-bg);
   color: var(--marinara-editor-text);
@@ -2731,9 +3129,32 @@ html[data-mari-ios-webkit] .mari-modal {
   --mari-modal-opaque-bg: var(--background);
 }
 
-html[data-mari-ios-webkit] .mari-modal-panel {
+html[data-mari-ios-webkit] .mari-modal .mari-modal-panel {
   background-color: var(--mari-modal-opaque-bg);
   background-image: linear-gradient(var(--marinara-chat-chrome-panel-bg), var(--marinara-chat-chrome-panel-bg));
+}
+
+/* Cut corners move a chat-styled panel's fill onto ::after (chat-widget-surfaces.css), which would drop
+   the opaque backing above. Without Colors that fill is the same translucent chrome, so it is backed too. */
+html[data-mari-ios-webkit]:not(
+    [data-chat-widget-apply-colors="true"]
+  )[data-chat-widget-apply-shape="true"][data-chat-widget-shape="cut-corner"]
+  .mari-modal
+  .mari-modal-panel.mari-chat-style-surface::after {
+  background-color: var(--mari-modal-opaque-bg);
+  background-image: linear-gradient(var(--marinara-chat-chrome-panel-bg), var(--marinara-chat-chrome-panel-bg));
+}
+
+/* Opt-in solid window (Connections): the chrome panel colour is translucent, so back it with the app background. */
+.mari-modal--opaque {
+  --mari-modal-opaque-bg: var(--background);
+}
+
+.mari-modal--opaque .mari-modal-panel.marinara-chat-popover:not(.mari-window) {
+  background-color: var(--mari-modal-opaque-bg);
+  background-image: linear-gradient(var(--marinara-chat-chrome-panel-bg), var(--marinara-chat-chrome-panel-bg));
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
 }
 
 /* Full-screen mobile navigation needs no translucent copy of the covered chat. */
@@ -2885,6 +3306,13 @@ html[data-mari-ios-webkit] :is([data-component="RightPanelMobile"], [data-compon
 
 .mari-editor-field::placeholder {
   color: var(--marinara-editor-muted);
+}
+
+/* Prompt text stays monospace until the user sets an app font, then uses the app font stack like other
+   fields (#7438). App.tsx sets --font-prompt to var(--font-y2k), keeping its "Straight Quotes" face.
+   A utility, like font-mono before it, so custom themes that restyle textareas still win. */
+@utility mari-prompt-font {
+  font-family: var(--font-prompt, var(--font-mono));
 }
 
 .mari-editor-chip {
@@ -3135,22 +3563,25 @@ html[data-mari-ios-webkit] :is([data-component="RightPanelMobile"], [data-compon
   }
 
   .mari-editor-action {
-    min-height: 2rem;
-    min-width: 2rem;
+    min-height: 2.75rem;
+    min-width: 2.75rem;
     border-radius: 0.625rem;
     padding: 0.375rem;
   }
 
   .mari-editor-action--primary {
-    margin-right: auto;
     padding-inline: 0.75rem;
+  }
+
+  .mari-editor-actions .mari-editor-action--primary {
+    margin-right: auto;
   }
 
   .mari-editor-action--compact {
     min-height: auto;
   }
 
-  .mari-editor-action--compact.mari-editor-action--primary {
+  .mari-editor-actions .mari-editor-action--compact.mari-editor-action--primary {
     margin-right: 0;
   }
 
@@ -3273,6 +3704,79 @@ html[data-mari-ios-webkit] :is([data-component="RightPanelMobile"], [data-compon
 
   .mari-editor-header--with-nav .mari-editor-save-label {
     display: none;
+  }
+}
+
+/* The character editor carries eleven sections and seven actions, so its header
+   compacts earlier than the others: tighter spacing, an icon-only Save until
+   there is room, section icons only on very wide screens, and icon-only
+   sections (named in tooltips) in the narrowest desktop band. */
+@container (min-width: 56rem) and (max-width: 96rem) {
+  .mari-editor-header--dense .mari-editor-actions {
+    gap: 0.25rem;
+  }
+}
+
+@container (min-width: 56rem) and (max-width: 64rem) {
+  .mari-editor-header--dense .mari-editor-tab > svg {
+    display: block;
+  }
+
+  .mari-editor-header--dense .mari-editor-tab-label {
+    display: none;
+  }
+}
+
+@container (min-width: 80.001rem) and (max-width: 96rem) {
+  .mari-editor-header--dense {
+    gap: 0.5rem;
+    padding-inline: 0.75rem;
+  }
+
+  .mari-editor-header--dense .mari-editor-header-main {
+    gap: 0.5rem;
+  }
+
+  .mari-editor-header--dense .mari-editor-save-label {
+    display: none;
+  }
+
+  .mari-editor-header--dense .mari-editor-action--primary {
+    padding-inline: 0.5rem;
+  }
+}
+
+@container (min-width: 96.001rem) and (max-width: 116rem) {
+  .mari-editor-header--dense .mari-editor-tab {
+    gap: 0.125rem;
+    padding-inline: 0.25rem;
+  }
+
+  .mari-editor-header--dense .mari-editor-tab > svg {
+    display: none;
+  }
+}
+
+/* Narrow layouts (phones included): the section menu and every action share one row. */
+@container not (min-width: 56rem) {
+  .mari-editor-header--dense {
+    column-gap: 0.25rem;
+    padding-inline: 0.5rem;
+  }
+
+  .mari-editor-header--dense .mari-editor-actions {
+    gap: 0.25rem;
+  }
+
+  /* Character and persona cards: their 2.75rem-wide actions do not fit beside the section menu. A character's
+     seven need about 425px and a persona's six about 370px, where a 390px phone has about 365px. The menu gives
+     way first, and the tap height stays 2.75rem, only the width is narrower. */
+  .mari-editor-header--card .mari-editor-navigation {
+    flex-basis: 4rem;
+  }
+
+  .mari-editor-header--card .mari-editor-actions .mari-editor-action {
+    min-width: 2.25rem;
   }
 }
 
@@ -3551,6 +4055,11 @@ body {
   background: var(--marinara-app-background-paint);
 }
 
+/* Lazy/data loaders precede the editor shell. Avoid painting translucent custom editor surfaces twice. */
+.mari-detail-editor-surface:not(:has(> .mari-editor-shell)) {
+  background: var(--marinara-editor-bg);
+}
+
 .mari-home-starfield {
   --mari-home-star-core: color-mix(in srgb, var(--foreground) 70%, var(--marinara-app-accent-solid) 30%);
   --mari-home-star-glow: color-mix(in srgb, var(--marinara-app-accent-solid) 48%, transparent);
@@ -3712,34 +4221,13 @@ body {
   background: var(--card);
 }
 
-.mari-home-professor-widget .mari-professor-pixel-scene [data-part="sprite"] {
-  width: 68%;
-}
-
-/* Mari stands about 1.04 scene-widths tall. Rather than crop her head, she may rise past the
-   card's top border (#7032): the height cap lets her pass the art column's top by at most
-   1.125rem, so she clears the card's padding by under 0.5rem and stays inside the 0.65rem
-   minimum grid gap instead of covering a neighbour. */
-.mari-home-professor-widget [data-home-professor-art] {
-  container-type: size;
-}
-
-.mari-home-professor-widget [data-home-professor-scene] {
-  width: min(100%, 11rem, calc((100cqh + 1.125rem) / 1.04));
-}
-
 .mari-home-widget--achievements header > div > p:last-child {
   font-size: 0.6875rem;
   line-height: 1.375;
 }
 
-.mari-home-professor-widget .mari-professor-pixel-scene [data-part="laptop"] {
-  width: 76%;
-}
-
 @container (max-width: 19rem) {
   .mari-home-professor-widget {
-    grid-template-columns: minmax(0, 1fr) minmax(4.5rem, 34%);
     /* The card's padding; its text column reaches into it by the same amount. */
     --mari-home-professor-pad: 0.65rem;
   }
@@ -3778,6 +4266,40 @@ body {
   .mari-home-widget--learn .mari-home-widget-shortcut-list,
   .mari-home-widget--community .mari-home-widget-shortcut-list {
     gap: 0.125rem;
+  }
+}
+
+/* The dated costume pack's greeting under "Ask Professor Mari": hand-lettered, slightly crooked, dripping. */
+.mari-home-professor-greeting {
+  margin: 0.4rem 0 0 0.75rem;
+  transform: rotate(-2deg);
+  color: var(--marinara-chat-chrome-button-text-active);
+  font-family: "Chalkduster", "Papyrus", "Comic Sans MS", cursive;
+  font-size: clamp(0.62rem, 2.4cqw, 0.85rem);
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  text-shadow:
+    0 1px 0 color-mix(in oklab, currentColor 70%, transparent),
+    0 3px 2px color-mix(in oklab, currentColor 35%, transparent);
+}
+
+/* Slice 85: the Home Mari widget blinks on a 5.6 s loop. The blink frame sits on top of the idle frame. */
+.mari-home-professor-blink {
+  opacity: 0;
+  animation: mari-home-professor-blink 5.6s steps(1, end) infinite;
+}
+
+@keyframes mari-home-professor-blink {
+  0%,
+  72%,
+  76%,
+  100% {
+    opacity: 0;
+  }
+  73%,
+  75% {
+    opacity: 1;
   }
 }
 
@@ -3975,147 +4497,6 @@ html.mari-home-widget-drag-active * {
   transform: translate3d(-50%, -50%, 0) rotate(45deg) scale(0.6);
 }
 
-.mari-home-professor-popup {
-  transform-origin: bottom right;
-}
-
-.mari-home-professor-popup__sprite {
-  animation: mari-home-professor-arrive 900ms cubic-bezier(0.16, 1, 0.3, 1) both;
-  transform-origin: bottom center;
-}
-
-.mari-home-professor-popup__bubble {
-  animation: mari-home-professor-bubble-arrive 650ms 280ms cubic-bezier(0.16, 1, 0.3, 1) both;
-  transition: opacity 120ms cubic-bezier(0.16, 1, 0.3, 1);
-}
-
-.mari-home-professor-popup__bubble::before,
-.mari-home-professor-popup__bubble::after {
-  content: none;
-  display: none;
-}
-
-.mari-home-professor-popup__bubble-tail {
-  display: block;
-  position: absolute;
-  left: -0.82rem;
-  bottom: 1.1rem;
-  width: 0.9rem;
-  height: 1.25rem;
-  z-index: -1;
-  transform-origin: center;
-}
-
-.mari-home-professor-popup__bubble-tail::before,
-.mari-home-professor-popup__bubble-tail::after {
-  content: "";
-  position: absolute;
-  clip-path: polygon(0 50%, 100% 0, 100% 100%);
-}
-
-.mari-home-professor-popup__bubble-tail::before {
-  inset: 0;
-  background: color-mix(in srgb, var(--marinara-chat-chrome-accent) 48%, var(--border));
-}
-
-.mari-home-professor-popup__bubble-tail::after {
-  left: 0.2rem;
-  bottom: 0.09rem;
-  width: 0.72rem;
-  height: 1.05rem;
-  background: color-mix(in srgb, var(--marinara-chat-chrome-accent) 8%, var(--card));
-}
-
-.mari-home-professor-popup__bubble[data-tail-side="right"] .mari-home-professor-popup__bubble-tail {
-  right: -0.82rem;
-  left: auto;
-  transform: scaleX(-1);
-}
-
-.mari-home-professor-popup__arrival-frame {
-  background-position: 0% 0;
-  animation: mari-home-professor-frame-cycle 1.45s steps(3, end) 80ms both;
-  will-change: background-position;
-}
-
-.mari-home-professor-popup__drag-frame {
-  left: 45%;
-  top: 9%;
-  width: 120%;
-  height: 114%;
-  background-position: 3.1% 0;
-  animation:
-    mari-home-professor-drag-frame-cycle 680ms steps(1, end) infinite,
-    mari-home-professor-dangle-sway 680ms cubic-bezier(0.45, 0, 0.55, 1) infinite;
-  animation-play-state: paused;
-  backface-visibility: hidden;
-  contain: paint;
-  filter: brightness(0.97) saturate(0.66) hue-rotate(1deg) contrast(1.1);
-  image-rendering: pixelated;
-  opacity: 0;
-  transform-origin: 45% 12.2%;
-  transform: translate3d(-45%, -12.2%, 0);
-  visibility: hidden;
-  will-change: background-position, transform;
-}
-
-.mari-home-professor-popup[data-dragging="true"] .mari-home-professor-popup__drag-frame {
-  animation-play-state: running;
-  opacity: 1;
-  visibility: visible;
-}
-
-.mari-home-professor-popup[data-dragging="true"] .mari-home-professor-popup__rest-frame {
-  visibility: hidden;
-}
-
-.mari-home-professor-popup[data-dragging="true"] .mari-home-professor-popup__bubble {
-  pointer-events: none;
-}
-
-html.mari-home-professor-drag-active,
-html.mari-home-professor-drag-active * {
-  cursor: grabbing !important;
-  user-select: none !important;
-}
-
-.mari-home-professor-popup__idle-stage {
-  animation: mari-home-professor-idle 5.6s ease-in-out infinite;
-  animation-play-state: paused;
-  transform-origin: bottom center;
-}
-
-.mari-home-professor-popup__idle-stage--active {
-  animation-play-state: running;
-}
-
-.mari-home-professor-popup__idle {
-  opacity: 1;
-}
-
-.mari-home-professor-popup__blink {
-  opacity: 0;
-  animation: mari-home-professor-blink 5.6s steps(1, end) infinite;
-  animation-play-state: paused;
-}
-
-.mari-home-professor-popup__idle-stage--active .mari-home-professor-popup__blink {
-  animation-play-state: running;
-}
-
-.mari-home-professor-popup__state-image {
-  transform-origin: bottom center;
-  will-change: transform, opacity;
-}
-
-.mari-home-professor-popup__state-image--map {
-  animation: mari-home-professor-map 520ms cubic-bezier(0.16, 1, 0.3, 1) both;
-}
-
-.mari-home-professor-popup__state-image--shrug {
-  animation: mari-home-professor-shrug 480ms cubic-bezier(0.16, 1, 0.3, 1) both;
-}
-
 .mari-home-discovery-card {
   animation: mari-home-discovery-swap 320ms cubic-bezier(0.16, 1, 0.3, 1) both;
 }
@@ -4133,119 +4514,6 @@ html.mari-home-professor-drag-active * {
   62% {
     opacity: 0.3;
     transform: translate3d(-50%, -50%, 0) scale(0.86);
-  }
-}
-
-@keyframes mari-home-professor-drag-frame-cycle {
-  0%,
-  24.99% {
-    background-position: 3.1% 0;
-  }
-  25%,
-  49.99% {
-    background-position: 34.48% 0;
-  }
-  50%,
-  74.99% {
-    background-position: 66.12% 0;
-  }
-  75%,
-  100% {
-    background-position: 98.15% 0;
-  }
-}
-
-@keyframes mari-home-professor-dangle-sway {
-  0%,
-  100% {
-    transform: translate3d(-45%, -12.2%, 0) rotate(-0.7deg);
-  }
-  50% {
-    transform: translate3d(-45%, -12.2%, 0) rotate(0.7deg);
-  }
-}
-
-@keyframes mari-home-professor-arrive {
-  from {
-    opacity: 0;
-    transform: translate3d(0, 4.5rem, 0) scale(0.94);
-  }
-  to {
-    opacity: 1;
-    transform: translate3d(0, 0, 0) scale(1);
-  }
-}
-
-@keyframes mari-home-professor-bubble-arrive {
-  from {
-    opacity: 0;
-    transform: translate3d(0.75rem, 0.5rem, 0) scale(0.96);
-  }
-  to {
-    opacity: 1;
-    transform: translate3d(0, 0, 0) scale(1);
-  }
-}
-
-@keyframes mari-home-professor-frame-cycle {
-  from {
-    background-position: 0% 0;
-  }
-  to {
-    background-position: 100% 0;
-  }
-}
-
-@keyframes mari-home-professor-idle {
-  0%,
-  100% {
-    transform: translate3d(0, 0, 0) scaleY(1);
-  }
-  50% {
-    transform: translate3d(0, -0.12rem, 0) scaleY(1.006);
-  }
-}
-
-@keyframes mari-home-professor-blink {
-  0%,
-  72%,
-  76%,
-  100% {
-    opacity: 0;
-  }
-  73%,
-  75% {
-    opacity: 1;
-  }
-}
-
-@keyframes mari-home-professor-map {
-  0% {
-    opacity: 1;
-    transform: translate3d(0, 0.5rem, 0) scale(0.9, 0.96);
-  }
-  72% {
-    opacity: 1;
-    transform: translate3d(0, -0.12rem, 0) scale(1.018, 1.01);
-  }
-  100% {
-    opacity: 1;
-    transform: translate3d(0, 0, 0) scale(1);
-  }
-}
-
-@keyframes mari-home-professor-shrug {
-  0% {
-    opacity: 1;
-    transform: translate3d(0, 0.4rem, 0) scale(0.94);
-  }
-  62% {
-    opacity: 1;
-    transform: translate3d(0, -0.16rem, 0) scale(1.015);
-  }
-  100% {
-    opacity: 1;
-    transform: translate3d(0, 0, 0) scale(1);
   }
 }
 
@@ -4278,23 +4546,8 @@ html.mari-home-professor-drag-active * {
     opacity: 0.24;
   }
 
-  .mari-home-professor-popup {
-    animation: none;
-  }
-
-  .mari-home-professor-popup__sprite,
-  .mari-home-professor-popup__bubble,
-  .mari-home-professor-popup__arrival-frame,
-  .mari-home-professor-popup__drag-frame,
-  .mari-home-professor-popup__idle-stage,
-  .mari-home-professor-popup__blink,
-  .mari-home-professor-popup__state-image,
   .mari-home-discovery-card {
     animation: none;
-  }
-
-  .mari-home-professor-popup__arrival-frame {
-    background-position: 100% 0;
   }
 }
 
@@ -4318,34 +4571,13 @@ html[data-marinara-effects-paused="true"] .mari-home-widget > :not(.mari-home-wi
   transition: none;
 }
 
-html[data-marinara-reduced-effects="true"] .mari-home-professor-popup {
-  animation: none;
-}
-
-html[data-marinara-reduced-effects="true"] .mari-home-professor-popup__sprite,
-html[data-marinara-reduced-effects="true"] .mari-home-professor-popup__bubble,
-html[data-marinara-reduced-effects="true"] .mari-home-professor-popup__arrival-frame,
-html[data-marinara-reduced-effects="true"] .mari-home-professor-popup__drag-frame,
-html[data-marinara-reduced-effects="true"] .mari-home-professor-popup__idle-stage,
-html[data-marinara-reduced-effects="true"] .mari-home-professor-popup__blink,
-html[data-marinara-reduced-effects="true"] .mari-home-professor-popup__state-image,
 html[data-marinara-reduced-effects="true"] .mari-home-discovery-card {
   animation: none;
 }
 
-html[data-marinara-reduced-effects="true"] .mari-home-professor-popup__arrival-frame {
-  background-position: 100% 0;
-}
-
 /* Preserve the current Mari frame while the browser tab/window is inactive.
    App.tsx owns the single visibility/focus listener; Home only consumes it. */
-html[data-marinara-effects-paused="true"] .mari-home-professor-popup__sprite,
-html[data-marinara-effects-paused="true"] .mari-home-professor-popup__bubble,
-html[data-marinara-effects-paused="true"] .mari-home-professor-popup__arrival-frame,
-html[data-marinara-effects-paused="true"] .mari-home-professor-popup__drag-frame,
-html[data-marinara-effects-paused="true"] .mari-home-professor-popup__idle-stage,
-html[data-marinara-effects-paused="true"] .mari-home-professor-popup__blink,
-html[data-marinara-effects-paused="true"] .mari-home-professor-popup__state-image,
+html[data-marinara-effects-paused="true"] .mari-home-professor-blink,
 html[data-marinara-effects-paused="true"] .mari-professor-pixel-scene [data-part="sprite"],
 html[data-marinara-effects-paused="true"] .mari-professor-pixel-scene [data-part="screen"] span,
 html[data-marinara-effects-paused="true"] .mari-professor-pixel-scene [data-part="base"] i {
@@ -4382,9 +4614,12 @@ html[data-marinara-reduced-effects="true"] .game-expression-reaction__bubble,
 html[data-marinara-reduced-effects="true"] .game-expression-reaction__drop,
 html[data-marinara-reduced-effects="true"] [class^="anim-text-"],
 html[data-marinara-reduced-effects="true"] [class*=" anim-text-"],
+html[data-marinara-reduced-effects="true"] .mari-home-professor-blink,
 html[data-marinara-reduced-effects="true"] .mari-professor-pixel-scene [data-part="sprite"],
 html[data-marinara-reduced-effects="true"] .mari-professor-pixel-scene [data-part="screen"] span,
-html[data-marinara-reduced-effects="true"] .mari-professor-pixel-scene [data-part="base"] i {
+html[data-marinara-reduced-effects="true"] .mari-professor-pixel-scene [data-part="base"] i,
+html[data-marinara-reduced-effects="true"] .mari-workspace-glow-band::before,
+html[data-marinara-reduced-effects="true"] .mari-workspace-glow-band::after {
   animation: none !important;
 }
 
@@ -4452,6 +4687,79 @@ strong {
   }
 }
 
+/* Image from another website waiting for "Load image" (lib/remote-image-policy.ts).
+   Every rule is !important so message and card CSS cannot hide, resize or relabel it. */
+.mari-remote-image,
+.mari-remote-image * {
+  all: revert !important;
+}
+.mari-remote-image::before,
+.mari-remote-image::after,
+.mari-remote-image *::before,
+.mari-remote-image *::after {
+  content: none !important;
+}
+.mari-remote-image {
+  display: inline-flex !important;
+  position: static !important;
+  max-width: 100% !important;
+  align-items: center !important;
+  gap: 0.5rem !important;
+  margin: 0.25rem 0 !important;
+  padding: 0.25rem 0.25rem 0.25rem 0.625rem !important;
+  border: 1px dashed var(--marinara-chat-chrome-panel-border) !important;
+  border-radius: 0.5rem !important;
+  background: var(--marinara-chat-chrome-highlight-bg) !important;
+  color: var(--marinara-chat-chrome-panel-text) !important;
+  font-size: 0.75rem !important;
+  font-weight: 500 !important;
+  line-height: 1.25rem !important;
+  letter-spacing: normal !important;
+  word-spacing: normal !important;
+  text-indent: 0 !important;
+  text-transform: none !important;
+  white-space: nowrap !important;
+  vertical-align: middle !important;
+  visibility: visible !important;
+  opacity: 1 !important;
+  transform: none !important;
+}
+.mari-remote-image-host {
+  min-width: 0 !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+.mari-remote-image-load {
+  flex-shrink: 0 !important;
+  padding: 0 0.5rem !important;
+  border: 1px solid var(--marinara-chat-chrome-button-border) !important;
+  border-radius: 0.375rem !important;
+  background: var(--marinara-chat-chrome-button-bg) !important;
+  color: var(--marinara-chat-chrome-highlight-text) !important;
+  font: inherit !important;
+  font-weight: 600 !important;
+  cursor: pointer !important;
+  pointer-events: auto !important;
+}
+.mari-remote-image-load:hover {
+  border-color: var(--marinara-chat-chrome-button-border-hover) !important;
+  background: var(--marinara-chat-chrome-button-bg-hover) !important;
+}
+.mari-remote-image-load:focus-visible {
+  outline: 2px solid var(--marinara-chat-chrome-focus-ring) !important;
+  outline-offset: 1px !important;
+}
+.mari-remote-image-load:disabled {
+  cursor: progress !important;
+  opacity: 0.7 !important;
+}
+@media (pointer: coarse) {
+  .mari-remote-image-load {
+    min-height: 2.5rem !important;
+    padding: 0 0.75rem !important;
+  }
+}
+
 /* Markdown heading sizes inside chat messages — mirrors Discord / ST sizing */
 .mari-message-content h1.mari-md-heading,
 .mari-message-content h2.mari-md-heading,
@@ -4490,11 +4798,11 @@ strong {
 .mari-message-content .mari-md-inline-code {
   font-family: "Consolas", "Monaco", "Courier New", monospace;
   font-size: 0.85em;
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: var(--secondary);
+  border: 1px solid var(--border);
   border-radius: 4px;
   padding: 0.1em 0.35em;
-  color: #e8e6e3;
+  color: var(--foreground);
   overflow-wrap: anywhere;
   word-break: break-word;
   /* Code is LTR syntax whatever surrounds it. The direction must live in CSS,
@@ -4573,9 +4881,9 @@ strong {
   margin: 0.5em 0;
   min-width: 0;
   max-width: 100%;
-  overflow-x: auto;
-  -webkit-overflow-scrolling: touch;
-  white-space: pre;
+  overflow-x: hidden;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
   color: #d4d4d4;
   /* Code is LTR even when the document around it is RTL. Lives in CSS, not
      only the renderer's dir attribute, because the chat HTML path strips
@@ -4585,6 +4893,7 @@ strong {
   unicode-bidi: isolate;
 }
 .mari-message-content .mari-md-codeblock code {
+  white-space: inherit;
   background: none;
   border: none;
   padding: 0;
@@ -4596,22 +4905,14 @@ strong {
   .mari-message-content .mari-md-inline-code {
     word-break: break-all;
   }
-
-  .mari-message-content .mari-md-codeblock {
-    overflow-x: hidden;
-    overflow-wrap: anywhere;
-    white-space: pre-wrap;
-  }
-
-  .mari-message-content .mari-md-codeblock code {
-    white-space: inherit;
-  }
 }
 
 .mari-message-content .mari-md-codeblock-lang {
   position: absolute;
   top: 0;
-  inset-inline-end: 0;
+  /* Physical: code blocks are left-to-right (dir="ltr", markdown.tsx), so the end corner is the right one in
+     every locale, as for the Copy button. inset-inline-end compiles to :lang() lists Chromium drops (#8709). */
+  right: 0;
   font-size: 0.7em;
   color: rgba(255, 255, 255, 0.3);
   padding: 0.25em 0.6em;
@@ -4757,23 +5058,7 @@ strong {
   :root[data-marinara-custom-cursor="enabled"] .cursor-zoom-out,
   :root[data-marinara-custom-cursor="enabled"] .cursor-wait,
   :root[data-marinara-custom-cursor="enabled"] .cursor-progress,
-  :root[data-marinara-custom-cursor="enabled"] .cursor-not-allowed,
-  :root[data-marinara-custom-cursor="enabled"] .cursor-col-resize,
-  :root[data-marinara-custom-cursor="enabled"] .cursor-ew-resize,
-  :root[data-marinara-custom-cursor="enabled"] .cursor-e-resize,
-  :root[data-marinara-custom-cursor="enabled"] .cursor-w-resize,
-  :root[data-marinara-custom-cursor="enabled"] .cursor-row-resize,
-  :root[data-marinara-custom-cursor="enabled"] .cursor-ns-resize,
-  :root[data-marinara-custom-cursor="enabled"] .cursor-n-resize,
-  :root[data-marinara-custom-cursor="enabled"] .cursor-s-resize,
-  :root[data-marinara-custom-cursor="enabled"] .cursor-nwse-resize,
-  :root[data-marinara-custom-cursor="enabled"] .cursor-nw-resize,
-  :root[data-marinara-custom-cursor="enabled"] .cursor-se-resize,
-  :root[data-marinara-custom-cursor="enabled"] .cursor-nesw-resize,
-  :root[data-marinara-custom-cursor="enabled"] .cursor-ne-resize,
-  :root[data-marinara-custom-cursor="enabled"] .cursor-sw-resize,
-  :root[data-marinara-custom-cursor="enabled"] .mari-resize-x,
-  :root[data-marinara-custom-cursor="enabled"] .mari-resize-y
+  :root[data-marinara-custom-cursor="enabled"] .cursor-not-allowed
 ) {
   cursor: var(--marinara-custom-cursor) !important;
 }
@@ -4795,37 +5080,57 @@ strong {
 :where(.mari-resize-y) {
   cursor: ns-resize !important;
 }
-:where(
-  :root[data-marinara-custom-cursor="enabled"] .cursor-col-resize,
-  :root[data-marinara-custom-cursor="enabled"] .cursor-ew-resize,
-  :root[data-marinara-custom-cursor="enabled"] .cursor-e-resize,
-  :root[data-marinara-custom-cursor="enabled"] .cursor-w-resize,
-  :root[data-marinara-custom-cursor="enabled"] .mari-resize-x
-) {
-  cursor: var(--marinara-custom-cursor) !important;
+/* Resize edges keep the system's resize cursors with the custom cursor on: the arrow cannot say that an edge can be
+   dragged, and the cursor is the only sign that it can (#8621). These carry real specificity so no `:where` rule above
+   can take them back. */
+:root[data-marinara-custom-cursor="enabled"] .cursor-col-resize {
+  cursor: col-resize !important;
 }
-:where(
-  :root[data-marinara-custom-cursor="enabled"] .cursor-row-resize,
-  :root[data-marinara-custom-cursor="enabled"] .cursor-ns-resize,
-  :root[data-marinara-custom-cursor="enabled"] .cursor-n-resize,
-  :root[data-marinara-custom-cursor="enabled"] .cursor-s-resize,
-  :root[data-marinara-custom-cursor="enabled"] .mari-resize-y
-) {
-  cursor: var(--marinara-custom-cursor) !important;
+:root[data-marinara-custom-cursor="enabled"] :is(.cursor-ew-resize, .mari-resize-x) {
+  cursor: ew-resize !important;
 }
-:where(
-  :root[data-marinara-custom-cursor="enabled"] .cursor-nwse-resize,
-  :root[data-marinara-custom-cursor="enabled"] .cursor-nw-resize,
-  :root[data-marinara-custom-cursor="enabled"] .cursor-se-resize
-) {
-  cursor: var(--marinara-custom-cursor) !important;
+:root[data-marinara-custom-cursor="enabled"] .cursor-e-resize {
+  cursor: e-resize !important;
 }
-:where(
-  :root[data-marinara-custom-cursor="enabled"] .cursor-nesw-resize,
-  :root[data-marinara-custom-cursor="enabled"] .cursor-ne-resize,
-  :root[data-marinara-custom-cursor="enabled"] .cursor-sw-resize
-) {
-  cursor: var(--marinara-custom-cursor) !important;
+:root[data-marinara-custom-cursor="enabled"] .cursor-w-resize {
+  cursor: w-resize !important;
+}
+:root[data-marinara-custom-cursor="enabled"] .cursor-row-resize {
+  cursor: row-resize !important;
+}
+:root[data-marinara-custom-cursor="enabled"] :is(.cursor-ns-resize, .mari-resize-y) {
+  cursor: ns-resize !important;
+}
+:root[data-marinara-custom-cursor="enabled"] .cursor-n-resize {
+  cursor: n-resize !important;
+}
+:root[data-marinara-custom-cursor="enabled"] .cursor-s-resize {
+  cursor: s-resize !important;
+}
+:root[data-marinara-custom-cursor="enabled"] .cursor-nwse-resize {
+  cursor: nwse-resize !important;
+}
+:root[data-marinara-custom-cursor="enabled"] .cursor-nw-resize {
+  cursor: nw-resize !important;
+}
+:root[data-marinara-custom-cursor="enabled"] .cursor-se-resize {
+  cursor: se-resize !important;
+}
+:root[data-marinara-custom-cursor="enabled"] .cursor-nesw-resize {
+  cursor: nesw-resize !important;
+}
+:root[data-marinara-custom-cursor="enabled"] .cursor-ne-resize {
+  cursor: ne-resize !important;
+}
+:root[data-marinara-custom-cursor="enabled"] .cursor-sw-resize {
+  cursor: sw-resize !important;
+}
+/* While a sidebar edge is dragged the pointer leaves the thin handle, so the whole page shows the resize cursor until
+   the drag ends (AppShell sets and clears the attribute). The doubled :root outranks the resize-class rules above, so
+   crossing a window corner or a panel edge mid-drag does not swap in that element's own resize cursor. */
+:root[data-marinara-resizing="col"],
+:root:root[data-marinara-resizing="col"] * {
+  cursor: col-resize !important;
 }
 
 /* ─────────────────────────────────────────────
@@ -5215,10 +5520,11 @@ strong {
   }
 }
 
+/* Placed inside the app shell, not the screen: a phone turned sideways keeps its camera strips plain. */
 .y2k-star,
 .y2k-star-md,
 .y2k-star-lg {
-  position: fixed;
+  position: absolute;
   pointer-events: none;
   border-radius: 50%;
   animation: twinkle-glow 4s ease-in-out infinite;
@@ -6004,6 +6310,8 @@ strong {
   animation: fade-in-up 0.25s ease-out;
 }
 
+@import "./omnibar.css";
+
 @keyframes scale-in {
   from {
     opacity: 0;
@@ -6324,7 +6632,13 @@ strong {
 }
 
 [data-chat-mode="roleplay"] {
-  --mari-roleplay-message-column-width: 58rem;
+  /* 100cqw is the chat pane (CenterContent is a container). A docked Tracker Panel needs room on each
+     side of the column (AppShell sets it), so a pane too narrow for both narrows the column instead of
+     squeezing the panel to a sliver. */
+  --mari-roleplay-message-column-width: min(
+    var(--mari-roleplay-custom-column-width, 58rem),
+    100cqw - 2 * var(--tracker-panel-column-room, 0px)
+  );
   --mari-roleplay-row-gutter: clamp(0.25rem, 1.5vw, 1.5rem);
 }
 
@@ -6392,7 +6706,9 @@ strong {
   width: min(100%, var(--mari-roleplay-message-column-width));
 }
 
-[data-chat-mode="roleplay"] .mari-scrollable-roleplay-avatar {
+/* R14: Mari beside her newest reply stays on screen while it scrolls, like the scrollable avatars. */
+[data-chat-mode="roleplay"] .mari-scrollable-roleplay-avatar,
+.mari-answer__sprite > * {
   position: sticky;
   top: var(--mari-roleplay-scrollable-avatar-top, max(0.75rem, env(safe-area-inset-top)));
   align-self: flex-start;
@@ -6405,6 +6721,17 @@ strong {
 }
 
 @media (min-width: 768px) {
+  /* A full-width custom column leaves the same gutters and avatar tracks beside every row and the composer. */
+  [data-chat-mode="roleplay"][data-roleplay-custom-width="true"] {
+    --mari-roleplay-message-column-width: min(
+      var(--mari-roleplay-custom-column-width),
+      100cqw - 2 * var(--tracker-panel-column-room, 0px),
+      100cqw - var(--mari-chat-position-clearance, 0px) - 2 * var(--mari-roleplay-transcript-gutter) - 2 *
+        var(--mari-roleplay-row-gutter) - 2 * var(--mari-roleplay-custom-avatar-room) -
+        var(--mari-roleplay-scrollbar-width, 0px)
+    );
+  }
+
   [data-chat-mode="roleplay"] .mari-roleplay-input-column > .mari-chat-input {
     padding-left: 0;
     padding-right: 0;
@@ -6497,9 +6824,7 @@ strong {
 
   /* 100cqw is the chat pane (CenterContent is a size container), so the right edge ignores the
      transcript's scrollbar, as the composer does. */
-  [data-chat-mode="roleplay"][data-roleplay-presentation="classic"][data-chat-position="right"]
-    [data-chat-scroll]
-    > * {
+  [data-chat-mode="roleplay"][data-roleplay-presentation="classic"][data-chat-position="right"] [data-chat-scroll] > * {
     margin-left: max(
       0px,
       100cqw - 2 * var(--mari-roleplay-transcript-gutter) - var(--mari-chat-position-clearance, 0px) -
@@ -6908,17 +7233,55 @@ strong {
   }
 }
 
+/* The left and right safe areas: where the camera sits on a phone turned sideways. env() is read here
+   only (mobile-safe-area-inset regression); everything that keeps out of them reads these, so a test
+   can stand in a notch by setting them on <html>. */
+:root {
+  --mari-safe-area-inset-left: env(safe-area-inset-left, 0px);
+  --mari-safe-area-inset-right: env(safe-area-inset-right, 0px);
+  --mari-shell-inset-left: var(--mari-safe-area-inset-left);
+  --mari-shell-inset-right: var(--mari-safe-area-inset-right);
+}
+
+/* iPhone reports symmetric landscape insets. Reserve only the camera edge when its rotation is known. */
+:root[data-mari-camera-side="left"] {
+  --mari-shell-inset-right: 0px;
+}
+
+:root[data-mari-camera-side="right"] {
+  --mari-shell-inset-left: 0px;
+}
+
+/* The background fills the opposite edge, but TopBar controls still clear its rounded corners. */
+:root[data-mari-camera-side="left"] .mari-topbar {
+  padding-right: max(0.75rem, var(--mari-safe-area-inset-right));
+}
+
+:root[data-mari-camera-side="right"] .mari-topbar {
+  padding-left: max(0.75rem, var(--mari-safe-area-inset-left));
+}
+
 /* Touch tablets get the phone shell (MOBILE_SHELL_MEDIA_QUERY in ui.store.ts),
    so they also need its keyboard-aware viewport. */
 @media (max-width: 767px), (max-width: 1440px) and (hover: none) and (any-pointer: coarse) {
   .mari-topbar {
     /* Match native page backing even over gradients; also override Gecko's card fallback. */
     background-color: var(--marinara-page-backing, var(--marinara-topbar-surface)) !important;
+    /* Its music players' fixed panels are placed from the bar; without the blur below, this keeps that. */
+    contain: layout;
   }
 
   /* Home's browser chrome continues the TopBar, so it and its address row shade the same backing. */
   .mari-home-browser-chrome {
     --marinara-topbar-surface: var(--marinara-page-backing, var(--card));
+  }
+
+  /* Both bars are opaque here, so their blur shows nothing and only costs GPU work; Samsung Internet
+     flickers under it (Marinara-Agents#1997). */
+  .mari-topbar,
+  .mari-home-browser-chrome {
+    -webkit-backdrop-filter: none !important;
+    backdrop-filter: none !important;
   }
 
   /*
@@ -6944,9 +7307,15 @@ strong {
     height: 100%;
     overflow: hidden;
     overscroll-behavior: none;
-    /* Safe-area insets handled by AppShell — only apply sides here */
-    padding-left: env(safe-area-inset-left);
-    padding-right: env(safe-area-inset-right);
+    /* Top and bottom insets are AppShell's; the sides cover anything here that is not fixed. */
+    padding-left: var(--mari-shell-inset-left);
+    padding-right: var(--mari-shell-inset-right);
+  }
+
+  /* The fixed shell stops at the effective side insets, leaving the page backing over the camera. */
+  .mari-app {
+    left: var(--mari-shell-inset-left);
+    right: var(--mari-shell-inset-right);
   }
 
   /* A fixed ancestor lets iOS WebKit pan the whole app when any descendant
@@ -6973,9 +7342,12 @@ strong {
   }
 
   /* Cover both the app and body-portal dialogs. Character/persona fields use
-     the same viewport contract as chat instead of falling back to fixed UI. */
+     the same viewport contract as chat instead of falling back to fixed UI.
+     A floating panel whose editor shell fills it (a package's full-screen
+     editor, such as World Maps) is a body-portal dialog too. */
   html[data-mari-ios-webkit] .mari-app,
-  html[data-mari-ios-webkit] .mari-modal {
+  html[data-mari-ios-webkit] .mari-modal,
+  html[data-mari-ios-webkit] body > [data-chat-floating-panel]:has(> .mari-editor-shell.flex-1) {
     position: absolute;
     top: var(--mari-visual-viewport-offset-top, 0px);
     bottom: auto;
@@ -6985,10 +7357,14 @@ strong {
 
   /* Body-portalled chat menus otherwise stay in layout-viewport coordinates
      while iPhone pans the visual viewport for its keyboard. Keep the focused
-     menu and its scroll shell inside the screen the user can actually see. */
+     menu and its scroll shell inside the screen the user can actually see.
+     Full-screen editors stay out: shrinking one to its content scrolled its
+     header and Save button out of reach on Android (#7452). */
   html[data-mari-software-keyboard-open]
     body
-    > [data-chat-floating-panel]:not(.mari-modal):not([data-component="ExpandedTextarea"]):focus-within {
+    > [data-chat-floating-panel]:not(.mari-modal):not([data-component="ExpandedTextarea"]):not(
+      :has(> .mari-editor-shell.flex-1)
+    ):focus-within {
     position: absolute !important;
     top: calc(var(--mari-visual-viewport-offset-top, 0px) + 0.5rem) !important;
     bottom: auto !important;
@@ -7025,9 +7401,11 @@ strong {
     max-height: none !important;
   }
 
-  /* Chat Settings' rows above its sections (Tracker Panel, Reset View, the drag-and-drop hint) step
-     aside while you type, so a phone turned sideways still shows the field. */
-  html[data-mari-software-keyboard-open] .mari-window:focus-within [data-chat-settings-top-row] {
+  /* Chat Settings' rows above its sections (Tracker Panel, Reset View, the drag-and-drop hint, and the
+     wide-screen Chat button layout row) step aside while you type, so a phone turned sideways still
+     shows the field. */
+  html[data-mari-software-keyboard-open] .mari-window:focus-within [data-chat-settings-top-row],
+  html[data-mari-software-keyboard-open] .mari-window:focus-within [data-chat-button-layout] {
     display: none;
   }
 
@@ -7067,8 +7445,9 @@ strong {
 
   .mari-topbar {
     gap: 0.125rem;
-    padding-left: max(4px, env(safe-area-inset-left)) !important;
-    padding-right: max(4px, env(safe-area-inset-right)) !important;
+    /* Inside the shell, which already keeps out of the side insets. */
+    padding-left: 4px !important;
+    padding-right: 4px !important;
   }
 
   .mari-topbar-left,
@@ -7184,8 +7563,8 @@ strong {
   }
 
   .rpg-chat-messages-mobile {
-    padding-left: max(0.5rem, env(safe-area-inset-left)) !important;
-    padding-right: max(0.5rem, env(safe-area-inset-right)) !important;
+    padding-left: 0.5rem !important;
+    padding-right: 0.5rem !important;
   }
 
   [data-chat-mode]:has([data-roleplay-agent-window="echo"]) .mari-chat-load-more {
@@ -7279,8 +7658,8 @@ strong {
 
 @media (max-width: 479px) {
   .mari-topbar {
-    padding-left: max(2px, env(safe-area-inset-left)) !important;
-    padding-right: max(2px, env(safe-area-inset-right)) !important;
+    padding-left: 2px !important;
+    padding-right: 2px !important;
   }
 
   .mari-topbar-action {
@@ -7321,7 +7700,8 @@ strong {
   .mari-topbar-action {
     flex: 0 0 auto;
     width: 3.5rem !important;
-    height: 2.25rem !important;
+    /* UX-16: 2.6rem is 44 px at the 17 px root, the minimum touch target. */
+    height: 2.6rem !important;
     padding: 0 !important;
   }
 }
@@ -7337,7 +7717,7 @@ strong {
   input,
   select,
   textarea {
-    font-size: 1rem; /* prevents iOS zoom on focus */
+    font-size: max(1rem, 16px); /* prevents iOS zoom on focus, even at a smaller Font Size setting */
   }
 }
 
@@ -7433,6 +7813,8 @@ html[data-marinara-reduced-effects="true"] .mari-window {
 .game-narration-prose {
   line-height: 1.75;
   letter-spacing: 0.01em;
+  /* Model text can hold runs no browser wraps on its own, such as `happy|sad|angry` or a long URL. */
+  overflow-wrap: anywhere;
 }
 .game-narration-prose p {
   margin-bottom: 0.75em;
@@ -8325,7 +8707,7 @@ html[data-marinara-reduced-effects="true"] .mari-window {
 
 .mari-conversation-call-mini {
   bottom: max(var(--mari-safe-area-inset-bottom, env(safe-area-inset-bottom)), 0.75rem);
-  left: max(env(safe-area-inset-left), 0.75rem);
+  left: max(var(--mari-safe-area-inset-left), 0.75rem);
   transition: bottom 220ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
@@ -8396,6 +8778,7 @@ html[data-marinara-reduced-effects="true"] .mari-window {
   position: absolute;
   bottom: var(--mari-professor-sprite-bottom, 15%);
   width: clamp(8.25rem, 37%, 11rem);
+  height: auto;
   image-rendering: pixelated;
   image-rendering: crisp-edges;
   filter: drop-shadow(0.45rem 0.55rem 0 rgba(0, 0, 0, 0.2));
@@ -8585,6 +8968,61 @@ html[data-marinara-reduced-effects="true"] .mari-window {
   }
 }
 
+@import "./omnibar-settings.css";
+
+/* A phone turned sideways has about 400px of height. The TopBar and Home's tab strip get shorter so a
+   package tab keeps that height, and while you type in one they step aside for the keyboard. Touch only
+   (the MOBILE_SHELL_MEDIA_QUERY condition): a short desktop window keeps the full bars. At least 640px wide:
+   every sideways phone is, while an upright Android phone whose keyboard shrinks the page is not. */
+@media (orientation: landscape) and (max-height: 500px) and (min-width: 640px) and (hover: none) and (any-pointer: coarse) {
+  :root {
+    --mari-topbar-height: 2.25rem;
+  }
+
+  .mari-topbar {
+    height: var(--mari-topbar-height);
+  }
+
+  .mari-topbar-action {
+    width: var(--mari-topbar-height);
+    height: var(--mari-topbar-height);
+  }
+
+  .mari-topbar-panel-nav {
+    padding: 0;
+  }
+
+  .mari-topbar-left > * {
+    max-height: var(--mari-topbar-height);
+  }
+
+  .mari-home-browser-tab-row {
+    height: 2rem;
+  }
+
+  .mari-home-browser-tab-row [role="tab"],
+  [data-component="HomeBrowserHub.MobileBookmarksTrigger"],
+  [data-component="HomeBrowserHub.TabMenuTrigger"] {
+    min-height: 1.875rem;
+    height: 1.875rem;
+  }
+
+  [data-component="HomeBrowserHub.AnimatedLogo"] {
+    width: 1.5rem;
+    height: 1.5rem;
+  }
+
+  /* As on a portrait phone, the logo stands alone so the tabs keep the width. */
+  [data-component="HomeBrowserHub.Brand"] > div {
+    display: none;
+  }
+
+  html[data-mari-software-keyboard-open]:has([data-home-package-view] :focus-within)
+    :is(.mari-topbar, .mari-home-browser-chrome) {
+    display: none;
+  }
+}
+
 /* Short landscape screens need the chat list to share the sidebar's scroll. */
 @media (max-height: 500px) and (orientation: landscape) {
   .mari-chat-sidebar {
@@ -8607,4 +9045,74 @@ html[data-marinara-reduced-effects="true"] .mari-window {
     min-height: 12rem;
     overflow-y: visible;
   }
+}
+
+/* Items gathered by a second-finger tap remain visible in their list. */
+[data-drag-stacked="true"] {
+  opacity: 0.5;
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
+}
+
+/* Make before/after insertion different from dropping into a folder. */
+[data-drag-insert] {
+  position: relative;
+  overflow: visible;
+  transition: margin 150ms ease;
+}
+[data-drag-insert="before"] {
+  margin-block-start: 24px;
+}
+[data-drag-insert="after"] {
+  margin-block-end: 24px;
+}
+[data-drag-insert]::after {
+  content: "";
+  position: absolute;
+  inset-inline: 6px;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--primary);
+  pointer-events: none;
+}
+[data-drag-insert="before"]::after {
+  top: -14px;
+}
+[data-drag-insert="after"]::after {
+  bottom: -14px;
+}
+[data-drag-target="inside"] {
+  outline: 2px solid var(--primary);
+  outline-offset: -2px;
+  background-color: var(--sidebar-accent);
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-drag-insert] {
+    transition: none;
+  }
+}
+[data-drag-insert-axis="x"] {
+  margin-block: 0;
+}
+[data-drag-insert-axis="x"][data-drag-insert="before"] {
+  margin-inline-start: 24px;
+}
+[data-drag-insert-axis="x"][data-drag-insert="after"] {
+  margin-inline-end: 24px;
+}
+[data-drag-insert-axis="x"]::after {
+  inset-block: 6px;
+  width: 4px;
+  height: auto;
+}
+[data-drag-insert-axis="x"][data-drag-insert="before"]::after {
+  left: -14px;
+  right: auto;
+}
+[data-drag-insert-axis="x"][data-drag-insert="after"]::after {
+  right: -14px;
+  left: auto;
+}
+[data-drag-source="true"] {
+  opacity: 0.5;
 }

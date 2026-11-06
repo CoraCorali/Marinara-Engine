@@ -286,6 +286,59 @@ assert.equal(repairedJsonResult.success, true, "structured agents should recover
 assert.equal(repairedJsonProvider.calls, 1, "repairable JSON should not spend another model call");
 assert.deepEqual(repairedJsonResult.data, { weather: "rain", nested: { value: 1 } });
 
+// #8643: a rewrite cut off at the output limit (GLM 5.3 always reasons, even when a JSON agent asks it not to, so
+// the thinking shares the agent's max tokens) holds only the start of the reply. JSON repair closes its editedText
+// as if it were whole, so it used to be applied and the streamed reply became an exact prefix ending mid-sentence.
+class CutOffProvider extends RecordingProvider {
+  override async chatComplete(messages: ChatMessage[], options: ChatOptions): Promise<ChatCompletionResult> {
+    return { ...(await super.chatComplete(messages, options)), finishReason: "length" };
+  }
+}
+const fullReply =
+  "She steps closer.\n\nRain taps the glass while she decides what to say next, and finally she speaks.";
+const cutOffRewrite = '{"editNeeded": true, "editedText": "She steps closer.\\n\\nRain taps the glass while she dec';
+for (const agent of [
+  makeAgent("prose-guardian", "text_rewrite"),
+  { ...makeAgent("custom-rewriter", "text_rewrite"), isCustomAgent: true },
+]) {
+  const cutOff = await executeAgent(
+    agent,
+    { ...context, mainResponse: fullReply },
+    new CutOffProvider(cutOffRewrite),
+    "agent-model",
+  );
+  assert.equal(cutOff.success, false, `${agent.type}: a rewrite cut off at the output limit must not be applied`);
+  assert.match(cutOff.error ?? "", /max tokens/u, `${agent.type}: the failure says how to fix it`);
+  // A rewrite agent with tools answers through the tool loop; its cut-off answer is refused the same way.
+  const cutOffWithTools = await executeAgent(
+    agent,
+    { ...context, mainResponse: fullReply },
+    new CutOffProvider(cutOffRewrite),
+    "agent-model",
+    {
+      tools: [{ type: "function", function: { name: "look_up", description: "look up", parameters: {} } }],
+      executeToolCall: async () => JSON.stringify({ found: "nothing" }),
+    },
+  );
+  assert.equal(cutOffWithTools.success, false, `${agent.type}: a cut-off tool-loop rewrite must not be applied`);
+
+  const whole = await executeAgent(
+    agent,
+    { ...context, mainResponse: fullReply },
+    new RecordingProvider(JSON.stringify({ editNeeded: true, editedText: fullReply.toUpperCase(), changes: [] })),
+    "agent-model",
+  );
+  assert.equal(whole.success, true, `${agent.type}: a finished rewrite still applies`);
+  assert.equal((whole.data as { editedText?: string }).editedText, fullReply.toUpperCase());
+}
+const cutOffTracker = await executeAgent(
+  makeAgent("world-state", "game_state_update"),
+  context,
+  new CutOffProvider('{"weather": "rain"'),
+  "agent-model",
+);
+assert.equal(cutOffTracker.success, true, "other structured agents keep recovering cut-off JSON");
+
 // Inventory replacement is destructive: incomplete JSON and malformed rows
 // must fail before the same patch helper used by generation/retry can save them.
 const inventoryAgent = makeAgent("inventory-tracker", "inventory_tracker_update");
@@ -343,6 +396,82 @@ assert.equal(
   "batch JSON repair must not hide an incomplete inventory array from validation",
 );
 
+// Marinara-Agents#2077: Inventory has three groups, so a root envelope names none.
+// A row goes to the one group that already tracks its name, alone or beside group
+// parts; a removal no group tracks is dropped. A row no single group tracks, or a
+// removal more than one group tracks, is retried like invalid JSON, then fails.
+const inventoryContext = { ...context, gameState: { playerStats: savedInventory } } as AgentContext;
+for (const [output, expected] of [
+  [{ updates: [{ name: "gold", qty: 5 }] }, { inventoryTrackerCurrencies: [{ name: "Gold", qty: 5 }] }],
+  [{ removed: ["Rope"] }, { inventoryTrackerInventory: [{ name: "Potion", qty: 3 }] }],
+  [
+    {
+      inventory: [{ name: "Rope" }, { name: "Potion", qty: 3 }, { name: "Lantern" }],
+      updates: [
+        { name: "Gold", qty: 5 },
+        { name: "Potion", qty: 2 },
+      ],
+    },
+    {
+      inventoryTrackerCurrencies: [{ name: "Gold", qty: 5 }],
+      inventoryTrackerInventory: [{ name: "Rope" }, { name: "Potion", qty: 2 }, { name: "Lantern" }],
+    },
+  ],
+  [
+    { equipped: { updates: [{ name: "Shield" }] }, removed: ["Sword"] },
+    { inventoryTrackerEquipped: [{ name: "Shield" }] },
+  ],
+  // Removing a name no group tracks changes nothing, so it must not sink the placed rows.
+  [
+    { updates: [{ name: "Gold", qty: 3 }], removed: ["Torch"] },
+    { inventoryTrackerCurrencies: [{ name: "Gold", qty: 3 }] },
+  ],
+] as const) {
+  const provider = new RecordingProvider(JSON.stringify(output));
+  const single = await executeAgent(inventoryAgent, inventoryContext, provider, "agent-model");
+  assert.equal(provider.calls, 1, `assignable root rows need no retry: ${JSON.stringify(output)}`);
+  const batched = (
+    await executeAgentBatch(
+      [inventoryAgent, makeAgent("world-state", "game_state_update")],
+      inventoryContext,
+      new RecordingProvider(JSON.stringify({ "world-state": { weather: "rain" }, "inventory-tracker": output })),
+      "agent-model",
+    )
+  ).find((result) => result.agentType === "inventory-tracker")!;
+  for (const result of [single, batched]) {
+    assert.equal(result.success, true, `assignable root rows must succeed: ${JSON.stringify(output)}`);
+    assert.deepEqual(
+      buildLockedInventoryTrackerPatch({
+        data: result.data as Record<string, unknown>,
+        snapshot: { playerStats: savedInventory },
+        lockState: null,
+      }).playerStats,
+      { ...savedInventory, ...expected },
+      `every root row and group part must be applied: ${JSON.stringify(output)}`,
+    );
+  }
+}
+for (const [output, gameState, name] of [
+  [{ updates: [{ name: "Lantern" }], removed: ["Rope"] }, inventoryContext.gameState, "Lantern"],
+  [
+    { updates: [{ name: "Gold", qty: 5 }] },
+    { playerStats: { ...savedInventory, inventoryTrackerEquipped: [{ name: "Gold" }] } },
+    "Gold",
+  ],
+  [{ removed: ["Gold"] }, { playerStats: { ...savedInventory, inventoryTrackerEquipped: [{ name: "Gold" }] } }, "Gold"],
+] as const) {
+  const provider = new RecordingProvider(JSON.stringify(output));
+  const result = await executeAgent(inventoryAgent, { ...context, gameState } as AgentContext, provider, "agent-model");
+  assert.equal(result.success, false, `an unassignable root row must not be a successful no-change: ${name}`);
+  assert.equal(provider.calls, 2, "an unassignable root row is retried once like invalid JSON");
+  assert.match(result.error ?? "", new RegExp(name), "the failed run names the row it could not place");
+  assert.match(
+    String(provider.messages[1]?.at(-1)?.content),
+    /"currencies", "equipped" or "inventory"/,
+    "the retry asks for the group",
+  );
+}
+
 // Custom Tracker accepts the same incremental envelope at the root or under fields.
 const trackerUpdates = { updates: [{ name: "Trust", value: "49/100" }], removed: ["Obsolete"] };
 for (const output of [trackerUpdates, { fields: trackerUpdates }]) {
@@ -381,6 +510,58 @@ for (const output of [
     "agent-model",
   );
   assert.deepEqual(result.data, output, "explicit fields and invalid/empty envelopes retain their meaning");
+}
+
+// #7208: Character Tracker accepts its incremental envelope at the root too,
+// alone and inside a batch, and keeps the explicit presentCharacters shapes.
+const trackedCharacters = [
+  { characterId: "alice", name: "Alice", mood: "calm", outfit: "coat", avatarPath: "/alice.png" },
+  { characterId: "bob", name: "Bob", mood: "tired" },
+];
+const aliceUpdate = {
+  characterId: "alice",
+  name: "Alice",
+  emoji: "*",
+  mood: "elated",
+  thoughts: "Finally.",
+  outfit: "gown",
+};
+const mergedAlice = { ...trackedCharacters[0], ...aliceUpdate };
+for (const [output, expected] of [
+  [{ updates: [aliceUpdate], removed: ["bob"] }, [mergedAlice]],
+  [{ updates: [aliceUpdate] }, [mergedAlice, trackedCharacters[1]]],
+  [{ presentCharacters: { updates: [aliceUpdate], removed: ["bob"] } }, [mergedAlice]],
+  [{ presentCharacters: [aliceUpdate] }, [aliceUpdate]],
+] as const) {
+  const characterTracker = makeAgent("character-tracker", "character_tracker_update");
+  const single = await executeAgent(
+    characterTracker,
+    context,
+    new RecordingProvider(JSON.stringify(output)),
+    "agent-model",
+  );
+  const batchProvider = new RecordingProvider(
+    JSON.stringify({ "world-state": { weather: "rain" }, "character-tracker": output }),
+  );
+  const batched = (
+    await executeAgentBatch(
+      [characterTracker, makeAgent("world-state", "game_state_update")],
+      context,
+      batchProvider,
+      "agent-model",
+    )
+  ).find((result) => result.agentType === "character-tracker");
+  assert.equal(batchProvider.calls, 1, "Character Tracker must be parsed from the shared batch response");
+  for (const result of [single, batched]) {
+    assert.equal(result?.success, true);
+    const merged = resolveTrackerGroupUpdate(
+      (result?.data as Record<string, unknown>).presentCharacters,
+      trackedCharacters,
+      null,
+      "presentCharacters",
+    );
+    assert.deepEqual(merged, expected, `Character Tracker output ${JSON.stringify(output)} must change the snapshot`);
+  }
 }
 
 const invalidJsonProvider = new RecordingProvider("not JSON at all");
@@ -690,6 +871,28 @@ await createAgentPipeline([spotifyAgent], context).postGenerate("The room settle
 assert.equal(spotifyProvider.calls, 1, "Spotify Music DJ should make one planning request");
 assert.equal(spotifyProvider.options[0]?.tools, undefined, "Spotify planning should not enter the LLM tool loop");
 assert.equal(spotifyToolExecutions, 0, "Spotify tools should run later in the deterministic playback stage");
+
+// #8251: post-reply agents see the map location after the reply, not the one the turn started in.
+const locationProvider = new RecordingProvider(
+  JSON.stringify({ shouldGenerate: false, prompt: "", style: "", characters: [], reason: "quiet beat" }),
+);
+const locationIllustrator: ResolvedAgent = { ...makeAgent("illustrator"), provider: locationProvider };
+const locationContext: AgentContext = {
+  ...context,
+  currentLocation: { path: "Palace > Throne Room", description: "OLD_ROOM_SENTINEL" },
+};
+await createAgentPipeline([locationIllustrator], locationContext).postGenerate("They walk out to the yard.", {
+  currentLocation: { path: "Palace > Palace Yard", description: "NEW_ROOM_SENTINEL" },
+});
+const movedPrompt = locationProvider.messages[0]!.map((message) => message.content).join("\n");
+assert.match(movedPrompt, /Path: Palace > Palace Yard\nDescription: NEW_ROOM_SENTINEL/u);
+assert.doesNotMatch(movedPrompt, /OLD_ROOM_SENTINEL/u);
+await createAgentPipeline([locationIllustrator], locationContext).postGenerate("They stay put.");
+assert.match(
+  locationProvider.messages[1]!.map((message) => message.content).join("\n"),
+  /OLD_ROOM_SENTINEL/u,
+  "without an override the pipeline keeps its own location",
+);
 
 const spotifyFallbackCalls: string[] = [];
 let spotifyFallbackReportsActiveUri = true;
@@ -1008,3 +1211,84 @@ assert.match(
 );
 assert.match(groupHistory, /Nested markup\./);
 assert.doesNotMatch(groupHistory, /<\/?script/i, "nested markup must not reassemble into a tag after stripping");
+
+// An agent that keeps calling tools gets a few rounds, then answers without tools: its exchange goes as
+// text (a provider's plain path cannot carry tool calls or results), and it is asked for its answer.
+{
+  class ToolLoopingProvider extends RecordingProvider {
+    override async chatComplete(messages: ChatMessage[], options: ChatOptions): Promise<ChatCompletionResult> {
+      this.calls += 1;
+      this.messages.push(messages);
+      this.options.push(options);
+      if (options.tools?.length) {
+        return {
+          content: "",
+          toolCalls: [
+            {
+              id: `call-${this.calls}`,
+              type: "function",
+              function: { name: "look_up", arguments: JSON.stringify({ round: this.calls }) },
+            },
+          ],
+          finishReason: "tool_calls",
+          usage: { promptTokens: 10, completionTokens: 2, totalTokens: 12 },
+        };
+      }
+      return {
+        content: JSON.stringify({ text: "done" }),
+        toolCalls: [],
+        finishReason: "stop",
+        usage: { promptTokens: 10, completionTokens: 2, totalTokens: 12 },
+      };
+    }
+  }
+  const provider = new ToolLoopingProvider();
+  const previousMaxRounds = process.env.MAX_TOOL_ROUNDS;
+  delete process.env.MAX_TOOL_ROUNDS;
+  try {
+    const result = await executeAgent(makeAgent("tool-looper"), context, provider, "agent-model", {
+      tools: [{ type: "function", function: { name: "look_up", description: "look up", parameters: {} } }],
+      executeToolCall: async () => JSON.stringify({ found: "nothing" }),
+    });
+    assert.equal(provider.calls, 17, "sixteen tool rounds, then the answer without tools");
+    assert.equal(result.success, true);
+    const last = provider.messages.at(-1)!;
+    assert.equal(provider.options.at(-1)?.tools, undefined);
+    assert.ok(!last.some((message) => message.role === "tool" || message.tool_calls?.length));
+    assert.equal(
+      (String(last.at(-1)?.content).match(/look_up\(\{"round":\d+\}\): \{"found":"nothing"\}/g) ?? []).length,
+      16,
+      "every round retold",
+    );
+    assert.match(
+      String(last.at(-1)?.content),
+      /No more tool calls: give your answer now, in the format you were asked for\.$/,
+    );
+    // A lower MAX_TOOL_ROUNDS still wins.
+    process.env.MAX_TOOL_ROUNDS = "2";
+    const fewer = new ToolLoopingProvider();
+    await executeAgent(makeAgent("tool-looper"), context, fewer, "agent-model", {
+      tools: [{ type: "function", function: { name: "look_up", description: "look up", parameters: {} } }],
+      executeToolCall: async () => JSON.stringify({ found: "nothing" }),
+    });
+    assert.equal(fewer.calls, 3);
+    // A run that asks for more rounds (a lorebook backfill) gets them, under MAX_TOOL_ROUNDS still.
+    const saver = { ...makeAgent("tool-looper"), settings: { ...makeAgent("tool-looper").settings, toolRounds: 20 } };
+    const capped = new ToolLoopingProvider();
+    await executeAgent(saver, context, capped, "agent-model", {
+      tools: [{ type: "function", function: { name: "look_up", description: "look up", parameters: {} } }],
+      executeToolCall: async () => JSON.stringify({ found: "nothing" }),
+    });
+    assert.equal(capped.calls, 3, "MAX_TOOL_ROUNDS still wins");
+    delete process.env.MAX_TOOL_ROUNDS;
+    const longer = new ToolLoopingProvider();
+    await executeAgent(saver, context, longer, "agent-model", {
+      tools: [{ type: "function", function: { name: "look_up", description: "look up", parameters: {} } }],
+      executeToolCall: async () => JSON.stringify({ found: "nothing" }),
+    });
+    assert.equal(longer.calls, 21, "twenty tool rounds, then the answer");
+  } finally {
+    if (previousMaxRounds === undefined) delete process.env.MAX_TOOL_ROUNDS;
+    else process.env.MAX_TOOL_ROUNDS = previousMaxRounds;
+  }
+}

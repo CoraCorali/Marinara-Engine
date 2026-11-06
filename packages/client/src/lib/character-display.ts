@@ -73,7 +73,7 @@ export function characterMatchesSearch(character: CharacterDisplayInfo | null | 
 export function parseCharacterDisplayData(raw: { data: unknown; comment?: string | null }): CharacterDisplayInfo {
   const comment = typeof raw.comment === "string" ? raw.comment.trim() : "";
 
-  let record: Record<string, unknown> | null = null;
+  let record: Record<string, unknown> | null;
   try {
     const parsed = typeof raw.data === "string" ? JSON.parse(raw.data) : raw.data;
     record = parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
@@ -93,4 +93,8 @@ export function parseCharacterDisplayData(raw: { data: unknown; comment?: string
       ? (extensions as Record<string, unknown>).avatarCrop
       : undefined;
   return { name, summary, comment, description, tags, creator, avatarCrop: normalizeAvatarCrop(rawAvatarCrop) };
+}
+
+export function getCharacterDisplayIdentity(raw: { data: unknown; comment?: string | null }): string {
+  return parseCharacterDisplayData(raw).name;
 }

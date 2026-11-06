@@ -1,5 +1,5 @@
 import type { CombatAttackTraits } from "../features/combat-conditions.js";
-import type { CombatAiHints, CombatController, CombatTactics } from "../features/combat-ai.js";
+import type { CombatAiHints, CombatController, CombatOrders, CombatTactics } from "../features/combat-ai.js";
 // ──────────────────────────────────────────────
 // Game Mode Types
 // ──────────────────────────────────────────────
@@ -26,14 +26,43 @@ export type GameActiveState = "exploration" | "dialogue" | "combat" | "travel_re
 export type GameGmMode = "standalone" | "character";
 
 /**
- * Combat presentation preference for Game Mode.
+ * The combat styles the engine ships with.
  * - `classic`: existing cinematic JRPG menu combat (GameCombatUI + combat.service).
  * - `tactical`: Fire Emblem / FFT style grid battle (tactical-combat feature engine).
  */
-export type GameCombatStyle = "classic" | "tactical";
+export const BUILT_IN_GAME_COMBAT_STYLES = ["classic", "tactical"] as const;
+export type BuiltInGameCombatStyle = (typeof BUILT_IN_GAME_COMBAT_STYLES)[number];
+
+/**
+ * Combat presentation preference for Game Mode: a built-in style, or the id of a style a client
+ * registered itself (the client's combat-style registry). An id the client does not know plays as
+ * `classic`.
+ */
+export type GameCombatStyle = BuiltInGameCombatStyle | (string & {});
+
+/** The shape of a combat style id, built-in or registered: what a game's setup and a ruleset's
+ *  `combat.styles` (Capability API 1.379) may name. */
+export const GAME_COMBAT_STYLE_ID_PATTERN = /^[a-z][a-z0-9_-]{0,47}$/;
 
 /** Status of a game session. */
 export type GameSessionStatus = "setup" | "active" | "concluded";
+
+/**
+ * Which Game Mode a game is played in, chosen when it is created and fixed for its lifetime.
+ * - `classic`: the story-led Game Mode as it always was: narration, the scene map, menu or grid
+ *   battles. No setting kit, no generated world, no overworld, towns or dungeon maps.
+ * - `overworld`: the Overworld RPG: a setting kit and a generated world walked on an overworld, with
+ *   its towns, sites and dungeon maps.
+ */
+export type GameStyle = "classic" | "overworld";
+
+/** A game's style. A game made before the choice existed has none stored: it is Overworld when it
+ *  has a world and Classic when it has none, so every older game plays exactly as it did. */
+export function gameStyleFromMetadata(metadata: Record<string, unknown> | null | undefined): GameStyle {
+  const stored = metadata?.gameStyle;
+  if (stored === "classic" || stored === "overworld") return stored;
+  return metadata?.gameWorld != null ? "overworld" : "classic";
+}
 
 /** Which system owns the campaign-scale map when a new game begins. */
 export type GameWorldMapMode = "standard" | "hierarchical";
@@ -163,8 +192,9 @@ export interface GameNpc {
   name: string;
   emoji: string;
   description: string;
-  /** Origin of the description. "model", "library", and "user" descriptions are canonical profile text. */
-  descriptionSource?: "model" | "library" | "narration" | "user";
+  /** Origin of the description. "model", "library", "user" and "world" descriptions are canonical profile
+   *  text; "world" is a person the game's world drew (worldgen W2), described by their sheet. */
+  descriptionSource?: "model" | "library" | "narration" | "user" | "world";
   /** Optional presentation hint used for systems like NPC voice matching. */
   gender?: string | null;
   /** Optional pronoun hint used for systems like NPC voice matching. */
@@ -176,6 +206,10 @@ export interface GameNpc {
   notes: string[];
   /** Optional avatar URL (generated or uploaded) */
   avatarUrl?: string | null;
+  /** The world's id for this person, when the game's world drew them (worldgen W2). */
+  worldId?: string;
+  /** What they do, for a person the world drew. */
+  role?: string;
 }
 
 // ── Sessions ──
@@ -218,13 +252,32 @@ export interface GameSetupConfig {
   gmMode: GameGmMode;
   /** Content rating: sfw or nsfw */
   rating: "sfw" | "nsfw";
+  /** Classic Game Mode or the Overworld RPG (see `GameStyle`), stored as `chat.metadata.gameStyle`.
+   *  Absent in setups made before the choice: read as Overworld with a world, Classic without. */
+  gameStyle?: GameStyle;
+  /** The Game Master's intro message (Capability API 1.339), stored as `chat.metadata.gameIntro`: defined
+   *  (the first message, exactly) or guided, or `{ mode: "none" }`. Absent is the Experience's own. An
+   *  Experience's locked intro wins over it. */
+  gameIntro?: import("../features/world/game-intro.js").GameIntroChoice;
   /** Combat presentation preference (classic menu battles vs tactical grid battles). Defaults to "classic". */
   combatStyle?: GameCombatStyle;
   /** Versioned server-owned combat with interruption windows; absent preserves legacy battles. */
   combatDirector?: boolean;
   gmBossControl?: boolean;
+  /** With `gmBossControl`, the Game Master also plays every named opponent and every one with a
+   *  genius's mind (combat AI P9). Absent is bosses only, as every game before it. */
+  gmNamedControl?: boolean;
+  /** A cruel opponent (a `cruel` temperament, combat AI T3) may strike those already down. Absent is
+   *  never: off unless the game asks for it. */
+  cruelOpponents?: boolean;
+  /** The player plays every companion in a fight themselves. Absent, each companion fights on its
+   *  own (the Engine plays it) until the player takes it (Alyssa 2026-10-26). */
+  playerRunsCompanions?: boolean;
   /** Optional tactical battlefield preferences used for newly-created encounters. */
   tacticalBattlefield?: TacticalBattlefieldSetup;
+  /** Who acts when in a new tactical fight (combat C6c): one unit at a time in a rolled order, or the
+   *  party's phase then the enemies'. Absent means by side, as every game before it was. */
+  tacticalTurnOrder?: "side" | "initiative";
   /** Optional user prompt used to create the initial hierarchical world map draft. */
   spatialMapInstructions?: string;
   /** Campaign-scale map authority selected during New Game. Older saves default to "standard". */
@@ -251,6 +304,19 @@ export interface GameSetupConfig {
   /** The Game Mode ruleset chosen for a NEW game. The server pins it as `chat.metadata.gameRuleset`
    *  from its own registry, so only `id` is trusted. Absent means Marinara's own rules. */
   ruleset?: import("../schemas/ruleset.schema.js").RulesetRef;
+  /** The setting kit chosen or written for a NEW game (worldgen W0): the world's own words and the
+   *  kinds of change it allows. The server stores it as `chat.metadata.gameWorldKit`. Absent means
+   *  no kit: the Game Master works from genre, setting and tone alone, as before. */
+  worldKit?: import("../schemas/world-kit.schema.js").WorldKit;
+  /** The generated world for a NEW game (worldgen W1): its seed, generator version, grounding and
+   *  brief, stored as `chat.metadata.gameWorld`. Needs `worldKit`; absent means no world. */
+  world?: import("../features/world/game-world.js").GameWorldInput;
+  /** A world another generator made, as it was made (W11): sent to create a game from it and in a setup
+   *  file, never kept in a game's metadata. */
+  worldSnapshot?: import("../features/world/snapshot.js").WorldSnapshot;
+  /** The world's story script (worldgen W10), checked against the world and stored as
+   *  `chat.metadata.gameStory`. Needs `world`. */
+  story?: import("../features/world/story.js").StoryScript;
   /** Whatever the experience's own setup collected, stored verbatim and never interpreted by the host, so
    *  it can always recover the options the game was created with. */
   experienceConfig?: Record<string, unknown>;
@@ -401,8 +467,23 @@ export interface DiceRollResult {
   modifier: number;
   /** Final total */
   total: number;
+  /** The places in `rolls` of the dice that counted, when the roll kept some (`4d6kh3`). Absent,
+   *  every die counted. */
+  kept?: number[];
   /** Optional difficulty class declared before the roll. */
   dc?: number;
+  /** The server's verdict against `dc`. Absent when the roll had no DC. */
+  success?: boolean;
+  /** Who rolled, or who and why, as the roll was asked for: a `[dice:]` tag's `who=`, or a tool
+   *  roll's reason. Absent on rolls that named nobody. */
+  label?: string;
+  /** A roll of a symbol-pool ruleset's dice by name (`2 ability 1 difficulty`). All four are present
+   *  together: each die's label and the symbols on its face, beside the 1-based faces in `rolls`, and
+   *  the net symbols after cancellation with their labels. `total` is then the net success symbol. */
+  thrown?: string[];
+  symbolFaces?: string[][];
+  symbols?: Record<string, number>;
+  symbolLabels?: Record<string, string>;
 }
 
 /** Result of a skill check resolution. */
@@ -446,6 +527,8 @@ export interface SkillCheckResult {
    * ignored. Only a ruleset game sets them.
    */
   withAbility?: string;
+  /** What the check was made for (1.752), as its tag's `for=` said. */
+  purpose?: string;
   bonusDice?: number;
   /**
    * What the roller's wound track took off this check, when the ruleset names one with
@@ -508,6 +591,51 @@ export interface SkillCheckResult {
   from?: string[];
   /** The save failed without a roll, because something named in `from` makes it fail. */
   automatic?: boolean;
+  /**
+   * The label of the outcome band the check landed in, where the ruleset declares bands (Capability
+   * API 1.135): "Barely", "Hard success", "Success with style". `success` and the criticals are the
+   * band's own. Absent on a ruleset without bands.
+   */
+  outcome?: string;
+  /**
+   * What each face of the die is worth, lowest face first, where the ruleset's dice are not their own
+   * numbers (1.136): Fate's `[-1, 0, 1]`. `rolls` are still the faces thrown, 1 to the die's sides.
+   */
+  faces?: number[];
+  /** The face a single die showed, where the ruleset marks it as rolled unmodified (1.136). */
+  unmodified?: number;
+  /** Which way a pool's dice counted against `threshold`, where a stance made them count below or
+   *  above it rather than at or above it (1.137). */
+  compare?: "below" | "above";
+  /** How many dice showed exactly the target, and what the ruleset calls that, where it names the
+   *  face (1.137): Lasers & Feelings' LASER FEELINGS. */
+  exact?: number;
+  exactLabel?: string;
+  /** How many of the highest dice were kept, on a keep-the-highest check (1.138). The total is
+   *  theirs; `zeroDice` says the character had no dice and the lower of two was kept. */
+  highest?: number;
+  zeroDice?: boolean;
+  /** How many of `rolls`, at the end, were dark dice, what the ruleset calls them, and whether one
+   *  strictly beat every light die (1.138): Trophy Dark's Ruin. */
+  dark?: number;
+  darkLabel?: string;
+  darkHighest?: boolean;
+  /** Only light dice decided the outcome (1.149); absent means all dice. */
+  darkOutcome?: "light";
+  /** A roll read against the sheet's number (1.139): `at-most` succeeds at or under `dc`, which is
+   *  then the target; `at-least` at or over it. `tens` is the bonus (+) or penalty (-) tens dice
+   *  thrown, each candidate d100 one of `rolls`. */
+  against?: "at-most" | "at-least";
+  tens?: number;
+  /** Independent setback dice and own upgrades actually applied (1.150). */
+  setback?: number;
+  upgradeOwn?: number;
+  /** Narrative dice (1.141): net symbols, die ids beside their 1-based rolls, and the face symbols
+   *  with the ruleset's labels, so a saved check needs no installed ruleset to display. */
+  symbols?: Record<string, number>;
+  thrown?: string[];
+  symbolLabels?: Record<string, string>;
+  symbolFaces?: string[][];
 }
 
 // ── The sighted dice pool (opt-in, last) ──
@@ -595,6 +723,8 @@ export interface Combatant extends CombatAttackTraits, RulesetEncounterBlueprint
   tactics?: CombatTactics;
   aiHints?: CombatAiHints;
   controller?: CombatController;
+  /** Its player's standing orders, while the Engine plays it. */
+  orders?: CombatOrders;
   skillCooldowns?: Record<string, number>;
   id: string;
   name: string;
@@ -762,7 +892,13 @@ export interface CombatSummary {
     defeated: boolean;
     hp: number;
     maxHp: number;
+    /** Out of the fight alive, its heart gone: run off, or given up to the party. */
+    left?: "fled" | "surrendered";
   }>;
+  /** The party gave itself up to honourable opponents (combat AI T6), who take it alive. */
+  yielded?: true;
+  /** The fight broke off with both sides standing, after rounds in which nothing changed (K8). */
+  stalled?: true;
   /** Resolved tactical terrain retained after the live combat snapshot is cleared. */
   battlefieldSummary?: string;
   /** What the win dropped into the party's bags, and how many of each nobody could carry. */
@@ -938,7 +1074,14 @@ export interface PartyDialogueLine {
 // ── Checkpoints ──
 
 export type CheckpointTrigger =
-  "manual" | "session_start" | "session_end" | "combat_start" | "combat_end" | "location_change" | "auto_interval";
+  | "manual"
+  | "session_start"
+  | "session_end"
+  | "combat_start"
+  | "combat_end"
+  | "location_change"
+  | "auto_interval"
+  | "state_editor_save";
 
 export interface GameCheckpoint {
   id: string;

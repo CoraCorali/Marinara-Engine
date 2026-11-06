@@ -4,10 +4,13 @@ import { useDecisionCalibration, useHasDecisionModel } from "../../hooks/use-dec
 // Full-Page Agent Editor
 // Click an agent → opens this editor
 // ──────────────────────────────────────────────
-import { useState, useCallback, useEffect, useMemo, useRef } from "react";
+import { lazy, Suspense, useState, useCallback, useEffect, useEffectEvent, useId, useMemo, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { useUIStore } from "../../stores/ui.store";
+import { useMariCompanionEditor, useMariEditorFields } from "../../hooks/use-mari-editor-fields";
+import { rebaseUntouchedKeys } from "../../lib/mari-editor-fields";
+import { MariFieldReview, MariFieldReviewProvider, useMariFieldReview } from "../characters/MariFieldReview";
 import { showConfirmDialog } from "../../lib/app-dialogs";
 import { api, getPrivilegedActionErrorMessage } from "../../lib/api-client";
 import { HostDeviceFileManagerError } from "../../lib/host-device";
@@ -18,8 +21,12 @@ import {
   useCreateAgent,
   type AgentConfigRow,
 } from "../../hooks/use-agents";
+import { useCapabilityAgentRegistry, useCapabilityCatalog } from "../../hooks/use-capability-packages";
 import { useConnections } from "../../hooks/use-connections";
+import { NeedsModelChip } from "../connections/NeedsModelChip";
+import { ConnectionSelect } from "../connections/ConnectionSelect";
 import { useOpenGameAssetsFolder } from "../../hooks/use-game-assets";
+import { AgentDetailHeader } from "./AgentDetailHeader";
 import {
   isCustomToolSelectable,
   useCustomToolCapabilities,
@@ -28,7 +35,6 @@ import {
 } from "../../hooks/use-custom-tools";
 import {
   Activity,
-  ArrowLeft,
   Save,
   Sparkles,
   Check,
@@ -55,6 +61,7 @@ import {
   ImageIcon,
   Shield,
   ShieldCheck,
+  UserRound,
 } from "lucide-react";
 import { useDeleteAgent } from "../../hooks/use-agents";
 import { useLorebooks, useEntriesAcrossLorebooks } from "../../hooks/use-lorebooks";
@@ -101,12 +108,16 @@ import {
   getDefaultBuiltInAgentSettings,
   getDefaultAgentPrompt,
   isAgentConfigDeleted,
+  AVATAR_3D_AGENT_ID,
+  isAvatarAgentId,
   mergeBuiltInAgentSettings,
   normalizeAgentPhaseForType,
   normalizeCustomAgentCapabilities,
   getAgentContextSources,
   normalizeAgentPromptTemplateOptions,
   normalizeStoryboardAgentSettings,
+  normalizeIllustratorRunInterval,
+  MAX_ILLUSTRATOR_RUN_INTERVAL,
   parseAgentSettingsRecord,
   homeAgentWidgetsSchema,
   type HomeAgentWidgetDefinition,
@@ -119,6 +130,8 @@ import {
   type CustomAgentContextSource,
   type CustomAgentContextSources,
   type ToolDefinition,
+  isChatProvider,
+  NARRATIVE_DIRECTOR_SECRET_PLOT_PROMPT,
 } from "@marinara-engine/shared";
 import {
   createAgentFolderPackageFilename,
@@ -129,6 +142,11 @@ import { CUSTOM_AGENT_RESULT_EXAMPLES, type CustomAgentResultType } from "../../
 import { downloadZipFile } from "../../lib/download-zip";
 import { useSidecarStore } from "../../stores/sidecar.store";
 import { Trans, useTranslation as useUiTranslation } from "react-i18next";
+
+// The 2D and 3D Avatars setup loads only on those agents' pages.
+const AvatarAgentSetup = lazy(() =>
+  import("../../features/avatars/setup/AvatarAgentSetup").then((module) => ({ default: module.AvatarAgentSetup })),
+);
 
 function parseActivationKeywordsText(value: string): string[] {
   const seen = new Set<string>();
@@ -669,12 +687,18 @@ function storyboardSettingsForStorage(settings: StoryboardAgentSettings): Record
 // ═══════════════════════════════════════════════
 //  Main Editor
 // ═══════════════════════════════════════════════
+/** A Secret Plot prompt worth saving: not blank and not an unedited copy of the built-in one. */
+function isCustomSecretPlotPrompt(value: string): boolean {
+  const trimmed = value.trim();
+  return !!trimmed && trimmed !== NARRATIVE_DIRECTOR_SECRET_PLOT_PROMPT.trim();
+}
+
 export function AgentEditor() {
   const { t: localizeUi } = useUiTranslation();
   const agentDetailId = useUIStore((s) => s.agentDetailId);
   const closeAgentDetail = useUIStore((s) => s.closeAgentDetail);
 
-  const { data: agentConfigs } = useAgentConfigs();
+  const { data: agentConfigs, refetch: refetchAgentConfigs } = useAgentConfigs();
   const { data: connections } = useConnections();
   const { data: customToolsRaw } = useCustomTools();
   const { data: customToolCapabilities } = useCustomToolCapabilities();
@@ -700,15 +724,7 @@ export function AgentEditor() {
     connectionIndexRef.current = {
       loaded: Array.isArray(connections),
       llmIds: new Set(
-        rows
-          .filter(
-            (connection) =>
-              connection.provider !== "image_generation" &&
-              connection.provider !== "video_generation" &&
-              connection.provider !== "audio" &&
-              connection.provider !== "decision",
-          )
-          .map((connection) => connection.id),
+        rows.filter((connection) => isChatProvider(connection.provider)).map((connection) => connection.id),
       ),
       imageIds: new Set(
         rows.filter((connection) => connection.provider === "image_generation").map((connection) => connection.id),
@@ -745,6 +761,15 @@ export function AgentEditor() {
   // Custom agent = DB entry with no matching built-in
   const isCustomAgent = !builtIn && !!dbConfig;
   const isNewCustomAgent = agentDetailId === "__new__";
+  // Downloaded agents show their store logo and banner, like their Organizer page.
+  const { data: capabilityAgents } = useCapabilityAgentRegistry();
+  const capabilityCatalog = useCapabilityCatalog();
+  const storeEntry = useMemo(() => {
+    const type = dbConfig?.type ?? builtIn?.id ?? agentDetailId;
+    const packageId = capabilityAgents?.find((agent) => agent.id === type)?.packageId;
+    return packageId ? capabilityCatalog.data?.packages.find((entry) => entry.manifest.id === packageId) : undefined;
+  }, [agentDetailId, builtIn, capabilityAgents, capabilityCatalog.data, dbConfig]);
+  const hasBanner = Boolean(storeEntry?.store?.bannerSmallUrl ?? storeEntry?.store?.bannerUrl);
   const customRunIntervalMeta =
     isCustomAgent || isNewCustomAgent
       ? getAgentRunIntervalMeta(isNewCustomAgent ? "__new__" : (dbConfig?.type ?? agentDetailId ?? ""), false)
@@ -759,6 +784,7 @@ export function AgentEditor() {
   const [localContextSize, setLocalContextSize] = useState<number | "">("");
   const [localMaxTokens, setLocalMaxTokens] = useState<number | "">("");
   const [localRunInterval, setLocalRunInterval] = useState<number | "">("");
+  const [localVideoRunInterval, setLocalVideoRunInterval] = useState<number | "">("");
   const [localEchoMessageDelaySeconds, setLocalEchoMessageDelaySeconds] = useState(
     DEFAULT_ECHO_CHAMBER_MESSAGE_DELAY_SECONDS,
   );
@@ -801,6 +827,7 @@ export function AgentEditor() {
   const [localIncludeParallelResults, setLocalIncludeParallelResults] = useState(false);
   const [localEnabledTools, setLocalEnabledTools] = useState<string[]>([]);
   const [toolsSectionOpen, setToolsSectionOpen] = useState(false);
+  const [avatarSetupOpen, setAvatarSetupOpen] = useState(true);
   const [localLorebookWriteEnabled, setLocalLorebookWriteEnabled] = useState(false);
   const [localWritableLorebookId, setLocalWritableLorebookId] = useState("");
   const [localLorebookReadBehindMessages, setLocalLorebookReadBehindMessages] = useState(0);
@@ -819,6 +846,7 @@ export function AgentEditor() {
   const [localBatchWithOtherAgents, setLocalBatchWithOtherAgents] = useState(true);
   const [localSourceFileIds, setLocalSourceFileIds] = useState<string[]>([]);
   const [localAutoGenerateAvatars, setLocalAutoGenerateAvatars] = useState(false);
+  const [localIncludeOutfitInAvatars, setLocalIncludeOutfitInAvatars] = useState(true);
   const [localUseAvatarReferences, setLocalUseAvatarReferences] = useState(false);
   const [localIncludeCharacterAppearance, setLocalIncludeCharacterAppearance] = useState(false);
   const [localImagePositivePrompt, setLocalImagePositivePrompt] = useState("");
@@ -833,6 +861,7 @@ export function AgentEditor() {
   const [localProseGuardianHoldForRewrite, setLocalProseGuardianHoldForRewrite] = useState(true);
   const [localSecretPlotEnabled, setLocalSecretPlotEnabled] = useState(false);
   const [localSecretPlotRunInterval, setLocalSecretPlotRunInterval] = useState(8);
+  const [localSecretPlotPrompt, setLocalSecretPlotPrompt] = useState("");
   const [spotifyStatus, setSpotifyStatus] = useState<{
     connected: boolean;
     expired: boolean;
@@ -851,6 +880,15 @@ export function AgentEditor() {
   const [youtubeSaving, setYoutubeSaving] = useState(false);
   const [youtubeError, setYoutubeError] = useState<string | null>(null);
   const [dirty, setDirty] = useState(false);
+  const dirtyRef = useRef(dirty);
+  useEffect(() => {
+    dirtyRef.current = dirty;
+  }, [dirty]);
+  // Prof. Mari's fields as the form last loaded them: a refetch while the form is dirty takes her
+  // newer text only for fields the user left alone, and Save does not send them back unchanged.
+  const loadedMariFieldsRef = useRef<{ id: string; name: string; description: string; promptTemplate: string } | null>(
+    null,
+  );
   /**
    * Re-seed the threshold once the decision model's calibration arrives.
    *
@@ -882,13 +920,56 @@ export function AgentEditor() {
   useEffect(() => {
     setEditorDirty(dirty);
   }, [dirty, setEditorDirty]);
+  // Report the last focused field to the omnibar so "make this shorter" knows the target. The ids
+  // are the `agent.update` field names Mari writes.
+  const setActiveEditorField = useUIStore((s) => s.setActiveEditorField);
+  useEffect(() => () => setActiveEditorField(null), [agentDetailId, setActiveEditorField]);
+  const reportField = (id: string, label: string) => () => setActiveEditorField({ id, label });
   const [showUnsavedWarning, setShowUnsavedWarning] = useState(false);
+  const [headerCompact, setHeaderCompact] = useState(false);
+  const compact = hasBanner && headerCompact;
+  const headerRef = useRef<HTMLDivElement>(null);
+  const [showCustomAgentNotice, setShowCustomAgentNotice] = useState(true);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [savedFlash, setSavedFlash] = useState(false);
 
+  /** The record the last populate pass saw; a dirty refetch compares against it, not the load-time record. */
+  const lastSeenConfigRef = useRef<typeof dbConfig>(undefined);
   // Populate from DB config or built-in defaults
   useEffect(() => {
     if (!agentDetailId) return;
+    const loaded = loadedMariFieldsRef.current;
+    if (dbConfig && dirtyRef.current && loaded?.id === dbConfig.id) {
+      const fresh = {
+        id: dbConfig.id,
+        name: builtIn ? builtIn.name : dbConfig.name,
+        description: dbConfig.description,
+        promptTemplate: dbConfig.promptTemplate || "",
+      };
+      setLocalName((current) => (current === loaded.name ? fresh.name : current));
+      setLocalDescription((current) => (current === loaded.description ? fresh.description : current));
+      setLocalPrompt((current) => (current === loaded.promptTemplate ? fresh.promptTemplate : current));
+      loadedMariFieldsRef.current = fresh;
+      const before = lastSeenConfigRef.current ?? loadedSaveRef.current?.config;
+      lastSeenConfigRef.current = dbConfig;
+      if (before?.id === dbConfig.id) {
+        const phase = (config: typeof before) => normalizeAgentPhaseForType(dbConfig.type, config.phase);
+        const connection = (config: typeof before) => normalizeTextConnectionOverride(config.connectionId);
+        setLocalPhase((current) => (current === phase(before) ? phase(dbConfig) : current));
+        setLocalConnectionId((current) => (current === connection(before) ? connection(dbConfig) : current));
+      }
+      return;
+    }
+    loadedMariFieldsRef.current = dbConfig
+      ? {
+          id: dbConfig.id,
+          name: builtIn ? builtIn.name : dbConfig.name,
+          description: dbConfig.description,
+          promptTemplate: dbConfig.promptTemplate || "",
+        }
+      : null;
+    lastSeenConfigRef.current = dbConfig;
+    setLoadTick((tick) => tick + 1);
     const agentType = dbConfig?.type ?? builtIn?.id ?? agentDetailId;
     const defaultSettings = getDefaultBuiltInAgentSettings(agentType);
     if (dbConfig) {
@@ -912,6 +993,9 @@ export function AgentEditor() {
       );
       setLocalRunInterval(
         (settings.runInterval as number | undefined) ?? (defaultSettings.runInterval as number) ?? "",
+      );
+      setLocalVideoRunInterval(
+        normalizeIllustratorRunInterval(settings.videoRunInterval ?? defaultSettings.videoRunInterval) ?? "",
       );
       setLocalEchoMessageDelaySeconds(normalizeEchoChamberMessageDelaySeconds(settings.messageDelaySeconds));
       setLocalActivationKeywordsText(
@@ -973,6 +1057,7 @@ export function AgentEditor() {
       setLocalBatchWithOtherAgents(settings.batchWithOtherAgents !== false);
       setLocalSourceFileIds(normalizeStringArray(settings.sourceFileIds));
       setLocalAutoGenerateAvatars(settings.autoGenerateAvatars === true);
+      setLocalIncludeOutfitInAvatars(settings.includeOutfitInAvatars !== false);
       setLocalUseAvatarReferences(
         (settings.useAvatarReferences as boolean | undefined) ?? defaultSettings.useAvatarReferences === true,
       );
@@ -1012,6 +1097,9 @@ export function AgentEditor() {
       setLocalSecretPlotRunInterval(
         normalizePositiveInteger(settings.secretPlotRunInterval ?? defaultSettings.secretPlotRunInterval, 8, 100),
       );
+      setLocalSecretPlotPrompt(
+        typeof settings.secretPlotPromptTemplate === "string" ? settings.secretPlotPromptTemplate : "",
+      );
       setLocalCustomCapabilities(normalizeCustomAgentCapabilities(settings));
       setLocalContextSources(getAgentContextSources({ isCustomAgent: !builtIn, settings }));
       setLocalResultType(normalizeCustomResultType(settings.resultType));
@@ -1034,6 +1122,7 @@ export function AgentEditor() {
       setLocalContextSize("");
       setLocalMaxTokens((defaultSettings.maxTokens as number) ?? "");
       setLocalRunInterval((defaultSettings.runInterval as number) ?? "");
+      setLocalVideoRunInterval(normalizeIllustratorRunInterval(defaultSettings.videoRunInterval) ?? "");
       setLocalEchoMessageDelaySeconds(DEFAULT_ECHO_CHAMBER_MESSAGE_DELAY_SECONDS);
       setLocalActivationKeywordsText("");
       setLocalActivationQuestion("");
@@ -1050,6 +1139,7 @@ export function AgentEditor() {
       setLocalBatchWithOtherAgents(defaultSettings.batchWithOtherAgents !== false);
       setLocalSourceFileIds([]);
       setLocalAutoGenerateAvatars(false);
+      setLocalIncludeOutfitInAvatars(true);
       setLocalUseAvatarReferences(defaultSettings.useAvatarReferences === true);
       setLocalIncludeCharacterAppearance(defaultSettings.includeCharacterAppearance === true);
       setLocalImagePositivePrompt("");
@@ -1064,6 +1154,7 @@ export function AgentEditor() {
       setLocalProseGuardianHoldForRewrite(defaultSettings.holdForRewrite !== false);
       setLocalSecretPlotEnabled(defaultSettings.secretPlotEnabled === true);
       setLocalSecretPlotRunInterval(normalizePositiveInteger(defaultSettings.secretPlotRunInterval, 8, 100));
+      setLocalSecretPlotPrompt("");
       setLocalCustomCapabilities({});
       setLocalContextSources(getAgentContextSources({ settings: defaultSettings }));
       setLocalResultType("context_injection");
@@ -1090,6 +1181,7 @@ export function AgentEditor() {
       setLocalPrompt("");
     } else {
       // Brand new custom agent — start empty
+      setShowCustomAgentNotice(true);
       setLocalName("New Agent");
       setLocalHomeWidgets([]);
       setLocalDescription("");
@@ -1102,6 +1194,7 @@ export function AgentEditor() {
       setLocalContextSize("");
       setLocalMaxTokens(DEFAULT_AGENT_MAX_TOKENS);
       setLocalRunInterval(customRunIntervalMeta?.defaultValue ?? "");
+      setLocalVideoRunInterval("");
       setLocalEchoMessageDelaySeconds(DEFAULT_ECHO_CHAMBER_MESSAGE_DELAY_SECONDS);
       setLocalActivationKeywordsText("");
       setLocalActivationQuestion("");
@@ -1118,6 +1211,7 @@ export function AgentEditor() {
       setLocalBatchWithOtherAgents(true);
       setLocalSourceFileIds([]);
       setLocalAutoGenerateAvatars(false);
+      setLocalIncludeOutfitInAvatars(true);
       setLocalUseAvatarReferences(false);
       setLocalIncludeCharacterAppearance(false);
       setLocalImagePositivePrompt("");
@@ -1128,6 +1222,7 @@ export function AgentEditor() {
       setLocalProseGuardianHoldForRewrite(true);
       setLocalSecretPlotEnabled(false);
       setLocalSecretPlotRunInterval(8);
+      setLocalSecretPlotPrompt("");
       setLocalCustomCapabilities({});
       setLocalContextSources({ ...DEFAULT_CUSTOM_AGENT_CONTEXT_SOURCES });
       setLocalResultType("context_injection");
@@ -1347,22 +1442,10 @@ export function AgentEditor() {
     };
   }, [utilityAgentType]);
 
-  const llmConnections = allConnections.filter(
-    (conn) =>
-      conn.provider !== "image_generation" &&
-      conn.provider !== "video_generation" &&
-      conn.provider !== "audio" &&
-      conn.provider !== "decision",
-  );
   const imageConnections = allConnections.filter((conn) => conn.provider === "image_generation");
 
   const defaultAgentConn = allConnections.find(
-    (c) =>
-      c.provider !== "image_generation" &&
-      c.provider !== "video_generation" &&
-      c.provider !== "audio" &&
-      c.provider !== "decision" &&
-      (c.defaultForAgents === true || c.defaultForAgents === "true"),
+    (c) => isChatProvider(c.provider) && (c.defaultForAgents === true || c.defaultForAgents === "true"),
   );
   // The sidecar can be the agents default without owning a connection row
   // (#5539); while available it takes precedence over a row default, matching
@@ -1383,13 +1466,12 @@ export function AgentEditor() {
 
   const openAgentDetail = useUIStore((s) => s.openAgentDetail);
 
-  const handleSave = useCallback(async () => {
-    if (!agentDetailId) return;
-    setSaveError(null);
+  // The record the form saves now, or the reason it cannot save.
+  const buildSavePayload = useCallback(() => {
+    if (!agentDetailId) return "";
     const isEditingCustomAgent = isCustomAgent || isNewCustomAgent;
     if (isEditingCustomAgent && !homeAgentWidgetsSchema.safeParse(localHomeWidgets).success) {
-      setSaveError(localizeUi("ui.agents.agenteditor.invalidHomeWidgets"));
-      return;
+      return localizeUi("ui.agents.agenteditor.invalidHomeWidgets");
     }
     const agentType = dbConfig?.type ?? builtIn?.id ?? agentDetailId;
     const selectedPhase = resolveCustomAgentPhase(localPhase, localResultType, isEditingCustomAgent);
@@ -1405,8 +1487,7 @@ export function AgentEditor() {
           );
     const customCapabilities = customCapabilityMapFromLocal(localCustomCapabilities);
     if (isEditingCustomAgent && !resultTypeAllowedByCapabilities(localResultType, customCapabilities)) {
-      setSaveError("Enable the matching custom-agent ability before saving this result type.");
-      return;
+      return "Enable the matching custom-agent ability before saving this result type.";
     }
     const writableLorebookId = localWritableLorebookId.trim();
     const lorebookWriterEnabled =
@@ -1418,8 +1499,7 @@ export function AgentEditor() {
       (lorebookWriterEnabled || (lorebookReadBehindEnabled && customCapabilities.edit_lorebooks === true)) &&
       writableLorebookId.length > 0;
     if (lorebookWriterEnabled && !writableLorebookId) {
-      setSaveError("Select a target lorebook before enabling lorebook writing for this agent.");
-      return;
+      return "Select a target lorebook before enabling lorebook writing for this agent.";
     }
     const effectiveEnabledTools = Array.from(
       new Set(
@@ -1493,6 +1573,7 @@ export function AgentEditor() {
         ...(!isDirectorAgent && !isStoryboardAgent && localRunInterval !== ""
           ? { runInterval: Number(localRunInterval) }
           : {}),
+        ...(isIllustratorAgent && localVideoRunInterval !== "" ? { videoRunInterval: localVideoRunInterval } : {}),
         ...(isEchoChamberAgent ? { messageDelaySeconds: localEchoMessageDelaySeconds } : {}),
         ...(localInjectAsSection ? { injectAsSection: true } : {}),
         ...(isMusicAgent
@@ -1539,6 +1620,7 @@ export function AgentEditor() {
         ...(isKnowledgeRetrievalAgent && localSourceFileIds.length > 0 ? { sourceFileIds: localSourceFileIds } : {}),
         ...(savedImageConnectionId ? { imageConnectionId: savedImageConnectionId } : {}),
         ...(localAutoGenerateAvatars ? { autoGenerateAvatars: true } : {}),
+        ...(localIncludeOutfitInAvatars ? {} : { includeOutfitInAvatars: false }),
         ...(supportsImagePromptSettings
           ? {
               useAvatarReferences: localUseAvatarReferences,
@@ -1559,37 +1641,16 @@ export function AgentEditor() {
           ? {
               secretPlotEnabled: localSecretPlotEnabled,
               secretPlotRunInterval: localSecretPlotRunInterval,
+              ...(isCustomSecretPlotPrompt(localSecretPlotPrompt)
+                ? { secretPlotPromptTemplate: localSecretPlotPrompt }
+                : {}),
             }
           : {}),
         ...(localImagePositivePrompt.trim() ? { imagePositivePrompt: localImagePositivePrompt.trim() } : {}),
         ...(localImageNegativePrompt.trim() ? { imageNegativePrompt: localImageNegativePrompt.trim() } : {}),
       },
     };
-
-    try {
-      if (dbConfig) {
-        await updateAgent.mutateAsync({ id: dbConfig.id, ...payload });
-      } else {
-        // Built-ins are keyed by type. Custom agents need unique types so creating
-        // another "New Agent" does not overwrite the existing custom agent.
-        const typeId = builtIn ? agentDetailId : createCustomAgentType(localName);
-        const created = (await createAgent.mutateAsync({
-          ...payload,
-          type: typeId,
-        })) as { id?: string } | undefined;
-        // After creating a new custom agent, switch agentDetailId to its DB id
-        if (!builtIn && created?.id) {
-          openAgentDetail(created.id);
-        }
-      }
-      setDirty(false);
-      setSavedFlash(true);
-      setTimeout(() => setSavedFlash(false), 1500);
-      return true;
-    } catch (err) {
-      setSaveError(err instanceof Error ? err.message : "Failed to save agent config");
-      return false;
-    }
+    return payload;
   }, [
     agentDetailId,
     localName,
@@ -1611,6 +1672,8 @@ export function AgentEditor() {
     localContextSize,
     localMaxTokens,
     localRunInterval,
+    localVideoRunInterval,
+    isIllustratorAgent,
     localEchoMessageDelaySeconds,
     localActivationQuestion,
     localActivationThreshold,
@@ -1635,6 +1698,7 @@ export function AgentEditor() {
     localSourceLorebookIds,
     localSourceFileIds,
     localAutoGenerateAvatars,
+    localIncludeOutfitInAvatars,
     localUseAvatarReferences,
     localIncludeCharacterAppearance,
     localProseGuardianBanned,
@@ -1643,6 +1707,7 @@ export function AgentEditor() {
     localProseGuardianHoldForRewrite,
     localSecretPlotEnabled,
     localSecretPlotRunInterval,
+    localSecretPlotPrompt,
     localImagePositivePrompt,
     localImageNegativePrompt,
     localStoryboardSettings,
@@ -1660,11 +1725,100 @@ export function AgentEditor() {
     isMusicAgent,
     isKnowledgeRetrievalAgent,
     isKnowledgeRouterAgent,
+    normalizeTextConnectionOverride,
+    normalizeImageConnectionOverride,
+  ]);
+  // The record and the save payload as the form last loaded them: Save sends only what the user changed.
+  const loadedSaveRef = useRef<{
+    config: NonNullable<typeof dbConfig>;
+    payload: Exclude<ReturnType<typeof buildSavePayload>, string>;
+  } | null>(null);
+  const [loadTick, setLoadTick] = useState(0);
+  useEffect(() => {
+    const payload = buildSavePayload();
+    loadedSaveRef.current = dbConfig && typeof payload !== "string" ? { config: dbConfig, payload } : null;
+    // Only a load moves this snapshot; the form state it reads is the one the load set.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loadTick]);
+
+  const handleSave = useCallback(async () => {
+    if (!agentDetailId) return;
+    setSaveError(null);
+    const payload = buildSavePayload();
+    if (typeof payload === "string") {
+      setSaveError(payload);
+      return;
+    }
+
+    try {
+      if (dbConfig) {
+        const loaded = loadedMariFieldsRef.current;
+        const patch: Record<string, unknown> = { ...payload };
+        for (const key of ["name", "description", "promptTemplate"] as const) {
+          if (loaded?.id === dbConfig.id && payload[key] === loaded[key]) delete patch[key];
+        }
+        const loadedSave = loadedSaveRef.current;
+        if (loadedSave?.config.id === dbConfig.id) {
+          if (
+            payload.phase === loadedSave.payload.phase &&
+            payload.phase === normalizeAgentPhaseForType(dbConfig.type, dbConfig.phase)
+          )
+            delete patch.phase;
+          // A stored id the form cannot show (deleted or sidecar) is stale: Save clears it.
+          const storedConnection = normalizeTextConnectionOverride(dbConfig.connectionId) || null;
+          const staleConnection = !!dbConfig.connectionId && !storedConnection;
+          if (
+            !staleConnection &&
+            payload.connectionId === loadedSave.payload.connectionId &&
+            payload.connectionId === storedConnection
+          )
+            delete patch.connectionId;
+          patch.settings = rebaseUntouchedKeys(
+            payload.settings,
+            loadedSave.payload.settings,
+            parseAgentSettingsRecord(loadedSave.config.settings),
+            parseAgentSettingsRecord(dbConfig.settings),
+          );
+        }
+        await updateAgent.mutateAsync({ id: dbConfig.id, ...patch });
+        if (loaded?.id === dbConfig.id)
+          loadedMariFieldsRef.current = {
+            id: dbConfig.id,
+            name: payload.name,
+            description: payload.description,
+            promptTemplate: payload.promptTemplate,
+          };
+      } else {
+        // Built-ins are keyed by type. Custom agents need unique types so creating
+        // another "New Agent" does not overwrite the existing custom agent.
+        const typeId = builtIn ? agentDetailId : createCustomAgentType(localName);
+        const created = (await createAgent.mutateAsync({
+          ...payload,
+          type: typeId,
+        })) as { id?: string } | undefined;
+        // After creating a new custom agent, switch agentDetailId to its DB id
+        if (!builtIn && created?.id) {
+          openAgentDetail(created.id);
+        }
+      }
+      setDirty(false);
+      setSavedFlash(true);
+      setTimeout(() => setSavedFlash(false), 1500);
+      return true;
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : "Failed to save agent config");
+      return false;
+    }
+  }, [
+    agentDetailId,
+    buildSavePayload,
+    dbConfig,
+    normalizeTextConnectionOverride,
+    builtIn,
+    localName,
     updateAgent,
     createAgent,
     openAgentDetail,
-    normalizeTextConnectionOverride,
-    normalizeImageConnectionOverride,
   ]);
 
   const handleExportAgent = () => {
@@ -1736,6 +1890,7 @@ export function AgentEditor() {
       ...(!isDirectorAgent && !isStoryboardAgent && localRunInterval !== ""
         ? { runInterval: Number(localRunInterval) }
         : {}),
+      ...(isIllustratorAgent && localVideoRunInterval !== "" ? { videoRunInterval: localVideoRunInterval } : {}),
       ...(isEchoChamberAgent ? { messageDelaySeconds: localEchoMessageDelaySeconds } : {}),
       ...(localInjectAsSection ? { injectAsSection: true } : {}),
       ...(exportingMusicAgent
@@ -1778,6 +1933,7 @@ export function AgentEditor() {
       ...(isKnowledgeRetrievalAgent && localSourceFileIds.length > 0 ? { sourceFileIds: localSourceFileIds } : {}),
       ...(agentType !== "background" && localImageConnectionId ? { imageConnectionId: localImageConnectionId } : {}),
       ...(localAutoGenerateAvatars ? { autoGenerateAvatars: true } : {}),
+      ...(localIncludeOutfitInAvatars ? {} : { includeOutfitInAvatars: false }),
       ...(supportsImagePromptSettings
         ? {
             useAvatarReferences: localUseAvatarReferences,
@@ -1798,6 +1954,9 @@ export function AgentEditor() {
         ? {
             secretPlotEnabled: localSecretPlotEnabled,
             secretPlotRunInterval: localSecretPlotRunInterval,
+            ...(isCustomSecretPlotPrompt(localSecretPlotPrompt)
+              ? { secretPlotPromptTemplate: localSecretPlotPrompt }
+              : {}),
           }
         : {}),
       ...(localImagePositivePrompt.trim() ? { imagePositivePrompt: localImagePositivePrompt.trim() } : {}),
@@ -1838,6 +1997,97 @@ export function AgentEditor() {
   }, [defaultPrompt]);
 
   const markDirty = useCallback(() => setDirty(true), []);
+
+  // Prof. Mari and the agent's own fields (`agent.update`), as in the Preset editor. A built-in agent
+  // without a saved config has no record for her to change.
+  const mariContentRef = useRef<HTMLDivElement>(null);
+  const descriptionLabelId = useId();
+  const agentRecordId = dbConfig?.id ?? null;
+  const scrollToMariField = useCallback(
+    (field: HTMLElement) => field.scrollIntoView({ block: "center", behavior: "smooth" }),
+    [],
+  );
+  useMariEditorFields(mariContentRef, agentRecordId, !!dbConfig, scrollToMariField);
+  useMariCompanionEditor(mariContentRef, !!dbConfig);
+  const mariFieldText = (fieldId: string): string =>
+    ({ name: localName, description: localDescription, promptTemplate: localPrompt })[fieldId] ?? "";
+  const editMariField = (fieldId: string, text: string) => {
+    const set = { name: setLocalName, description: setLocalDescription, promptTemplate: setLocalPrompt }[fieldId];
+    if (!set) return;
+    set(text);
+    markDirty();
+  };
+  // Fields the user took over with Edit get the user's text back after her change lands, unsaved.
+  const takenOverRef = useRef<{ agentId: string; values: Record<string, string> } | null>(null);
+  const pendingTakenRef = useRef<Record<string, string> | null>(null);
+  const [restoreTick, setRestoreTick] = useState(0);
+  useEffect(() => {
+    takenOverRef.current = null;
+    pendingTakenRef.current = null;
+  }, [agentRecordId]);
+  const mariReview = useMariFieldReview({
+    entityId: agentRecordId,
+    current: mariFieldText,
+    touched: (fieldId) => {
+      if (!dirty || !dbConfig) return false;
+      const saved: Record<string, unknown> = {
+        name: dbConfig.name,
+        description: dbConfig.description,
+        promptTemplate: dbConfig.promptTemplate || "",
+      };
+      return mariFieldText(fieldId) !== saved[fieldId];
+    },
+    edit: editMariField,
+    beforeKeep: async (takenOver) => {
+      takenOverRef.current =
+        agentRecordId && takenOver && takenOver.length > 0
+          ? { agentId: agentRecordId, values: Object.fromEntries(takenOver.map((id) => [id, mariFieldText(id)])) }
+          : null;
+      if (!dirty) return "clean";
+      if (await handleSave()) return "saved";
+      takenOverRef.current = null;
+      return "failed";
+    },
+    keepDropped: () => {
+      takenOverRef.current = null;
+    },
+  });
+  const handledKeptRef = useRef(mariReview.review?.mode === "kept" ? mariReview.review.key : null);
+  const reviewModeRef = useRef(mariReview.review?.mode);
+  const restoreTakenOver = useEffectEvent(async () => {
+    const taken = takenOverRef.current;
+    takenOverRef.current = null;
+    if (!taken || taken.agentId !== agentRecordId) return;
+    const type = dbConfig?.type;
+    await refetchAgentConfigs();
+    // The user may have closed the editor or opened another agent meanwhile.
+    const openId = useUIStore.getState().agentDetailId;
+    if (!openId || (openId !== taken.agentId && openId !== type)) return;
+    // A changed record re-runs the load effect, which resets the form: the effect below puts the
+    // user's text back after it, in the render that holds the fresh record.
+    pendingTakenRef.current = taken.values;
+    setRestoreTick((tick) => tick + 1);
+  });
+  const applyPendingTaken = useEffectEvent(() => {
+    const values = pendingTakenRef.current;
+    pendingTakenRef.current = null;
+    for (const [fieldId, text] of Object.entries(values ?? {})) editMariField(fieldId, text);
+  });
+  // Declared after the load effect, so for the same record change it runs after the form reset.
+  useEffect(() => {
+    applyPendingTaken();
+  }, [dbConfig, restoreTick]);
+  useEffect(() => {
+    const review = mariReview.review;
+    const wasBusy = reviewModeRef.current === "busy";
+    reviewModeRef.current = review?.mode;
+    const mine = (field: { entityId: string }) => field.entityId === agentRecordId;
+    // Her apply failed and the change waits again: the text captured for that Keep is stale.
+    if (wasBusy && review?.mode === "waiting" && review.fields.some(mine)) takenOverRef.current = null;
+    if (review?.mode !== "kept" || handledKeptRef.current === review.key) return;
+    handledKeptRef.current = review.key;
+    if (review.fields.some(mine)) void restoreTakenOver();
+  }, [mariReview.review, agentRecordId]);
 
   const handleMusicProviderChange = useCallback(
     (provider: MusicProvider) => {
@@ -1946,6 +2196,9 @@ export function AgentEditor() {
   );
 
   const currentAgentType = dbConfig?.type ?? builtIn?.id ?? agentDetailId ?? "";
+  // The Engine draws the avatar agents and the agent pipeline never runs them, so the pipeline's
+  // settings (phase, context, budget, prompt, tools, prompt section, batching) do nothing for them.
+  const isAvatarAgent = isAvatarAgentId(currentAgentType);
   const storyboardDefaultSettings = normalizeStoryboardAgentSettings(getDefaultBuiltInAgentSettings("storyboard"));
   const defaultPromptTemplateById = useMemo(() => {
     const defaultSettings = getDefaultBuiltInAgentSettings(currentAgentType);
@@ -2062,71 +2315,71 @@ export function AgentEditor() {
   return (
     <div className="mari-editor-shell mari-editor-legacy-bridge flex flex-1 flex-col overflow-hidden">
       {/* ── Header ── */}
-      <div className="mari-editor-header">
-        <button
-          type="button"
-          onClick={handleClose}
-          aria-label={localizeUi("ui.agents.agenteditor.backToAgents")}
-          className="mari-editor-action inline-flex"
-        >
-          <ArrowLeft size="1.125rem" />
-        </button>
-        <div className="mari-editor-icon-tile">
-          <Sparkles size="1.125rem" className="max-md:!h-[0.875rem] max-md:!w-[0.875rem]" />
-        </div>
-        <input
-          value={localName}
-          onChange={(e) => {
-            setLocalName(e.target.value);
-            markDirty();
-          }}
-          className="mari-editor-title-input min-w-0 flex-1 placeholder:text-[var(--marinara-editor-muted)]"
-          placeholder={localizeUi("ui.agents.agenteditor.agentName")}
-        />
-        <div className="mari-editor-actions flex max-md:w-full max-md:justify-end max-md:border-t max-md:border-[var(--marinara-editor-divider)] max-md:pt-2">
-          {saveError && (
-            <span className="mari-editor-status mr-2 text-red-400">
-              <AlertCircle size="0.6875rem" /> {localizeUi("ui.agents.agenteditor.saveFailed")}
-            </span>
-          )}
-          {savedFlash && !dirty && (
-            <span className="mari-editor-status mr-2 text-emerald-400">
-              <Check size="0.6875rem" /> {localizeUi("chat.settings.inlineEditor.saved")}
-            </span>
-          )}
-          {dirty && !saveError && (
-            <span className="mari-editor-status mr-2 text-amber-400">
-              {localizeUi("ui.agents.agenteditor.unsaved")}
-            </span>
-          )}
-          <button
-            onClick={handleSave}
-            aria-label={localizeUi("ui.noodle.noodlehome.save")}
-            disabled={isPending}
-            className="mari-editor-action mari-editor-action--primary inline-flex disabled:opacity-50"
-          >
-            <Save size="0.8125rem" /> <span className="max-md:hidden">{localizeUi("ui.noodle.noodlehome.save")}</span>
-          </button>
-          <button
-            onClick={handleExportAgent}
-            className="mari-editor-action inline-flex"
-            title={localizeUi("ui.agents.agenteditor.exportAgent")}
-            aria-label={localizeUi("ui.agents.agenteditor.exportAgent")}
-          >
-            <Upload size="0.9375rem" />
-          </button>
-          {isCustomAgent && dbConfig && (
+      {/* Downloaded agents: the store banner is the header, with Back and actions on top and logo and name below. */}
+      <AgentDetailHeader
+        headerRef={headerRef}
+        storeEntry={storeEntry}
+        compact={compact}
+        onBack={handleClose}
+        title={
+          <input
+            data-mari-field="name"
+            value={localName}
+            onChange={(e) => {
+              setLocalName(e.target.value);
+              markDirty();
+            }}
+            onFocus={reportField("name", localizeUi("ui.agents.agenteditor.nameField"))}
+            className="mari-editor-title-input min-w-0 placeholder:text-[var(--marinara-editor-muted)]"
+            placeholder={localizeUi("ui.agents.agenteditor.agentName")}
+          />
+        }
+        actions={
+          <>
+            {saveError && (
+              <span className="mari-editor-status mr-2 text-red-400">
+                <AlertCircle size="0.6875rem" /> {localizeUi("ui.agents.agenteditor.saveFailed")}
+              </span>
+            )}
+            {savedFlash && !dirty && (
+              <span className="mari-editor-status mr-2 text-emerald-400">
+                <Check size="0.6875rem" /> {localizeUi("chat.settings.inlineEditor.saved")}
+              </span>
+            )}
+            {dirty && !saveError && (
+              <span className="mari-editor-status mr-2 text-amber-400">
+                {localizeUi("ui.agents.agenteditor.unsaved")}
+              </span>
+            )}
             <button
-              onClick={handleDelete}
-              className="mari-editor-action inline-flex"
-              title={localizeUi("ui.agents.agenteditor.deleteAgent")}
-              aria-label={localizeUi("ui.agents.agenteditor.deleteAgent")}
+              onClick={handleSave}
+              aria-label={localizeUi("ui.noodle.noodlehome.save")}
+              disabled={isPending}
+              className="mari-editor-action mari-editor-action--primary inline-flex disabled:opacity-50"
             >
-              <Trash2 size="0.9375rem" />
+              <Save size="0.8125rem" /> <span className="max-md:hidden">{localizeUi("ui.noodle.noodlehome.save")}</span>
             </button>
-          )}
-        </div>
-      </div>
+            <button
+              onClick={handleExportAgent}
+              className="mari-editor-action inline-flex"
+              title={localizeUi("ui.agents.agenteditor.exportAgent")}
+              aria-label={localizeUi("ui.agents.agenteditor.exportAgent")}
+            >
+              <Upload size="0.9375rem" />
+            </button>
+            {isCustomAgent && dbConfig && (
+              <button
+                onClick={handleDelete}
+                className="mari-editor-action inline-flex"
+                title={localizeUi("ui.agents.agenteditor.deleteAgent")}
+                aria-label={localizeUi("ui.agents.agenteditor.deleteAgent")}
+              >
+                <Trash2 size="0.9375rem" />
+              </button>
+            )}
+          </>
+        }
+      />
 
       {/* Unsaved warning */}
       {showUnsavedWarning && (
@@ -2149,7 +2402,7 @@ export function AgentEditor() {
               onClick={async () => {
                 if (await handleSave()) closeAgentDetail();
               }}
-              className="rounded-lg bg-amber-500/20 px-3 py-1 hover:bg-amber-500/30"
+              className="rounded-lg bg-[var(--marinara-app-accent-static)]/20 px-3 py-1 text-[var(--marinara-app-accent-static)] hover:bg-[var(--marinara-app-accent-static)]/30"
             >
               {localizeUi("ui.agents.agenteditor.saveClose")}
             </button>
@@ -2162,7 +2415,11 @@ export function AgentEditor() {
         <div className="flex items-center gap-2 bg-red-500/10 px-4 py-2 text-xs text-red-400">
           <AlertCircle size="0.8125rem" />
           <span className="flex-1">{saveError}</span>
-          <button onClick={() => setSaveError(null)} className="rounded-lg px-2 py-0.5 hover:bg-red-500/20">
+          <button
+            onClick={() => setSaveError(null)}
+            aria-label={localizeUi("editor.save.dismissError")}
+            className="rounded-lg px-2 py-0.5 text-[var(--marinara-app-accent-static)] hover:bg-[var(--marinara-app-accent-static)]/20"
+          >
             <X size="0.75rem" />
           </button>
         </div>
@@ -2185,8 +2442,36 @@ export function AgentEditor() {
       )}
 
       {/* ── Body ── */}
-      <div className="mari-editor-content min-w-0 max-w-full overflow-x-hidden max-md:p-4">
+      <div
+        ref={mariContentRef}
+        className="mari-editor-content min-w-0 max-w-full overflow-x-hidden max-md:p-4"
+        onScroll={(e) => {
+          // Two thresholds so the header height change cannot toggle it back at once.
+          const el = e.currentTarget;
+          // Collapse only if the body still overflows past the expand threshold once the header shrinks to 72px.
+          const shrink = Math.max(0, (headerRef.current?.offsetHeight ?? 72) - 72);
+          if (el.scrollTop > 48 && el.scrollHeight - el.clientHeight - shrink > 8) setHeaderCompact(true);
+          else if (el.scrollTop < 4) setHeaderCompact(false);
+        }}
+      >
         <div className="mari-editor-content-inner mari-editor-content-inner--wide w-full min-w-0 max-w-full space-y-6">
+          {isNewCustomAgent && showCustomAgentNotice && (
+            <div
+              role="note"
+              className="flex items-start gap-2 rounded-xl bg-[var(--marinara-app-accent-static)]/10 p-3 text-xs leading-relaxed text-[color-mix(in_oklab,var(--marinara-app-accent-static)_65%,var(--foreground))] ring-1 ring-[var(--marinara-app-accent-static)]/30"
+            >
+              <Info size="1rem" className="mt-0.5 shrink-0" aria-hidden="true" />
+              <p className="min-w-0 flex-1">{localizeUi("ui.agents.agenteditor.customAgentLimitations")}</p>
+              <button
+                type="button"
+                onClick={() => setShowCustomAgentNotice(false)}
+                className="mari-editor-action shrink-0"
+                aria-label={localizeUi("ui.agents.agenteditor.dismissCustomAgentInformation")}
+              >
+                <X size="0.875rem" aria-hidden="true" />
+              </button>
+            </div>
+          )}
           {/* ── Description ── */}
           <FieldGroup
             label={localizeUi("chat.settings.inlineEditor.fields.description")}
@@ -2194,20 +2479,26 @@ export function AgentEditor() {
             help={localizeUi("ui.agents.agenteditor.aShortSummaryOfWhatThisAgentDoesPlus")}
           >
             <div className="grid gap-3 sm:grid-cols-[1fr_14rem]">
-              <label className="flex min-w-0 flex-col gap-1.5">
-                <span className="text-[0.6875rem] font-medium text-[var(--muted-foreground)]">
+              <div className="flex min-w-0 flex-col gap-1.5" data-mari-field="description">
+                <span id={descriptionLabelId} className="text-[0.6875rem] font-medium text-[var(--muted-foreground)]">
                   {localizeUi("chat.settings.inlineEditor.fields.description")}
                 </span>
-                <input
-                  value={localDescription}
-                  onChange={(e) => {
-                    setLocalDescription(e.target.value);
-                    markDirty();
-                  }}
-                  className="w-full rounded-xl bg-[var(--secondary)] px-3 py-2.5 text-sm ring-1 ring-[var(--border)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-2 focus:ring-[var(--ring)]"
-                  placeholder={localizeUi("ui.agents.agenteditor.whatDoesThisAgentDo")}
-                />
-              </label>
+                <MariFieldReviewProvider value={mariReview.value}>
+                  <MariFieldReview field="description">
+                    <input
+                      value={localDescription}
+                      aria-labelledby={descriptionLabelId}
+                      onChange={(e) => {
+                        setLocalDescription(e.target.value);
+                        markDirty();
+                      }}
+                      onFocus={reportField("description", localizeUi("chat.settings.inlineEditor.fields.description"))}
+                      className="w-full rounded-xl bg-[var(--secondary)] px-3 py-2.5 text-sm ring-1 ring-[var(--border)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-2 focus:ring-[var(--ring)]"
+                      placeholder={localizeUi("ui.agents.agenteditor.whatDoesThisAgentDo")}
+                    />
+                  </MariFieldReview>
+                </MariFieldReviewProvider>
+              </div>
               <label className="flex min-w-0 flex-col gap-1.5">
                 <span className="text-[0.6875rem] font-medium text-[var(--muted-foreground)]">
                   {localizeUi("ui.agents.agenteditor.author")}
@@ -2225,38 +2516,56 @@ export function AgentEditor() {
             </div>
           </FieldGroup>
 
+          {/* ── 2D and 3D Avatars: the avatar setup ── */}
+          {isAvatarAgent && (
+            <FieldGroup
+              label={localizeUi("avatars.setup.title")}
+              icon={<UserRound size="0.875rem" className="text-[var(--primary)]" />}
+              help={localizeUi("avatars.setup.help")}
+              collapsible
+              expanded={avatarSetupOpen}
+              onExpandedChange={setAvatarSetupOpen}
+            >
+              <Suspense fallback={<Loader2 size="1rem" className="animate-spin text-[var(--muted-foreground)]" />}>
+                <AvatarAgentSetup agentId={currentAgentType} />
+              </Suspense>
+            </FieldGroup>
+          )}
+
           {/* Agent Pipeline Phase */}
-          <FieldGroup
-            label={localizeUi("ui.agents.agenteditor.pipelinePhase")}
-            icon={<Zap size="0.875rem" className="text-[var(--primary)]" />}
-            help={localizeUi("ui.agents.agenteditor.whenThisAgentRunsDuringGenerationPreGenerationRuns")}
-          >
-            <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
-              {(Object.entries(PHASE_META) as [AgentPhase, typeof phaseMeta][]).map(([phase, meta]) => {
-                const isActive = normalizedLocalPhase === phase;
-                const Icon = meta.icon;
-                return (
-                  <button
-                    key={phase}
-                    onClick={() => {
-                      setLocalPhase(normalizeAgentPhaseForType(currentAgentType, phase));
-                      markDirty();
-                    }}
-                    className={cn(
-                      "flex flex-col items-center gap-1.5 rounded-xl p-3 text-xs ring-1 transition-all",
-                      isActive
-                        ? "bg-[var(--primary)]/10 ring-[var(--primary)] " + meta.color
-                        : "ring-[var(--border)] text-[var(--muted-foreground)] hover:bg-[var(--accent)]",
-                    )}
-                  >
-                    <Icon size="1rem" />
-                    <span className="font-medium">{meta.label}</span>
-                  </button>
-                );
-              })}
-            </div>
-            <p className="mt-1.5 text-[0.625rem] text-[var(--muted-foreground)]">{phaseMeta.description}</p>
-          </FieldGroup>
+          {!isAvatarAgent && (
+            <FieldGroup
+              label={localizeUi("ui.agents.agenteditor.pipelinePhase")}
+              icon={<Zap size="0.875rem" className="text-[var(--primary)]" />}
+              help={localizeUi("ui.agents.agenteditor.whenThisAgentRunsDuringGenerationPreGenerationRuns")}
+            >
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                {(Object.entries(PHASE_META) as [AgentPhase, typeof phaseMeta][]).map(([phase, meta]) => {
+                  const isActive = normalizedLocalPhase === phase;
+                  const Icon = meta.icon;
+                  return (
+                    <button
+                      key={phase}
+                      onClick={() => {
+                        setLocalPhase(normalizeAgentPhaseForType(currentAgentType, phase));
+                        markDirty();
+                      }}
+                      className={cn(
+                        "flex flex-col items-center gap-1.5 rounded-xl p-3 text-xs ring-1 transition-all",
+                        isActive
+                          ? "bg-[var(--primary)]/10 ring-[var(--primary)] " + meta.color
+                          : "ring-[var(--border)] text-[var(--muted-foreground)] hover:bg-[var(--accent)]",
+                      )}
+                    >
+                      <Icon size="1rem" />
+                      <span className="font-medium">{meta.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+              <p className="mt-1.5 text-[0.625rem] text-[var(--muted-foreground)]">{phaseMeta.description}</p>
+            </FieldGroup>
+          )}
 
           {(isCustomAgent || isNewCustomAgent) && (
             <FieldGroup
@@ -2392,31 +2701,33 @@ export function AgentEditor() {
             </FieldGroup>
           )}
 
-          <FieldGroup
-            label={localizeUi("ui.agents.agenteditor.contextSources")}
-            icon={<Layers size="0.875rem" className="text-[var(--primary)]" />}
-            help={localizeUi("ui.agents.agenteditor.contextSourcesHelp")}
-          >
-            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-              {CUSTOM_AGENT_CONTEXT_SOURCE_META.map((source) => {
-                const allowed =
-                  !source.requiredCapability || localCustomCapabilities[source.requiredCapability] === true;
-                return (
-                  <EditorSwitchRow
-                    key={source.id}
-                    label={localizeUi(source.label)}
-                    description={localizeUi(source.description)}
-                    checked={allowed && localContextSources[source.id]}
-                    disabled={!allowed}
-                    onChange={(checked) => {
-                      setLocalContextSources((current) => ({ ...current, [source.id]: checked }));
-                      markDirty();
-                    }}
-                  />
-                );
-              })}
-            </div>
-          </FieldGroup>
+          {!isAvatarAgent && (
+            <FieldGroup
+              label={localizeUi("ui.agents.agenteditor.contextSources")}
+              icon={<Layers size="0.875rem" className="text-[var(--primary)]" />}
+              help={localizeUi("ui.agents.agenteditor.contextSourcesHelp")}
+            >
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                {CUSTOM_AGENT_CONTEXT_SOURCE_META.map((source) => {
+                  const allowed =
+                    !source.requiredCapability || localCustomCapabilities[source.requiredCapability] === true;
+                  return (
+                    <EditorSwitchRow
+                      key={source.id}
+                      label={localizeUi(source.label)}
+                      description={localizeUi(source.description)}
+                      checked={allowed && localContextSources[source.id]}
+                      disabled={!allowed}
+                      onChange={(checked) => {
+                        setLocalContextSources((current) => ({ ...current, [source.id]: checked }));
+                        markDirty();
+                      }}
+                    />
+                  );
+                })}
+              </div>
+            </FieldGroup>
+          )}
 
           {(isCustomAgent || isNewCustomAgent) && (
             <FieldGroup
@@ -2637,73 +2948,72 @@ export function AgentEditor() {
             </FieldGroup>
           )}
 
-          {/* ── Connection Override ── */}
-          <FieldGroup
-            label={localizeUi("ui.agents.agenteditor.connectionOverride")}
-            icon={<Link2 size="0.875rem" className="text-[var(--primary)]" />}
-            help={localizeUi("ui.agents.agenteditor.useADifferentAiConnectionForThisAgentFor")}
-          >
-            <select
-              value={localConnectionId}
-              onChange={(e) => {
-                setLocalConnectionId(e.target.value);
-                markDirty();
-              }}
-              className="w-full rounded-xl bg-[var(--secondary)] px-3 py-2.5 text-sm ring-1 ring-[var(--border)] focus:outline-none focus:ring-2 focus:ring-[var(--ring)]"
+          {/* ── Connection Override (2D Avatars keeps it: the Mesh Avatar Layout reads it) ── */}
+          {currentAgentType !== AVATAR_3D_AGENT_ID && (
+            <FieldGroup
+              label={localizeUi("ui.agents.agenteditor.connectionOverride")}
+              icon={<Link2 size="0.875rem" className="text-[var(--primary)]" />}
+              help={localizeUi("ui.agents.agenteditor.useADifferentAiConnectionForThisAgentFor")}
             >
-              <option value="">
-                {sidecarIsAgentsDefault
-                  ? localizeUi("ui.agents.agenteditor.agentDefaultValue1", {
-                      value1: localizeUi("ui.agents.agenteditor.localModelSidecar"),
-                    })
-                  : defaultAgentConn
-                    ? localizeUi("ui.agents.agenteditor.agentDefaultValue1", { value1: defaultAgentConn.name })
-                    : localizeUi("ui.agents.agenteditor.useChatConnection")}
-              </option>
-              {import.meta.env.VITE_MARINARA_LITE !== "true" && (
-                <option value={LOCAL_SIDECAR_CONNECTION_ID}>
-                  {localizeUi("ui.agents.agenteditor.localModelSidecar")}
-                </option>
+              <ConnectionSelect
+                job={localizeUi("connections.picker.job.agent")}
+                value={localConnectionId || null}
+                onChange={(value) => {
+                  setLocalConnectionId(value ?? "");
+                  markDirty();
+                }}
+                aria-label={localizeUi("ui.agents.agenteditor.connectionOverride")}
+                scope="agent"
+                defaultLabel={
+                  sidecarIsAgentsDefault
+                    ? localizeUi("ui.agents.agenteditor.agentDefaultValue1", {
+                        value1: localizeUi("ui.agents.agenteditor.localModelSidecar"),
+                      })
+                    : defaultAgentConn
+                      ? localizeUi("ui.agents.agenteditor.agentDefaultValue1", { value1: defaultAgentConn.name })
+                      : localizeUi("ui.agents.agenteditor.useChatConnection")
+                }
+                includeLocalSidecar={import.meta.env.VITE_MARINARA_LITE !== "true"}
+                extraOptions={
+                  import.meta.env.VITE_MARINARA_LITE !== "true" &&
+                  (utilitySlotServesThisAgent || localConnectionId === UTILITY_SIDECAR_CONNECTION_ID)
+                    ? [
+                        {
+                          value: UTILITY_SIDECAR_CONNECTION_ID,
+                          label: utilitySlotServesThisAgent
+                            ? localizeUi("ui.agents.agenteditor.utilityModelSidecar")
+                            : localizeUi("ui.agents.agenteditor.utilityModelSidecarUnavailable"),
+                        },
+                      ]
+                    : []
+                }
+              />
+              <p className="mt-1 text-[0.625rem] text-[var(--muted-foreground)]">
+                {localConnectionId === LOCAL_SIDECAR_CONNECTION_ID
+                  ? localizeUi("ui.agents.agenteditor.usesTheBuiltInLocalModelFromTheConnections")
+                  : localizeUi("ui.agents.agenteditor.whenEmptyUsesTheAgentDefaultConnectionIfOne")}
+              </p>
+              {/* ponytail: alwaysRunsAlone copies the server's fixed rules and misses agents that run alone only
+                  because of the chat's tools or music source. Upgrade: move the rules into shared for both sides. */}
+              {!isAvatarAgent && (
+                <EditorSwitchRow
+                  className="mt-3"
+                  label={localizeUi("agents.batching.label")}
+                  description={
+                    alwaysRunsAlone
+                      ? localizeUi("agents.batching.alwaysAlone")
+                      : localizeUi("agents.batching.description")
+                  }
+                  checked={localBatchWithOtherAgents && !alwaysRunsAlone}
+                  disabled={alwaysRunsAlone}
+                  onChange={(checked) => {
+                    setLocalBatchWithOtherAgents(checked);
+                    markDirty();
+                  }}
+                />
               )}
-              {/* Only offered once a model is installed for this agent: an option that
-                  cannot answer is worse than no option at all. The exception is a
-                  selection already saved — dropping that option would leave the select
-                  with no match and silently hide that the saved choice cannot serve. */}
-              {import.meta.env.VITE_MARINARA_LITE !== "true" &&
-                (utilitySlotServesThisAgent || localConnectionId === UTILITY_SIDECAR_CONNECTION_ID) && (
-                  <option value={UTILITY_SIDECAR_CONNECTION_ID}>
-                    {utilitySlotServesThisAgent
-                      ? localizeUi("ui.agents.agenteditor.utilityModelSidecar")
-                      : localizeUi("ui.agents.agenteditor.utilityModelSidecarUnavailable")}
-                  </option>
-                )}
-              {llmConnections.map((conn) => (
-                <option key={conn.id} value={conn.id}>
-                  {conn.name} ({conn.provider})
-                </option>
-              ))}
-            </select>
-            <p className="mt-1 text-[0.625rem] text-[var(--muted-foreground)]">
-              {localConnectionId === LOCAL_SIDECAR_CONNECTION_ID
-                ? localizeUi("ui.agents.agenteditor.usesTheBuiltInLocalModelFromTheConnections")
-                : localizeUi("ui.agents.agenteditor.whenEmptyUsesTheAgentDefaultConnectionIfOne")}
-            </p>
-            {/* ponytail: alwaysRunsAlone copies the server's fixed rules and misses agents that run alone only
-                because of the chat's tools or music source. Upgrade: move the rules into shared for both sides. */}
-            <EditorSwitchRow
-              className="mt-3"
-              label={localizeUi("agents.batching.label")}
-              description={
-                alwaysRunsAlone ? localizeUi("agents.batching.alwaysAlone") : localizeUi("agents.batching.description")
-              }
-              checked={localBatchWithOtherAgents && !alwaysRunsAlone}
-              disabled={alwaysRunsAlone}
-              onChange={(checked) => {
-                setLocalBatchWithOtherAgents(checked);
-                markDirty();
-              }}
-            />
-          </FieldGroup>
+            </FieldGroup>
+          )}
 
           {/* ── Image Generation Connection ── */}
           {supportsImagePromptSettings && (
@@ -2712,30 +3022,27 @@ export function AgentEditor() {
               icon={<ImageIcon size="0.875rem" className="text-[var(--primary)]" />}
               help={localizeUi("ui.agents.agenteditor.theConnectionUsedToGenerateImagesThisShouldPoint")}
             >
-              <select
-                value={localImageConnectionId}
-                onChange={(e) => {
-                  setLocalImageConnectionId(e.target.value);
+              <ConnectionSelect
+                job={localizeUi("connections.picker.job.agentImages")}
+                kind="image"
+                value={localImageConnectionId || null}
+                onChange={(id) => {
+                  setLocalImageConnectionId(id ?? "");
                   markDirty();
                 }}
-                className="w-full rounded-xl bg-[var(--secondary)] px-3 py-2.5 text-sm ring-1 ring-[var(--border)] focus:outline-none focus:ring-2 focus:ring-[var(--ring)]"
-              >
-                <option value="">
-                  {defaultAgentImageConn
+                defaultLabel={
+                  defaultAgentImageConn
                     ? localizeUi(
                         isIllustratorAgent
                           ? "ui.agents.agenteditor.illustratorAgentDefaultValue1"
                           : "ui.agents.agenteditor.imageAgentDefaultValue1",
                         { value1: defaultAgentImageConn.name },
                       )
-                    : localizeUi("ui.agents.agenteditor.noneNoImageGeneration")}
-                </option>
-                {imageConnections.map((conn) => (
-                  <option key={conn.id} value={conn.id}>
-                    {conn.name} ({conn.provider})
-                  </option>
-                ))}
-              </select>
+                    : localizeUi("ui.agents.agenteditor.noneNoImageGeneration")
+                }
+                className="rounded-xl px-3 py-2.5 text-sm"
+              />
+              <NeedsModelChip kind="image" own={localImageConnectionId} className="mt-1.5" />
               <p className="mt-1 text-[0.625rem] text-[var(--muted-foreground)]">
                 {localizeUi(
                   isIllustratorAgent
@@ -2827,31 +3134,39 @@ export function AgentEditor() {
                 }}
               />
               {localAutoGenerateAvatars && (
+                <EditorSwitchRow
+                  label={localizeUi("ui.agents.agenteditor.includeOutfitInNpcPortraits")}
+                  description={localizeUi("ui.agents.agenteditor.includeOutfitInNpcPortraitsDescription")}
+                  checked={localIncludeOutfitInAvatars}
+                  onChange={(checked) => {
+                    setLocalIncludeOutfitInAvatars(checked);
+                    markDirty();
+                  }}
+                />
+              )}
+              {localAutoGenerateAvatars && (
                 <div className="mt-2">
                   <label className="block text-xs text-[var(--muted-foreground)] mb-1">
                     {localizeUi("ui.agents.agenteditor.imageGenerationConnection")}
                   </label>
-                  <select
-                    value={localImageConnectionId}
-                    onChange={(e) => {
-                      setLocalImageConnectionId(e.target.value);
+                  <ConnectionSelect
+                    job={localizeUi("connections.picker.job.agentImages")}
+                    kind="image"
+                    value={localImageConnectionId || null}
+                    onChange={(id) => {
+                      setLocalImageConnectionId(id ?? "");
                       markDirty();
                     }}
-                    className="w-full rounded-xl bg-[var(--secondary)] px-3 py-2.5 text-sm ring-1 ring-[var(--border)] focus:outline-none focus:ring-2 focus:ring-[var(--ring)]"
-                  >
-                    <option value="">{localizeUi("ui.agents.agenteditor.noneSelectAConnection")}</option>
-                    {imageConnections.map((conn) => (
-                      <option key={conn.id} value={conn.id}>
-                        {conn.name} ({conn.provider})
-                      </option>
-                    ))}
-                  </select>
+                    defaultLabel={localizeUi("ui.agents.agenteditor.noneSelectAConnection")}
+                    inherits="main"
+                    className="rounded-xl px-3 py-2.5 text-sm"
+                  />
                 </div>
               )}
             </FieldGroup>
           )}
 
-          {!isStoryboardAgent && (
+          {!isStoryboardAgent && !isAvatarAgent && (
             <FieldGroup
               label={localizeUi("ui.agents.agenteditor.agentBudget")}
               icon={<Clock size="0.875rem" className="text-[var(--primary)]" />}
@@ -3310,13 +3625,62 @@ export function AgentEditor() {
                   </div>
                 </div>
               )}
+              <div className="mt-4">
+                <div className="mb-1 flex items-center gap-2">
+                  <label className="block text-[0.6875rem] font-medium text-[var(--muted-foreground)]">
+                    {localizeUi("ui.agents.agenteditor.secretPlotPrompt")}
+                  </label>
+                  <div className="flex-1" />
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setLocalSecretPlotPrompt(
+                        localSecretPlotPrompt.trim() ? "" : NARRATIVE_DIRECTOR_SECRET_PLOT_PROMPT,
+                      );
+                      markDirty();
+                    }}
+                    className="flex items-center gap-1 rounded-lg px-2.5 py-1 text-[0.625rem] font-medium text-[var(--muted-foreground)] transition-colors hover:bg-[var(--accent)] hover:text-[var(--foreground)]"
+                  >
+                    {localSecretPlotPrompt.trim() ? (
+                      <>
+                        <RotateCcw size="0.625rem" /> {localizeUi("ui.agents.agenteditor.resetToDefault")}
+                      </>
+                    ) : (
+                      <>
+                        <FileText size="0.625rem" /> {localizeUi("ui.agents.agenteditor.copyDefaultToEdit")}
+                      </>
+                    )}
+                  </button>
+                </div>
+                {localSecretPlotPrompt.trim() ? (
+                  <MacroTextarea
+                    showTokenCount
+                    value={localSecretPlotPrompt}
+                    onChange={(value) => {
+                      setLocalSecretPlotPrompt(value);
+                      markDirty();
+                    }}
+                    rows={12}
+                    title={localizeUi("ui.agents.agenteditor.secretPlotPrompt")}
+                    ariaLabel={localizeUi("ui.agents.agenteditor.secretPlotPrompt")}
+                    className="w-full resize-y rounded-xl bg-[var(--secondary)] px-4 py-3 font-mono text-xs leading-relaxed ring-1 ring-[var(--border)] focus:outline-none focus:ring-2 focus:ring-[var(--ring)] max-h-[50vh] overflow-y-auto"
+                  />
+                ) : (
+                  <pre className="w-full max-h-[30vh] overflow-y-auto rounded-xl bg-[var(--secondary)] px-4 py-3 font-mono text-xs leading-relaxed ring-1 ring-[var(--border)] text-[var(--muted-foreground)] whitespace-pre-wrap">
+                    {NARRATIVE_DIRECTOR_SECRET_PLOT_PROMPT}
+                  </pre>
+                )}
+                <p className="mt-1 text-[0.625rem] text-[var(--muted-foreground)]">
+                  {localizeUi("ui.agents.agenteditor.secretPlotPromptHelp")}
+                </p>
+              </div>
             </FieldGroup>
           )}
 
           {/* ── Run Interval (Illustrator) ── */}
           {isIllustratorAgent && (
             <FieldGroup
-              label={localizeUi("ui.agents.agenteditor.runInterval")}
+              label={localizeUi("ui.agents.agenteditor.imageRunInterval")}
               icon={<Clock size="0.875rem" className="text-[var(--primary)]" />}
               help={localizeUi(
                 "ui.agents.agenteditor.howManyAssistantMessagesBetweenAllowedIllustratorImageGenerations",
@@ -3328,6 +3692,7 @@ export function AgentEditor() {
                   min={0}
                   max={100}
                   value={localRunInterval}
+                  aria-label={localizeUi("ui.agents.agenteditor.imageRunInterval")}
                   onChange={(e) => {
                     const v = e.target.value;
                     setLocalRunInterval(v === "" ? "" : Math.max(0, Math.min(100, parseInt(v) || 0)));
@@ -3341,6 +3706,9 @@ export function AgentEditor() {
                 </span>
               </div>
               <p className="mt-1 text-[0.625rem] text-[var(--muted-foreground)]">
+                {localizeUi("agents.illustrator.runIntervalChatDefaultHelp")}
+              </p>
+              <p className="mt-1 text-[0.625rem] text-[var(--muted-foreground)]">
                 {localizeUi("ui.agents.agenteditor.theIllustratorCanOnlyCreateANewImageOnce")}
               </p>
               <p className="mt-1 text-[0.625rem] text-[var(--muted-foreground)]">
@@ -3348,34 +3716,64 @@ export function AgentEditor() {
               </p>
             </FieldGroup>
           )}
+          {isIllustratorAgent && (
+            <FieldGroup
+              label={localizeUi("ui.agents.agenteditor.videoRunInterval")}
+              icon={<Clock size="0.875rem" className="text-[var(--primary)]" />}
+              help={localizeUi("agents.illustrator.videoRunIntervalHelp")}
+            >
+              <div className="flex items-center gap-3">
+                <input
+                  type="number"
+                  min={0}
+                  max={MAX_ILLUSTRATOR_RUN_INTERVAL}
+                  value={localVideoRunInterval}
+                  aria-label={localizeUi("ui.agents.agenteditor.videoRunInterval")}
+                  onChange={(e) => {
+                    setLocalVideoRunInterval(
+                      e.target.value === "" ? "" : (normalizeIllustratorRunInterval(e.target.value) ?? ""),
+                    );
+                    markDirty();
+                  }}
+                  placeholder="5"
+                  className="w-28 rounded-xl bg-[var(--secondary)] px-3 py-2.5 text-sm tabular-nums ring-1 ring-[var(--border)] placeholder:text-[var(--muted-foreground)] focus:outline-none focus:ring-2 focus:ring-[var(--ring)]"
+                />
+                <span className="text-[0.6875rem] text-[var(--muted-foreground)]">
+                  {localizeUi("ui.agents.agenteditor.messages")}
+                </span>
+              </div>
+            </FieldGroup>
+          )}
 
           {/* ── Inject as Prompt Section ── */}
-          <FieldGroup
-            label={localizeUi("ui.agents.agenteditor.addAsPromptSection")}
-            icon={<Layers size="0.875rem" className="text-[var(--primary)]" />}
-            help={localizeUi("ui.agents.agenteditor.whenEnabledThisAgentSOutputBecomesAvailableAs")}
-          >
-            <EditorSwitchRow
-              label={
-                localInjectAsSection
-                  ? localizeUi("ui.noodle.noodlehome.enabled")
-                  : localizeUi("ui.agents.agenteditor.disabled")
-              }
-              checked={localInjectAsSection}
-              onChange={() => {
-                setLocalInjectAsSection(!localInjectAsSection);
-                markDirty();
-              }}
-              description={
-                localInjectAsSection
-                  ? localizeUi("ui.agents.agenteditor.value1AppearsAsASectionOptionInPromptPresets", {
-                      value1: localName,
-                    })
-                  : localizeUi("ui.agents.agenteditor.agentOutputWonTBeAvailableAsAMarker")
-              }
-              labelClassName="text-sm"
-            />
-          </FieldGroup>
+          {!isAvatarAgent && (
+            <FieldGroup
+              label={localizeUi("ui.agents.agenteditor.addAsPromptSection")}
+              icon={<Layers size="0.875rem" className="text-[var(--primary)]" />}
+              help={localizeUi("ui.agents.agenteditor.whenEnabledThisAgentSOutputBecomesAvailableAs")}
+            >
+              <EditorSwitchRow
+                label={
+                  localInjectAsSection
+                    ? localizeUi("ui.noodle.noodlehome.enabled")
+                    : localizeUi("ui.agents.agenteditor.disabled")
+                }
+                checked={localInjectAsSection}
+                onChange={() => {
+                  setLocalInjectAsSection(!localInjectAsSection);
+                  markDirty();
+                }}
+                description={
+                  localInjectAsSection
+                    ? localizeUi("ui.agents.agenteditor.value1AppearsAsASectionOptionInPromptPresets", {
+                        value1: localName,
+                      })
+                    : localizeUi("ui.agents.agenteditor.agentOutputWonTBeAvailableAsAMarker")
+                }
+                labelClassName="text-sm"
+              />
+            </FieldGroup>
+          )}
 
           {isMusicAgent && (
             <FieldGroup
@@ -3495,7 +3893,7 @@ export function AgentEditor() {
                         );
                         await qc.invalidateQueries({ queryKey: agentKeys.all });
                       }}
-                      className="rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs text-white/50 transition-colors hover:bg-red-500/10 hover:text-red-400 hover:border-red-500/20"
+                      className="rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-xs text-white/50 transition-colors hover:bg-[var(--marinara-app-accent-static)]/10 hover:text-[var(--marinara-app-accent-static)] hover:border-[var(--marinara-app-accent-static)]/20"
                     >
                       {localizeUi("ui.agents.agenteditor.disconnect")}
                     </button>
@@ -3826,7 +4224,7 @@ export function AgentEditor() {
                           });
                           setYoutubeConfigured(false);
                         }}
-                        className="text-xs text-white/50 hover:text-red-400"
+                        className="text-xs text-white/50 hover:text-[var(--marinara-app-accent-static)]"
                       >
                         {localizeUi("settings.notifications.customSound.actions.remove")}
                       </button>
@@ -4259,7 +4657,6 @@ export function AgentEditor() {
                 plannerPrompt={localPrompt}
                 defaultPlannerPrompt={defaultPrompt ?? ""}
                 plannerTemplates={localPromptTemplates}
-                connections={allConnections}
                 onChange={setLocalStoryboardSettings}
                 onPlannerPromptChange={setLocalPrompt}
                 onPlannerTemplatesChange={setLocalPromptTemplates}
@@ -4269,7 +4666,7 @@ export function AgentEditor() {
           )}
 
           {/* ── Prompt Template ── */}
-          {!isStoryboardAgent ? (
+          {!isStoryboardAgent && !isAvatarAgent ? (
             <FieldGroup
               label={localizeUi("ui.agents.agenteditor.promptTemplate")}
               icon={<FileText size="0.875rem" className="text-[var(--primary)]" />}
@@ -4307,7 +4704,11 @@ export function AgentEditor() {
                 </div>
               )}
 
-              {builtIn && isUsingDefaultPrompt ? (
+              {/* Her held change to an empty prompt needs the field to show in. */}
+              {builtIn &&
+              isUsingDefaultPrompt &&
+              !mariReview.value?.waiting.some(({ fieldId }) => fieldId === "promptTemplate") &&
+              !mariReview.value?.kept?.fieldIds.includes("promptTemplate") ? (
                 <div className="relative">
                   <pre className="w-full max-h-[50vh] overflow-y-auto resize-y rounded-xl bg-[var(--secondary)] px-4 py-3 font-mono text-xs leading-relaxed ring-1 ring-[var(--border)] text-[var(--muted-foreground)] whitespace-pre-wrap">
                     {defaultPrompt || "No default prompt."}
@@ -4323,23 +4724,30 @@ export function AgentEditor() {
                   </span>
                 </div>
               ) : (
-                <MacroTextarea
-                  showTokenCount
-                  value={localPrompt}
-                  tokenCountFooter={promptTemplateHelp}
-                  onChange={(value) => {
-                    setLocalPrompt(value);
-                    markDirty();
-                  }}
-                  rows={16}
-                  title={localizeUi("ui.agents.agenteditor.promptTemplate")}
-                  placeholder={
-                    isCustomAgent || isNewCustomAgent
-                      ? customPromptPlaceholder
-                      : localizeUi("ui.agents.agenteditor.writeTheSystemPromptForThisAgent")
-                  }
-                  className="w-full resize-y rounded-xl bg-[var(--secondary)] px-4 py-3 font-mono text-xs leading-relaxed ring-1 ring-[var(--border)] placeholder:text-[var(--muted-foreground)]/50 focus:outline-none focus:ring-2 focus:ring-[var(--ring)] max-h-[60vh] overflow-y-auto"
-                />
+                <div data-mari-field="promptTemplate">
+                  <MariFieldReviewProvider value={mariReview.value}>
+                    <MariFieldReview field="promptTemplate">
+                      <MacroTextarea
+                        showTokenCount
+                        value={localPrompt}
+                        tokenCountFooter={promptTemplateHelp}
+                        onChange={(value) => {
+                          setLocalPrompt(value);
+                          markDirty();
+                        }}
+                        onFocus={reportField("promptTemplate", localizeUi("ui.agents.agenteditor.promptTemplate"))}
+                        rows={16}
+                        title={localizeUi("ui.agents.agenteditor.promptTemplate")}
+                        placeholder={
+                          isCustomAgent || isNewCustomAgent
+                            ? customPromptPlaceholder
+                            : localizeUi("ui.agents.agenteditor.writeTheSystemPromptForThisAgent")
+                        }
+                        className="w-full resize-y rounded-xl bg-[var(--secondary)] px-4 py-3 font-mono text-xs leading-relaxed ring-1 ring-[var(--border)] placeholder:text-[var(--muted-foreground)]/50 focus:outline-none focus:ring-2 focus:ring-[var(--ring)] max-h-[60vh] overflow-y-auto"
+                      />
+                    </MariFieldReview>
+                  </MariFieldReviewProvider>
+                </div>
               )}
 
               <div className="mt-4 space-y-2">
@@ -4442,67 +4850,69 @@ export function AgentEditor() {
           ) : null}
 
           {/* ── Available Tools (Function Calling) ── */}
-          <FieldGroup
-            label={localizeUi("ui.agents.agenteditor.toolsFunctionCalling")}
-            icon={<Wrench size="0.875rem" className="text-[var(--primary)]" />}
-            help={localizeUi("ui.agents.agenteditor.selectWhichToolsThisAgentCanUseDuringGeneration")}
-            collapsible
-            expanded={toolsSectionOpen}
-            onExpandedChange={setToolsSectionOpen}
-            summary={
-              musicDjYoutubeMode
-                ? "Not used in YouTube mode"
-                : `${selectedVisibleToolCount}/${availableVisibleToolCount} enabled`
-            }
-          >
-            {musicDjYoutubeMode ? (
-              <p className="rounded-xl bg-[var(--secondary)]/60 px-3 py-2 text-[0.6875rem] text-[var(--muted-foreground)] ring-1 ring-[var(--border)]">
-                {localizeUi("ui.agents.agenteditor.inYoutubeModeMusicDjDoesnTUseFunction")}
-              </p>
-            ) : (
-              <>
-                <p className="text-[0.625rem] text-[var(--muted-foreground)] mb-3">
-                  {localizeUi("ui.agents.agenteditor.toggleToolsOnOrOffForThisAgentWhen")}
+          {!isAvatarAgent && (
+            <FieldGroup
+              label={localizeUi("ui.agents.agenteditor.toolsFunctionCalling")}
+              icon={<Wrench size="0.875rem" className="text-[var(--primary)]" />}
+              help={localizeUi("ui.agents.agenteditor.selectWhichToolsThisAgentCanUseDuringGeneration")}
+              collapsible
+              expanded={toolsSectionOpen}
+              onExpandedChange={setToolsSectionOpen}
+              summary={
+                musicDjYoutubeMode
+                  ? "Not used in YouTube mode"
+                  : `${selectedVisibleToolCount}/${availableVisibleToolCount} enabled`
+              }
+            >
+              {musicDjYoutubeMode ? (
+                <p className="rounded-xl bg-[var(--secondary)]/60 px-3 py-2 text-[0.6875rem] text-[var(--muted-foreground)] ring-1 ring-[var(--border)]">
+                  {localizeUi("ui.agents.agenteditor.inYoutubeModeMusicDjDoesnTUseFunction")}
                 </p>
-                <div className="space-y-2">
-                  {visibleBuiltInTools.map((tool: ToolDefinition) => (
-                    <ToolCard
-                      key={tool.name}
-                      tool={tool}
-                      enabled={localEnabledTools.includes(tool.name)}
-                      onToggle={(name) => {
-                        setLocalEnabledTools((prev) =>
-                          prev.includes(name) ? prev.filter((n) => n !== name) : [...prev, name],
-                        );
-                        markDirty();
-                      }}
-                    />
-                  ))}
-                  {selectableCustomTools.map((tool) => (
-                    <ToolCard
-                      key={tool.name}
-                      tool={{
-                        name: tool.name,
-                        description: tool.description,
-                        parameters: JSON.parse(tool.parametersSchema || "{}"),
-                      }}
-                      enabled={localEnabledTools.includes(tool.name)}
-                      onToggle={(name) => {
-                        setLocalEnabledTools((prev) =>
-                          prev.includes(name) ? prev.filter((n) => n !== name) : [...prev, name],
-                        );
-                        markDirty();
-                      }}
-                      isCustom
-                    />
-                  ))}
-                </div>
-                <p className="mt-2 text-[0.625rem] text-[var(--muted-foreground)]">
-                  {localizeUi("ui.agents.agenteditor.toolUseMustAlsoBeEnabledPerChatVia")}
-                </p>
-              </>
-            )}
-          </FieldGroup>
+              ) : (
+                <>
+                  <p className="text-[0.625rem] text-[var(--muted-foreground)] mb-3">
+                    {localizeUi("ui.agents.agenteditor.toggleToolsOnOrOffForThisAgentWhen")}
+                  </p>
+                  <div className="space-y-2">
+                    {visibleBuiltInTools.map((tool: ToolDefinition) => (
+                      <ToolCard
+                        key={tool.name}
+                        tool={tool}
+                        enabled={localEnabledTools.includes(tool.name)}
+                        onToggle={(name) => {
+                          setLocalEnabledTools((prev) =>
+                            prev.includes(name) ? prev.filter((n) => n !== name) : [...prev, name],
+                          );
+                          markDirty();
+                        }}
+                      />
+                    ))}
+                    {selectableCustomTools.map((tool) => (
+                      <ToolCard
+                        key={tool.name}
+                        tool={{
+                          name: tool.name,
+                          description: tool.description,
+                          parameters: JSON.parse(tool.parametersSchema || "{}"),
+                        }}
+                        enabled={localEnabledTools.includes(tool.name)}
+                        onToggle={(name) => {
+                          setLocalEnabledTools((prev) =>
+                            prev.includes(name) ? prev.filter((n) => n !== name) : [...prev, name],
+                          );
+                          markDirty();
+                        }}
+                        isCustom
+                      />
+                    ))}
+                  </div>
+                  <p className="mt-2 text-[0.625rem] text-[var(--muted-foreground)]">
+                    {localizeUi("ui.agents.agenteditor.toolUseMustAlsoBeEnabledPerChatVia")}
+                  </p>
+                </>
+              )}
+            </FieldGroup>
+          )}
         </div>
       </div>
     </div>

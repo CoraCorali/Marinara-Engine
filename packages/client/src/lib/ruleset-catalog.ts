@@ -10,6 +10,7 @@ import {
   catalogRowRef,
   rowsFromCatalogEntry,
   rulesetListRowIssues,
+  rulesetValueRefLabel,
   RULESET_CATALOG_ROW_KEY,
   type RulesetCatalogEntry,
   type RulesetCatalogEntryRow,
@@ -21,9 +22,11 @@ import {
   type RulesetList,
   type RulesetListColumn,
   type RulesetSheetBuild,
+  type RulesetValueRef,
   sheetFieldMatchTexts,
 } from "@marinara-engine/shared";
 import type { TFunction } from "i18next";
+import { rulesetPoolGroupLabel } from "./ruleset-sheet-view";
 
 /** Moved to shared so a fight holds an invented creature to the same match the picker opens on. */
 export { sheetFieldMatchTexts } from "@marinara-engine/shared";
@@ -452,10 +455,12 @@ const KIND_KEYS: Readonly<Record<RulesetCatalogMechanics["kind"], string>> = Obj
   rider: "game.ruleset.catalog.kind.rider",
 });
 
-const SHAPE_KEYS: Readonly<Record<"burst" | "cone" | "line", string>> = Object.freeze({
+const SHAPE_KEYS: Readonly<Record<"burst" | "cone" | "line" | "box" | "wall", string>> = Object.freeze({
   burst: "game.ruleset.catalog.shape.burst",
   cone: "game.ruleset.catalog.shape.cone",
   line: "game.ruleset.catalog.shape.line",
+  box: "game.ruleset.catalog.shape.box",
+  wall: "game.ruleset.catalog.shape.wall",
 });
 
 const TARGET_KEYS: Readonly<Record<"self" | "ally" | "enemy" | "any", string>> = Object.freeze({
@@ -481,24 +486,39 @@ export type CatalogMechanicsLabels = {
   /** Action-economy budget id to the name the ruleset gives it, for the entries that hand a budget
    *  back or buy a standard action with one. Empty for a ruleset that resolves no combat. */
   budgets: Readonly<Record<string, string>>;
+  /** A sheet value by the ruleset's own name, for an amount that adds one (1.83). */
+  value?: (ref: RulesetValueRef) => string;
+  /** Condition id to the name the sheet shows, for a cure that ends some (1.176). */
+  conditions?: Readonly<Record<string, string>>;
+  /** The ruleset's own words (a damage type, a sense) in the player's language (1.806). */
+  text?: (english: string) => string;
 };
 
 /** The ruleset's own names for everything a mechanics block can point at. A pool group has no label
- *  of its own, so it reads as its id, exactly as the in-game sheet heads its group with. */
+ *  of its own, so its id is read as words, exactly as the in-game sheet heads its group with. */
 export function catalogMechanicsLabels(
   definition: RulesetDefinition,
   catalog: Pick<RulesetCatalogHeader, "units">,
+  /** The ruleset's translation of its own words, when the player reads another language. */
+  text: (english: string) => string = (english) => english,
 ): CatalogMechanicsLabels {
   const saves: Record<string, string> = {};
-  for (const save of definition.sheet.saves) saves[save.id] = save.label;
+  for (const save of definition.sheet.saves) saves[save.id] = text(save.label);
   const pools: Record<string, string> = {};
   for (const pool of definition.sheet.live.pools) {
-    pools[pool.id] = pool.label;
-    if (pool.group && !(pool.group in pools)) pools[pool.group] = pool.group;
+    pools[pool.id] = text(pool.label);
+    if (pool.group && !(pool.group in pools)) pools[pool.group] = text(rulesetPoolGroupLabel(pool.group));
   }
   const budgets: Record<string, string> = {};
-  for (const budget of definition.combat?.economy.budgets ?? []) budgets[budget.id] = budget.label;
-  return { units: catalog.units, saves, pools, budgets };
+  for (const budget of definition.combat?.economy.budgets ?? []) budgets[budget.id] = text(budget.label);
+  const value = (ref: RulesetValueRef) => text(rulesetValueRefLabel(definition, ref).what);
+  const conditions: Record<string, string> = {};
+  for (const condition of definition.sheet.live.conditions) conditions[condition.id] = text(condition.label);
+  const distance = catalog.units?.distance;
+  const units = distance?.label
+    ? { ...catalog.units, distance: { ...distance, label: text(distance.label) } }
+    : catalog.units;
+  return { units, saves, pools, budgets, value, conditions, text };
 }
 
 /** Dice and a flat adjustment read as one die expression (`1d8+3`), which every system writes the
@@ -522,6 +542,8 @@ export function formatCatalogMechanics(
     const unit = labels.units?.distance?.label;
     return unit ? t("game.ruleset.catalog.mechanics.distance", { value, unit }) : String(value);
   };
+  const w = labels.text ?? ((english: string) => english);
+  const words = (list: readonly string[]) => list.map(w).join(", ");
   const parts: string[] = [t(KIND_KEYS[mechanics.kind])];
 
   if (mechanics.check?.reroll) {
@@ -546,7 +568,12 @@ export function formatCatalogMechanics(
     parts.push(
       mechanics.range === 0
         ? t("game.ruleset.catalog.mechanics.selfOrTouch")
-        : t("game.ruleset.catalog.mechanics.range", { distance: distance(mechanics.range) }),
+        : mechanics.longRange !== undefined
+          ? t("game.ruleset.catalog.mechanics.rangeLong", {
+              distance: distance(mechanics.range),
+              long: distance(mechanics.longRange),
+            })
+          : t("game.ruleset.catalog.mechanics.range", { distance: distance(mechanics.range) }),
     );
   }
   if (mechanics.area) {
@@ -556,6 +583,14 @@ export function formatCatalogMechanics(
         distance: distance(mechanics.area.size),
       }),
     );
+    // Or laid as a ring, as its caster chooses (1.177).
+    if (mechanics.area.ring !== undefined) {
+      parts.push(t("game.ruleset.catalog.mechanics.ringOf", { distance: distance(mechanics.area.ring) }));
+    }
+    // Set down several times at once (1.178).
+    if (mechanics.area.copies !== undefined) {
+      parts.push(t("game.ruleset.catalog.mechanics.copies", { count: mechanics.area.copies }));
+    }
   }
   // A rider never reaches the menu, so its line is the only place a reader learns what it does: how
   // much it adds, of what, and how often. Without this the picker says only the word "Rider".
@@ -565,7 +600,7 @@ export function formatCatalogMechanics(
       parts.push(
         t("game.ruleset.catalog.mechanics.riderAmount", {
           amount: added,
-          type: mechanics.rider.type ?? t("game.ruleset.catalog.mechanics.riderSameType"),
+          type: mechanics.rider.type ? w(mechanics.rider.type) : t("game.ruleset.catalog.mechanics.riderSameType"),
         }),
       );
     }
@@ -603,11 +638,19 @@ export function formatCatalogMechanics(
   if (mechanics.friendlyFire) parts.push(t("game.ruleset.catalog.mechanics.friendlyFire"));
   if (mechanics.attackRoll) parts.push(t("game.ruleset.catalog.mechanics.attackRoll"));
 
-  const amount = formatAmount(mechanics.amount);
+  const declared = formatAmount(mechanics.amount);
+  // What the sheet adds is named, not worked out: the catalog shows the entry, not anybody's sheet.
+  const amount =
+    declared && mechanics.amountAdd
+      ? t("game.ruleset.catalog.mechanics.amountAdd", {
+          amount: declared,
+          value: labels.value?.(mechanics.amountAdd) ?? "",
+        })
+      : declared;
   if (amount) {
     parts.push(
       mechanics.damageType
-        ? t("game.ruleset.catalog.mechanics.amountOfType", { amount, type: mechanics.damageType })
+        ? t("game.ruleset.catalog.mechanics.amountOfType", { amount, type: w(mechanics.damageType) })
         : amount,
     );
   }
@@ -619,7 +662,7 @@ export function formatCatalogMechanics(
     parts.push(
       t("game.ruleset.catalog.mechanics.plus", {
         amount: added,
-        type: clause.type ?? t("game.ruleset.catalog.mechanics.riderSameType"),
+        type: clause.type ? w(clause.type) : t("game.ruleset.catalog.mechanics.riderSameType"),
       }),
     );
     // A clause may ask the target for a saving throw of its OWN, which is a different throw from
@@ -631,10 +674,22 @@ export function formatCatalogMechanics(
   }
   const perStep = formatAmount(mechanics.perCostStep);
   if (perStep) parts.push(t("game.ruleset.catalog.mechanics.perStep", { amount: perStep }));
+  if (mechanics.targetsPerCostStep) {
+    parts.push(t("game.ruleset.catalog.mechanics.targetsPerStep", { count: mechanics.targetsPerCostStep }));
+  }
 
   if (mechanics.save) {
     const save = labels.saves[mechanics.save.save] ?? mechanics.save.save;
     parts.push(t(SAVE_KEYS[mechanics.save.onSuccess], { save }));
+  }
+  // A ray rolled for each target (1.468).
+  if (mechanics.rays) {
+    parts.push(
+      t("game.ruleset.catalog.mechanics.rays", {
+        dice: mechanics.rays.dice,
+        rays: words(mechanics.rays.rows.map((row) => row.label)),
+      }),
+    );
   }
   for (const cost of mechanics.cost ?? []) {
     parts.push(
@@ -642,6 +697,154 @@ export function formatCatalogMechanics(
     );
   }
   if (mechanics.concentration) parts.push(t("game.ruleset.catalog.mechanics.concentration"));
+  // What it cures (1.176): conditions it ends, the dying it steadies, the dead it brings back.
+  if (mechanics.ends) {
+    const named = mechanics.ends.conditions.map((id) => labels.conditions?.[id] ?? id).join(", ");
+    const count = mechanics.ends.count;
+    parts.push(
+      count !== undefined && count < mechanics.ends.conditions.length
+        ? t("game.ruleset.catalog.mechanics.endsSome", { count, conditions: named })
+        : t("game.ruleset.catalog.mechanics.ends", { conditions: named }),
+    );
+  }
+  if (mechanics.stabilizes) parts.push(t("game.ruleset.catalog.mechanics.stabilizes"));
+  if (mechanics.revives) {
+    parts.push(
+      t("game.ruleset.catalog.mechanics.revives", {
+        count: mechanics.revives.withinRounds,
+        amount: formatAmount(mechanics.revives.health),
+      }),
+    );
+  }
+  // An area that stays (1.172): how long, and when it does its effect again.
+  if (mechanics.zone) {
+    parts.push(
+      t(
+        // A zone that is only ground (1.173) does nothing "again".
+        mechanics.zone.triggers.length === 0
+          ? "game.ruleset.catalog.mechanics.zoneStays"
+          : mechanics.zone.anchor === "caster"
+            ? "game.ruleset.catalog.mechanics.zoneCaster"
+            : "game.ruleset.catalog.mechanics.zone",
+        {
+          count: mechanics.zone.rounds,
+          when: mechanics.zone.triggers.map((trigger) => t(ZONE_WHEN_KEYS[trigger])).join(", "),
+        },
+      ),
+    );
+    // Moved by its caster, drifting, and what its ground does (1.173).
+    if (mechanics.zone.move) {
+      parts.push(t("game.ruleset.catalog.mechanics.zoneMove", { distance: distance(mechanics.zone.move.distance) }));
+    }
+    if (mechanics.zone.drift) {
+      parts.push(t("game.ruleset.catalog.mechanics.zoneDrift", { distance: distance(mechanics.zone.drift.distance) }));
+    }
+    if (mechanics.zone.move?.ram) parts.push(t("game.ruleset.catalog.mechanics.zoneRam"));
+    if (mechanics.zone.terrain?.difficult) parts.push(t("game.ruleset.catalog.mechanics.zoneDifficult"));
+    // Ground that costs several steps, and halved speed (1.175).
+    if (mechanics.zone.terrain?.costTimes !== undefined) {
+      parts.push(t("game.ruleset.catalog.mechanics.zoneCostTimes", { count: mechanics.zone.terrain.costTimes }));
+    }
+    if (mechanics.zone.terrain?.halvesSpeed) parts.push(t("game.ruleset.catalog.mechanics.zoneHalvesSpeed"));
+    const ground = mechanics.zone.terrain?.perDistance;
+    if (ground) {
+      parts.push(
+        t("game.ruleset.catalog.mechanics.zoneGround", {
+          amount: [ground.amount.dice, ground.amount.flat].filter((part) => part !== undefined).join("+"),
+          distance: distance(ground.every),
+        }),
+      );
+    }
+    // What it does to concentration, and the damage it ends at (1.174).
+    if (mechanics.zone.breaksConcentration) parts.push(t("game.ruleset.catalog.mechanics.zoneBreaksConcentration"));
+    // What it does to whoever it already holds (1.175).
+    const held = mechanics.zone.whileHeld;
+    if (held) {
+      parts.push(
+        t("game.ruleset.catalog.mechanics.zoneWhileHeld", {
+          amount: [held.amount.dice, held.amount.flat].filter((part) => part !== undefined).join("+"),
+          condition: labels.conditions?.[held.condition] ?? held.condition,
+        }),
+      );
+    }
+    if (mechanics.zone.damageCap !== undefined) {
+      parts.push(t("game.ruleset.catalog.mechanics.zoneDamageCap", { count: mechanics.zone.damageCap }));
+    }
+    // What a wall stops, and its one side (1.177).
+    const blocks = mechanics.zone.blocks ?? [];
+    if (blocks.length) {
+      parts.push(
+        t(
+          blocks.length === 2
+            ? "game.ruleset.catalog.mechanics.zoneBlocksBoth"
+            : blocks[0] === "move"
+              ? "game.ruleset.catalog.mechanics.zoneBlocksMove"
+              : "game.ruleset.catalog.mechanics.zoneBlocksSight",
+        ),
+      );
+    }
+    // Nobody sees into it but by the senses that pierce it (1.178).
+    if (mechanics.zone.obscures) {
+      const pierced = mechanics.zone.obscures.pierced ?? [];
+      parts.push(
+        pierced.length
+          ? t("game.ruleset.catalog.mechanics.zoneObscuresBut", { senses: words(pierced) })
+          : t("game.ruleset.catalog.mechanics.zoneObscures"),
+      );
+    }
+    // What standing inside does, what it stops and what it wards off (1.179).
+    const inside = mechanics.zone.inside;
+    if (inside?.conditions?.length) {
+      parts.push(
+        t("game.ruleset.catalog.mechanics.zoneInsideConditions", {
+          conditions: inside.conditions.map((id) => labels.conditions?.[id] ?? id).join(", "),
+        }),
+      );
+    }
+    if (inside?.immune?.length) {
+      parts.push(t("game.ruleset.catalog.mechanics.zoneInsideImmune", { types: words(inside.immune) }));
+    }
+    if (mechanics.zone.forbids?.components) {
+      parts.push(
+        t("game.ruleset.catalog.mechanics.zoneForbids", { components: words(mechanics.zone.forbids.components) }),
+      );
+    }
+    // No teleporting into, out of or within it (1.467).
+    if (mechanics.zone.forbids?.teleport === true) parts.push(t("game.ruleset.catalog.mechanics.zoneForbidsTeleport"));
+    // Nobody into it at all (1.753): Forbiddance.
+    else if (mechanics.zone.forbids?.teleport === "into")
+      parts.push(t("game.ruleset.catalog.mechanics.zoneForbidsTeleportInto"));
+    // Or out of it only past a save (1.603).
+    else if (mechanics.zone.forbids?.teleport)
+      parts.push(
+        t("game.ruleset.catalog.mechanics.zoneForbidsTeleportSave", {
+          save: labels.saves[mechanics.zone.forbids.teleport.save] ?? mechanics.zone.forbids.teleport.save,
+        }),
+      );
+    if (mechanics.zone.wards) {
+      parts.push(t("game.ruleset.catalog.mechanics.zoneWards", { level: mechanics.zone.wards.maxLevel }));
+    }
+    const side = mechanics.zone.side;
+    if (side) {
+      parts.push(
+        t("game.ruleset.catalog.mechanics.zoneSide", {
+          distance: distance(side.distance),
+          when: side.triggers.map((trigger) => t(ZONE_WHEN_KEYS[trigger])).join(", "),
+        }),
+      );
+    }
+  }
+  if (mechanics.seen) parts.push(t("game.ruleset.catalog.mechanics.seen"));
+  if (mechanics.components?.length) {
+    parts.push(t("game.ruleset.catalog.mechanics.components", { components: words(mechanics.components) }));
+  }
   if (mechanics.reaction) parts.push(t("game.ruleset.catalog.mechanics.reaction"));
   return parts.join(" · ");
 }
+
+/** What each of a zone's triggers is called (1.172). */
+const ZONE_WHEN_KEYS = {
+  enter: "game.ruleset.catalog.mechanics.zoneWhenEnter",
+  "turn-start": "game.ruleset.catalog.mechanics.zoneWhenTurnStart",
+  "turn-end": "game.ruleset.catalog.mechanics.zoneWhenTurnEnd",
+} as const;

@@ -33,6 +33,7 @@ import { createAgentsStorage } from "../services/storage/agents.storage.js";
 import { createChatsStorage } from "../services/storage/chats.storage.js";
 import { createConnectionsStorage } from "../services/storage/connections.storage.js";
 import { withLongTermMemoryEmbeddingChange } from "../services/generation/long-term-memory-runtime.js";
+import { applyIllustratorChatRunInterval } from "../services/generation/agent-cadence.js";
 import { createLLMProvider } from "../services/llm/provider-registry.js";
 import { normalizeBeholderState } from "../services/agents/beholder-state.js";
 import { DATA_DIR } from "../utils/data-dir.js";
@@ -59,7 +60,7 @@ const IMPORT_UNSAFE_AGENT_SETTING_KEYS = new Set([
 ]);
 
 const updateAgentRunSchema = z.object({
-  resultData: z.unknown(),
+  resultData: z.unknown().optional(),
   // Optional owner hint: keeps the lazy file store from loading every chat's agent_runs
   // shards for a bare-id lookup. The chat is always open when a run is edited.
   chatId: z.string().min(1).optional(),
@@ -434,8 +435,16 @@ export async function agentsRoutes(app: FastifyInstance) {
     }
     const fallback = normalizeRunInterval(defaults.runInterval, 1);
     const config = await storage.getByType(agentType);
-    const settings = { ...defaults, ...parseAgentSettings(config?.settings) };
-    const runInterval = normalizeRunInterval(settings.runInterval, fallback);
+    const chat = await chats.getById(chatId);
+    const settings = applyIllustratorChatRunInterval(
+      agentType,
+      { ...defaults, ...parseAgentSettings(config?.settings) },
+      parseAgentSettings(chat?.metadata),
+      chat?.mode,
+    );
+    // Illustrator's 0 means it only runs when the user asks, matching shouldSkipAgentByMessageInterval.
+    const manualOnly = agentType === "illustrator" && (settings.runInterval === 0 || settings.runInterval === "0");
+    const runInterval = manualOnly ? 0 : normalizeRunInterval(settings.runInterval, fallback);
 
     const lastRun = await storage.getLastSuccessfulRunByType(agentType, chatId);
     const messages = await chats.listMessages(chatId);
@@ -462,7 +471,7 @@ export async function agentsRoutes(app: FastifyInstance) {
       lastSuccessfulRun: lastRun ? { messageId: lastRun.messageId, createdAt: lastRun.createdAt } : null,
       messagesSinceLastRun,
       remainingMessages,
-      runsNextMessage: remainingMessages === 0,
+      runsNextMessage: !manualOnly && remainingMessages === 0,
       lastRunMessageFound,
     };
   });

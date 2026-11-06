@@ -18,9 +18,11 @@ export type APIProvider =
   | "xai"
   | "arli"
   | "zai"
+  | "deepseek"
   | "custom"
   | "image_generation"
   | "video_generation"
+  | "audio_generation"
   | "audio"
   | "decision";
 
@@ -57,6 +59,80 @@ export function defaultDecisionStateTokens(source: string | null | undefined): n
 export const AUDIO_GENERATION_SOURCES = ["openai", "elevenlabs", "pockettts", "xai"] as const;
 export type AudioGenerationSource = (typeof AUDIO_GENERATION_SOURCES)[number];
 
+/** Each audio source's name and the base URL / model / voice a new audio connection starts with. */
+export const AUDIO_SOURCE_OPTIONS: Array<{
+  id: AudioGenerationSource;
+  name: string;
+  defaultBaseUrl: string;
+  defaultModel: string;
+  defaultVoice: string;
+}> = [
+  {
+    id: "elevenlabs",
+    name: "ElevenLabs",
+    defaultBaseUrl: "https://api.elevenlabs.io",
+    defaultModel: "eleven_multilingual_v2",
+    defaultVoice: "",
+  },
+  {
+    id: "openai",
+    name: "OpenAI-compatible",
+    defaultBaseUrl: "https://api.openai.com/v1",
+    defaultModel: "tts-1",
+    defaultVoice: "alloy",
+  },
+  {
+    id: "pockettts",
+    name: "PocketTTS",
+    defaultBaseUrl: "http://localhost:8000",
+    defaultModel: "pocket-tts",
+    defaultVoice: "alba",
+  },
+  {
+    id: "xai",
+    name: "xAI Voice",
+    defaultBaseUrl: "https://api.x.ai/v1",
+    defaultModel: "grok-tts",
+    defaultVoice: "eve",
+  },
+];
+/** Music and sound effects are independent of the character's speech connection. */
+export const GENERATIVE_AUDIO_SOURCES = ["elevenlabs", "sunoapi", "custom"] as const;
+export type GenerativeAudioSource = (typeof GENERATIVE_AUDIO_SOURCES)[number];
+
+export const GENERATIVE_AUDIO_DEFAULTS = {
+  elevenlabs: {
+    baseUrl: "https://api.elevenlabs.io",
+    model: "music_v2_5",
+    soundEffectsModel: "eleven_text_to_sound_v2",
+  },
+  sunoapi: { baseUrl: "https://apibox.erweima.ai", model: "V6", soundEffectsModel: "V6" },
+  custom: { baseUrl: "", model: "", soundEffectsModel: "" },
+} as const;
+
+/** Explicit capabilities: compatible endpoints must be configured before Game can use them. */
+export function audioConnectionSupportsGeneration(
+  connection: {
+    audioGenerationSource?: string | null;
+    audioSource?: string | null;
+    audioMusic?: boolean | string;
+    audioSoundEffects?: boolean | string;
+    audioMusicEndpoint?: string | null;
+    audioSoundEffectsEndpoint?: string | null;
+  },
+  kind: "music" | "sfx",
+): boolean {
+  const enabled = kind === "music" ? connection.audioMusic : connection.audioSoundEffects;
+  if (enabled !== true && enabled !== "true") return false;
+  const source = connection.audioGenerationSource ?? connection.audioSource ?? "elevenlabs";
+  return (
+    source === "elevenlabs" ||
+    source === "sunoapi" ||
+    ((source === "openai" || source === "custom") &&
+      Boolean((kind === "music" ? connection.audioMusicEndpoint : connection.audioSoundEffectsEndpoint)?.trim()))
+  );
+}
+
 export const IMAGE_GENERATION_QUALITIES = ["auto", "low", "medium", "high", "xhigh", "max"] as const;
 export type ImageGenerationQuality = (typeof IMAGE_GENERATION_QUALITIES)[number];
 
@@ -80,6 +156,25 @@ export function parsePinnedModels(value: unknown): string[] {
     .map((id) => id.trim())
     .filter((id) => id && id.length <= MAX_MODEL_ID_LENGTH);
   return [...new Set(ids)].slice(0, MAX_PINNED_MODELS);
+}
+
+/**
+ * Search rank of a model (decision 27): 0 starred, 1 saved, 2 the query starts the id, the name or one of their
+ * words ("sonnet" in "anthropic/claude-sonnet-4"), 3 the query is anywhere in them. -1: no match. Lower first.
+ */
+export function rankModelMatch(
+  query: string,
+  model: { id: string; name?: string | null },
+  flags: { starred?: boolean; saved?: boolean } = {},
+): number {
+  const q = query.trim().toLowerCase();
+  const id = model.id.toLowerCase();
+  const name = (model.name ?? "").toLowerCase();
+  if (q && !id.includes(q) && !name.includes(q)) return -1;
+  if (flags.starred) return 0;
+  if (flags.saved) return 1;
+  const words = [id, id.slice(id.lastIndexOf("/") + 1), name, ...`${id} ${name}`.split(/[\s/:._-]+/u)];
+  return !q || words.some((word) => word.startsWith(q)) ? 2 : 3;
 }
 
 /** An API connection configuration. */
@@ -137,20 +232,41 @@ export interface APIConnection {
   videoGenerationSource: string | null;
   /** Explicitly selected video generation service ID. Overrides URL/model inference when set. */
   videoService: string | null;
+  /** Instructions for the language model that writes video prompts for this video connection. */
+  videoPromptInstructions: string | null;
   /** Audio backend for audio connections (e.g. "elevenlabs"). Null for non-audio providers. */
   audioSource: AudioGenerationSource | null;
+  /** Backend for a dedicated music and sound-effects connection. */
+  audioGenerationSource?: GenerativeAudioSource | null;
+  /** SunoAPI requires a callback URL for music even when completion is polled. */
+  audioGenerationCallbackUrl?: string | null;
+  /** A separate sound-effects model; the connection's main model composes music. */
+  audioSoundEffectsModel?: string | null;
+  /** Host migration link: old chats and profiles can keep referencing their former speech connection. */
+  audioGenerationLegacyConnectionId?: string | null;
   /** System One backend; absent on older connections. */
   decisionSource?: DecisionSource | null;
   credentialsFromConnectionId?: string | null;
+  /** Connection (account) this Model belongs to; null = standalone. */
+  accountId?: string | null;
   maxStateTokens?: number | null;
   /** How long a Decision connection may take to answer, in milliseconds; null is the default. */
   decisionTimeoutMs?: number | null;
+  /** Whether this chat Model reads images; null (Automatic) lets its catalog decide. */
+  imageInput?: "reads" | "text" | null;
   /** Default voice id/name for speech synthesis on this audio connection. */
   audioVoice: string | null;
-  /** Whether this audio connection may generate game sound effects (ElevenLabs only today). */
+  /** How long a speech request on this audio connection may take, in milliseconds; null is the default. */
+  audioTimeoutMs?: number | null;
+  /** Whether this audio connection may generate game sound effects. */
   audioSoundEffects: boolean;
-  /** Whether this audio connection may generate game music (ElevenLabs only today). */
+  /** Whether this audio connection may generate game music. */
   audioMusic: boolean;
+  /** Paths relative to the Audio connection's base URL, for compatible generation endpoints. */
+  audioMusicEndpoint?: string | null;
+  audioSoundEffectsEndpoint?: string | null;
+  /** Binary audio JSON endpoint, or the ACE-Step compatible Chat Completions contract. */
+  audioGenerationFormat?: "binary" | "chat_completions";
   /** Default generation parameters for new chats using this connection (JSON) */
   defaultParameters: string | null;
   /** Prompt preset to use instead of a chat's selected preset when this connection is active */
@@ -165,8 +281,11 @@ export interface APIConnection {
   treatAsLocalEndpoint: boolean;
   /** Folder this connection belongs to (null = root/unfiled). */
   folderId: string | null;
-  /** NanoGPT only: whether the subscription usage widget is shown. */
+  /** NanoGPT, Claude (Subscription) and OpenAI (ChatGPT): whether the subscription usage widget is shown. */
   showUsageWidget: boolean;
+  /** Claude (Subscription) and OpenAI (ChatGPT): which plan windows the usage widget shows. */
+  showUsageFiveHour: boolean;
+  showUsageWeekly: boolean;
   /** Manual sort order within a folder (lower = higher). 0 = use default sort. */
   sortOrder: number;
   createdAt: string;
@@ -178,6 +297,8 @@ export interface ConnectionFolder {
   id: string;
   name: string;
   color: string;
+  /** A lucide icon name; null shows the plain folder icon. */
+  icon?: string | null;
   sortOrder: number;
   collapsed: boolean;
   createdAt: string;
@@ -201,6 +322,25 @@ export interface ModelCapabilities {
   reasoning: boolean;
 }
 
+/** A provider's HTTP 401/403 refusal, independent of its human-readable message. */
+export type ConnectionTestAuthErrorCode = "AUTH_REJECTED";
+
+export type ConnectionTestErrorCode =
+  | ConnectionTestAuthErrorCode
+  | "invalid_source"
+  | "invalid_url"
+  | "needs_relinking"
+  | "missing_key"
+  | "missing_model"
+  | "no_answer"
+  | "timeout"
+  | "cancelled"
+  | "network"
+  | "invalid_response"
+  | "partial_response"
+  | "private_address"
+  | `http_${number}`;
+
 /** Test result for a connection. */
 export interface ConnectionTestResult {
   success: boolean;
@@ -208,7 +348,8 @@ export interface ConnectionTestResult {
   latencyMs: number;
   modelName: string | null;
   decisionProbability?: number;
-  errorCode?: string;
+  /** AUTH_REJECTED for provider HTTP 401/403; Decision tests also return their existing diagnostic codes. */
+  errorCode?: ConnectionTestErrorCode;
   /** A Decision connection's limit during chats, to compare `latencyMs` with. */
   timeLimitMs?: number;
   /** How long this Decision test waited before giving up. */
@@ -217,4 +358,39 @@ export interface ConnectionTestResult {
   logprobs?: boolean;
   /** A chat-model Decision connection: whether the model answered without thinking first. */
   answersDirectly?: boolean;
+}
+
+/**
+ * App-wide default embedding source: a connection id, or LOCAL_SIDECAR_CONNECTION_ID.
+ *
+ * Used only when the connection in play sets neither an embedding model nor an Embedding
+ * Connection of its own, so per-connection settings keep winning. Empty means no default:
+ * those connections fall back to the built-in local embedder as before.
+ */
+export const DEFAULT_EMBEDDING_CONNECTION_SETTINGS_KEY = "default-embedding-connection";
+
+export type PlanUsageWindowId = "five_hour" | "seven_day";
+
+/**
+ * One rate-limit window of a subscription plan, in the shape the NanoGPT quota
+ * windows use so the usage widget draws both with one bar. Plans report
+ * percentages only, so `used` and `remaining` are always null.
+ */
+export interface PlanUsageWindow {
+  id: PlanUsageWindowId;
+  used: null;
+  remaining: null;
+  /** A fraction, not a percentage. Null means the plan did not report it. */
+  percentUsed: number | null;
+  /** UNIX epoch milliseconds. */
+  resetAt: number | null;
+  degraded: false;
+}
+
+/** The rate-limit windows of the plan behind a Claude (Subscription) or OpenAI (ChatGPT) connection. */
+export interface PlanUsage {
+  provider: "claude_subscription" | "openai_chatgpt";
+  /** The plan name the provider reports ("pro", "plus", ...), or null. */
+  plan: string | null;
+  windows: PlanUsageWindow[];
 }

@@ -13,6 +13,7 @@ import type {
   SetLorebooksEnabledResult,
 } from "@marinara-engine/shared";
 import { characterKeys } from "./use-characters";
+import { libraryFolderKeys } from "./use-library-folders";
 import { achievementKeys, trackAchievementEvent } from "./use-achievements";
 import {
   collectAllPaginatedItems,
@@ -258,6 +259,8 @@ export function useDeleteLorebook() {
       // missing this lets the character editor keep rendering stale
       // entries and a broken "Edit Embedded Lorebook" button.
       qc.invalidateQueries({ queryKey: characterKeys.all });
+      // The server also drops the deleted book from library folders.
+      qc.invalidateQueries({ queryKey: libraryFolderKeys.list("lorebooks") });
     },
   });
 }
@@ -269,6 +272,17 @@ export function useLorebookEntries(lorebookId: string | null) {
     queryKey: lorebookKeys.entries(lorebookId ?? ""),
     queryFn: () => api.get<LorebookEntry[]>(`/lorebooks/${lorebookId}/entries`),
     enabled: !!lorebookId,
+  });
+}
+
+/** Entries in every lorebook whose name, keys or content contain the query. A server read, capped. */
+export function useLorebookEntrySearch(query: string, enabled: boolean, limit = 6) {
+  return useQuery({
+    queryKey: [...lorebookKeys.all, "entry-search", query, limit] as const,
+    queryFn: ({ signal }) =>
+      api.get<LorebookEntry[]>(`/lorebooks/search/entries?q=${encodeURIComponent(query)}&limit=${limit}`, { signal }),
+    enabled: enabled && query.length > 0,
+    staleTime: 30_000,
   });
 }
 
@@ -296,27 +310,30 @@ export function useEntriesAcrossLorebooks(lorebookIds: string[]): {
   refetch: () => Promise<unknown>;
 } {
   const uniqueIds = Array.from(new Set(lorebookIds));
-  const queries = useQueries({
+  return useQueries({
     queries: uniqueIds.map((id) => ({
       queryKey: lorebookKeys.entries(id),
       queryFn: () => api.get<LorebookEntry[]>(`/lorebooks/${id}/entries`),
     })),
+    // Structural sharing keeps entry arrays stable for keyword and coverage previews on unrelated renders.
+    combine: (queries) => {
+      const isLoading = queries.some((q) => q.isLoading);
+      const isError = queries.some((q) => q.isError);
+      const error = queries.find((q) => q.isError)?.error ?? null;
+      // Empty input is trivially "complete" — return [] so consumers can treat
+      // "no selection" as a valid known state instead of an unresolved one.
+      const allSucceeded = queries.length === 0 || queries.every((q) => q.isSuccess);
+      const entries = allSucceeded ? queries.flatMap((q) => q.data ?? []) : undefined;
+      return {
+        entries,
+        isLoading,
+        isFetching: queries.some((query) => query.isFetching),
+        isError,
+        error,
+        refetch: () => Promise.all(queries.map((query) => query.refetch())),
+      };
+    },
   });
-  const isLoading = queries.some((q) => q.isLoading);
-  const isError = queries.some((q) => q.isError);
-  const error = queries.find((q) => q.isError)?.error ?? null;
-  // Empty input is trivially "complete" — return [] so consumers can treat
-  // "no selection" as a valid known state instead of an unresolved one.
-  const allSucceeded = queries.length === 0 || queries.every((q) => q.isSuccess);
-  const entries = allSucceeded ? queries.flatMap((q) => q.data ?? []) : undefined;
-  return {
-    entries,
-    isLoading,
-    isFetching: queries.some((query) => query.isFetching),
-    isError,
-    error,
-    refetch: () => Promise.all(queries.map((query) => query.refetch())),
-  };
 }
 
 export function useCreateLorebookEntry() {

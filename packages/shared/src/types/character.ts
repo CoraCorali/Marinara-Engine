@@ -1,6 +1,9 @@
 // ──────────────────────────────────────────────
 // Character Card V2 Types (compatible with ST / Chub)
 // ──────────────────────────────────────────────
+import type { CardFieldAlternative } from "../schemas/card-field-alternative.schema.js";
+import type { ChoiceDisplayMode, ChoiceOption, ChoiceOptionSort } from "./prompt.js";
+
 /** Full Character Card V2 envelope. */
 export interface CharacterCardV2 {
   spec: "chara_card_v2";
@@ -32,6 +35,8 @@ export interface CharacterData {
 
 /** ST-compatible extension fields. */
 export interface CharacterExtensions {
+  /** Chat-specific replacements; the authored base fields remain unchanged. */
+  cardFieldAlternatives?: CardFieldAlternative[];
   talkativeness: number;
   fav: boolean;
   world: string;
@@ -56,6 +61,8 @@ export interface CharacterExtensions {
   nameAliases?: string[];
   /** Marinara Engine: RPG stats toggle + custom attributes */
   rpgStats?: RPGStatsConfig;
+  /** Marinara Engine: the picture on this character's fight token. Missing means the avatar. */
+  combatIcon?: CombatIconChoice;
   /** Marinara Engine: starting builds for Game Mode rulesets, keyed by ruleset id. A game copies
    *  the one it needs; a sheet for a ruleset that is not installed is kept dormant. */
   rulesetSheets?: Record<string, unknown>;
@@ -94,13 +101,58 @@ export interface CharacterExtensions {
   conversationImageInstructions?: string;
   /** Retain prior card revisions and automatically advance character_version on edits. */
   versioningEnabled?: boolean;
-  /** Marinara Engine: also apply conversationImageInstructions to this character's Noodle images. */
+  /**
+   * Also apply conversationImageInstructions to this character's Noodle images. Noodle owns the
+   * control; Slurp reads it as the default until the character has its own Slurp choice.
+   */
   applyConversationImageInstructionsToNoodle?: boolean;
   /** Marinara Engine: gallery image selected as this character's optional visual reference sheet. */
   characterSheetImageId?: string | null;
   /** Marinara Engine: prefer the selected character sheet over the avatar for image references. */
   useCharacterSheetAsReference?: boolean;
+  /** Marinara Engine: interactive onboarding ("skeleton persona") carried by the card. */
+  onboarding?: CharacterOnboarding;
   [key: string]: unknown;
+}
+
+/**
+ * Interactive onboarding: a skeleton persona the card ships. The five persona
+ * Card fields are prose that may use `{{variable}}` and `{{#if}}`; `variables`
+ * are the questions the player answers once when a chat starts, and the resolved
+ * text becomes a real persona. Absent or `enabled: false` means nothing is parsed.
+ */
+export interface CharacterOnboarding {
+  enabled: boolean;
+  description: string;
+  personality: string;
+  backstory: string;
+  appearance: string;
+  scenario: string;
+  variables: CharacterOnboardingVariable[];
+  /**
+   * Questions for the card's own fields. The answers are saved as chat variables,
+   * so a `{{name}}` in the card resolves per chat and the card itself never changes.
+   */
+  cardVariables: CharacterOnboardingVariable[];
+}
+
+/**
+ * One onboarding question, shaped like a preset variable. No options = free
+ * text; options = a choice whose first option is the default; options plus
+ * `allowCustom` = a choice that also accepts the player's own answer. A variable
+ * named `player` supplies the created persona's name.
+ */
+export interface CharacterOnboardingVariable {
+  id: string;
+  variableName: string;
+  question: string;
+  /** `description` is optional help text shown to the player under the option label. */
+  options: Array<ChoiceOption & { description?: string }>;
+  allowCustom: boolean;
+  multiSelect: boolean;
+  separator: string;
+  displayMode: ChoiceDisplayMode;
+  optionSort: ChoiceOptionSort;
 }
 
 /** Where a Convo-mode behavior directive is inserted into the conversation prompt. */
@@ -138,6 +190,10 @@ export interface RPGStatsConfig {
   /** HP-like bars such as HP, MP, EP, Sanity, etc. */
   pools?: RPGStatPool[];
 }
+
+/** What a fight token shows: the avatar, a picture from the owner's gallery, or the initials. */
+export type CombatIconChoice =
+  { source: "avatar" } | { source: "initials" } | { source: "image"; imageId: string; url: string };
 
 /** A character-profile default for a text-valued Character Tracker field. */
 export interface CharacterTrackerCustomFieldDefault {
@@ -222,12 +278,15 @@ export interface CharacterCardVersion {
 
 /** Snapshot data saved for a previous persona card state. */
 export interface PersonaCardSnapshot {
+  cardFieldAlternatives?: string;
   name: string;
   creator: string;
   personaVersion: string;
   versioningEnabled: string;
   creatorNotes: string;
   phoneticName?: string;
+  summary?: string;
+  mes_example?: string;
   description: string;
   personality: string;
   scenario: string;

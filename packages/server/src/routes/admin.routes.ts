@@ -5,7 +5,13 @@ import type { FastifyInstance, FastifyReply } from "fastify";
 import { eq, like, ne } from "../db/file-query.js";
 import { existsSync, readdirSync, rmSync } from "fs";
 import { join } from "path";
-import { MARINARA_UNIVERSAL_PRESET_SYSTEM_KEY, PROFESSOR_MARI_ID, TTS_SETTINGS_KEY } from "@marinara-engine/shared";
+import {
+  FEATURE_MODEL_CONNECTIONS_SETTINGS_KEY,
+  MARINARA_UNIVERSAL_PRESET_SYSTEM_KEY,
+  PROFESSOR_MARI_ID,
+  SPEECH_TO_TEXT_SETTINGS_KEY,
+  TTS_SETTINGS_KEY,
+} from "@marinara-engine/shared";
 import { DATA_DIR } from "../utils/data-dir.js";
 import * as schema from "../db/schema/index.js";
 import { requirePrivilegedAccess } from "../middleware/privileged-gate.js";
@@ -28,6 +34,8 @@ import {
   mutateAvatarReferencesAndCleanup,
   scanAbandonedAvatarFiles,
 } from "../services/image/avatar-file-lifecycle.js";
+import { removeAvatarOwnersOfType } from "../services/avatars/storage.js";
+import { TRIPO_API_KEY_SETTING } from "../services/avatars/generation/tripo-key.js";
 
 type ExpungeScope =
   "chats" | "characters" | "personas" | "lorebooks" | "presets" | "connections" | "automation" | "media";
@@ -160,6 +168,15 @@ export async function adminRoutes(app: FastifyInstance) {
         tablesCleared[name] = tablesCleared[name] ?? 0;
       }
     };
+    // Avatar models belong to their character or persona, so they go with it (Media & Assets clears them all).
+    const removeAvatarModels = async (ownerType: "character" | "persona", keepOwnerIds: string[] = []) => {
+      try {
+        const removed = await removeAvatarOwnersOfType(ownerType, keepOwnerIds);
+        filesDeleted.avatarModels = (filesDeleted.avatarModels ?? 0) + removed;
+      } catch (err) {
+        logger.warn(err, "Failed to remove the %s avatar models", ownerType);
+      }
+    };
 
     if (requestedScopes.includes("chats")) {
       await runDelete("message_swipes", () => db.delete(schema.messageSwipes).run());
@@ -203,6 +220,7 @@ export async function adminRoutes(app: FastifyInstance) {
         cleanupFiles: !requestedScopes.includes("media"),
       });
       filesDeleted.avatars = (filesDeleted.avatars ?? 0) + cleanup.filesDeleted;
+      await removeAvatarModels("character", [PROFESSOR_MARI_ID]);
     }
 
     if (requestedScopes.includes("personas")) {
@@ -222,6 +240,7 @@ export async function adminRoutes(app: FastifyInstance) {
         cleanupFiles: !requestedScopes.includes("media"),
       });
       filesDeleted.avatars = (filesDeleted.avatars ?? 0) + cleanup.filesDeleted;
+      await removeAvatarModels("persona");
     }
 
     if (requestedScopes.includes("lorebooks")) {
@@ -281,8 +300,19 @@ export async function adminRoutes(app: FastifyInstance) {
 
     if (requestedScopes.includes("connections")) {
       await runDelete("api_connections", () => db.delete(schema.apiConnections).run());
+      await runDelete("connection_accounts", () => db.delete(schema.connectionAccounts).run());
+      await runDelete("app_settings", () =>
+        db.delete(schema.appSettings).where(eq(schema.appSettings.key, FEATURE_MODEL_CONNECTIONS_SETTINGS_KEY)).run(),
+      );
       await runDelete("app_settings", () =>
         db.delete(schema.appSettings).where(eq(schema.appSettings.key, TTS_SETTINGS_KEY)).run(),
+      );
+      await runDelete("app_settings", () =>
+        db.delete(schema.appSettings).where(eq(schema.appSettings.key, SPEECH_TO_TEXT_SETTINGS_KEY)).run(),
+      );
+      // The Tripo API key was a connection until it moved to the 3D Avatars page, so it is cleared here too.
+      await runDelete("app_settings", () =>
+        db.delete(schema.appSettings).where(eq(schema.appSettings.key, TRIPO_API_KEY_SETTING)).run(),
       );
     }
 
@@ -309,6 +339,7 @@ export async function adminRoutes(app: FastifyInstance) {
       filesDeleted.gameSceneVideos = clearDirectory(join(DATA_DIR, "game-scene-videos"));
       filesDeleted.avatars = clearDirectory(join(DATA_DIR, "avatars"));
       filesDeleted.sprites = clearDirectory(join(DATA_DIR, "sprites"));
+      filesDeleted.avatarModels = clearDirectory(join(DATA_DIR, "avatar-models"));
       filesDeleted.gallery = clearDirectory(join(DATA_DIR, "gallery"));
       filesDeleted.fonts = clearDirectory(join(DATA_DIR, "fonts"));
       filesDeleted.knowledgeSources = clearDirectory(join(DATA_DIR, "knowledge-sources"));

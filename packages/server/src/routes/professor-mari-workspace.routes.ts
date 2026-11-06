@@ -1,18 +1,48 @@
 // ──────────────────────────────────────────────
 // Routes: Professor Mari Workspace Agent
 // ──────────────────────────────────────────────
-import { MARI_PERMISSIONS_MODES, MARI_PERMISSIONS_MODE_SETTINGS_KEY } from "@marinara-engine/shared";
+import {
+  chatIdForMariSession,
+  MARI_PERMISSIONS_MODES,
+  MARI_PERMISSIONS_MODE_SETTINGS_KEY,
+  MARI_RUNTIMES,
+  MARI_RUNTIME_SETTINGS_KEY,
+  MARI_SKILL_GATE_SETTINGS_KEY,
+  withMariReceiptOutcome,
+  type MariPendingMessage,
+} from "@marinara-engine/shared";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import { requirePrivilegedAccess } from "../middleware/privileged-gate.js";
 import { isSseReplyWritable, sendSseEvent, startSseKeepalive, startSseReply } from "./generate/sse.js";
-import { readStoredMariPermissionsMode } from "../services/professor-mari/workspace-agent.service.js";
+import {
+  readStoredMariPermissionsMode,
+  readStoredMariRuntime,
+  readStoredMariSkillGate,
+} from "../services/professor-mari/workspace-agent.service.js";
 import { createAppSettingsStorage } from "../services/storage/app-settings.storage.js";
 import { createChatsStorage } from "../services/storage/chats.storage.js";
 import { getProfessorMariWorkspaceService } from "../services/professor-mari/workspace-agent.service.js";
+import {
+  addPending,
+  clearPending,
+  drainPendingMessages,
+  holdPending,
+  isSafePendingChatId,
+  type MariPromptOutcome,
+  listPendingSummaries,
+  MariPendingStoreError,
+  removePending,
+  restorePending,
+  promotePendingToSteer,
+  takeNextPending,
+  takePending,
+} from "../services/professor-mari/workspace-pending-store.js";
 import { getProfessorMariWorkspaceSkillsService } from "../services/professor-mari/workspace-skills.service.js";
 import { getMariDbService } from "../services/mari-db/mari-db.service.js";
 import { renderMariEditPrompt } from "../services/professor-mari/workspace-edit-render.js";
+import { listCanonicalDocumentation } from "../services/professor-mari/documentation-tools.js";
+import { getMonorepoRoot } from "../config/runtime-config.js";
 import { logger } from "../lib/logger.js";
 import { personalServerExtensionRuntime } from "../services/extensions/personal-server-extension-runtime.js";
 import {
@@ -27,12 +57,97 @@ import {
   MAX_CONTEXT_LABEL_LENGTH,
 } from "../services/storage/mari-workspace-context.storage.js";
 
-const promptSchema = z.object({
+export const professorMariPromptSchema = z.object({
   chatId: z.string().min(1),
   message: z.string().min(1),
   connectionId: z.string().optional().nullable(),
   debugMode: z.boolean().optional().default(false),
   existingUserMessageId: z.string().min(1).optional(),
+  // Send on a held queued message: the server takes it from the queue and uses ITS text, attachments, references
+  // and context instead of the ones above.
+  pendingMessageId: z.string().min(1).max(100).optional(),
+  queuedSinceSendIds: z.array(z.string().min(1).max(100)).max(100).optional(),
+  seasonalPackId: z.string().max(40).optional(),
+  context: z
+    .object({
+      source: z.enum([
+        "home",
+        "floating-assistant",
+        "command-center",
+        "faq",
+        "character-chat",
+        "character-editor",
+        "persona-editor",
+        "lorebook-editor",
+        "preset-editor",
+        "connection-editor",
+        "agent-editor",
+        "settings",
+        "game-setup",
+        "chat-error",
+      ]),
+      capability: z.enum(["explain", "recommend", "create", "edit", "repair", "navigate"]),
+      query: z.string().max(500).optional(),
+      resource: z
+        .object({
+          kind: z.enum([
+            "character",
+            "persona",
+            "lorebook",
+            "preset",
+            "connection",
+            "agent",
+            "setting",
+            "chat",
+            "game",
+          ]),
+          id: z.string().min(1).max(200),
+          label: z.string().max(200).optional(),
+        })
+        .optional(),
+      relatedResources: z
+        .array(
+          z.object({
+            kind: z.enum(["character", "persona", "lorebook", "preset", "connection", "agent"]),
+            id: z.string().min(1).max(200),
+            label: z.string().max(200).optional(),
+          }),
+        )
+        .max(4)
+        .optional(),
+      field: z.string().min(1).max(200).optional(),
+      fieldId: z.string().min(1).max(200).optional(),
+      fieldDraft: z.object({ value: z.string().max(20_000), selection: z.string().max(4_000).optional() }).optional(),
+      declinedFields: z
+        .array(z.object({ entityId: z.string().min(1).max(200), fieldId: z.string().min(1).max(300) }))
+        .max(50)
+        .optional(),
+      error: z.object({ message: z.string().min(1).max(2_000), code: z.string().max(200).optional() }).optional(),
+      action: z.string().max(500).optional(),
+      commandCenterResultId: z.string().min(1).max(256).optional(),
+      activeChat: z
+        .object({
+          id: z.string().min(1).max(256),
+          label: z.string().max(200).optional(),
+          mode: z.string().max(32).optional(),
+        })
+        .optional(),
+      settingsLocation: z
+        .object({ tab: z.string().max(64).optional(), controlId: z.string().max(128).optional() })
+        .optional(),
+      asideAnswer: z
+        .object({
+          query: z.string().max(500),
+          answer: z.string().max(4_000),
+          tier: z.enum(["local", "remote"]),
+          sources: z
+            .array(z.object({ path: z.string().max(300), heading: z.string().max(300) }))
+            .max(3)
+            .optional(),
+        })
+        .optional(),
+    })
+    .optional(),
   attachments: z
     .array(
       z.object({
@@ -44,10 +159,57 @@ const promptSchema = z.object({
     )
     .optional()
     .default([]),
+  // `@` links from the composer: resolved once, beside this message (the ids are re-read server-side).
+  references: z
+    .array(
+      z.object({
+        kind: z.enum([
+          "character",
+          "persona",
+          "lorebook",
+          "lorebookEntry",
+          "preset",
+          "skill",
+          "memory",
+          "chat",
+          "doc",
+          "agent",
+        ]),
+        id: z.string().min(1).max(200),
+        // A long record name or doc heading is cut, not a reason to refuse the whole message.
+        label: z
+          .string()
+          .min(1)
+          .transform((label) => label.slice(0, 200)),
+        parentId: z.string().max(200).optional(),
+      }),
+    )
+    .max(8)
+    .optional()
+    .default([]),
+});
+
+// A message queued while she works: the prompt's own shapes for what it carries.
+const pendingCreateSchema = professorMariPromptSchema
+  .pick({
+    chatId: true,
+    message: true,
+    attachments: true,
+    references: true,
+    context: true,
+  })
+  .extend({ steer: z.boolean().optional() });
+
+const abortSchema = z.object({
+  // Stop from the composer names its chat: that chat's queue comes back to the user instead of staying held.
+  chatId: z.string().min(1).optional(),
 });
 
 const resetSchema = z.object({
   clearHistory: z.boolean().optional(),
+  // F12: Dismiss only needs the last-error flag cleared; a stale client error (poll lag, another
+  // tab) must not abort a run that is genuinely in flight.
+  keepRun: z.boolean().optional(),
 });
 
 // #5073: attached workspace context (chat-history slices). content is the already-serialized JSON;
@@ -132,6 +294,10 @@ const permissionsModeSchema = z.object({
   chatId: z.string().min(1).optional(),
 });
 
+// Professor Mari's runtime ("classic" or "pi"): the same validated-route pattern, global only.
+const runtimeSchema = z.object({ runtime: z.enum(MARI_RUNTIMES) });
+const skillGateSchema = z.object({ enabled: z.boolean() });
+
 /**
  * What the user reads when Keep or Restore fails (#6842), instead of a bare "Internal Server
  * Error". Keep and Restore first move the review's saved file under the data folder, and a
@@ -151,6 +317,38 @@ export function reviewActionFailure(err: unknown, action: "keep" | "restore"): s
   return `The ${action === "keep" ? "Keep" : "Restore"} did not finish, so the card stays.${detail}`;
 }
 
+/**
+ * Slice 74: Keep / Undo writes its outcome onto the receipt of the Mari message that made the change, so
+ * the card says "Kept" / "Undone" after a reload. Newest message first; never fails the answer.
+ */
+export async function recordMariReceiptOutcome(
+  app: FastifyInstance,
+  sessionId: string,
+  reviewId: string,
+  outcome: "kept" | "undone",
+) {
+  const chatId = chatIdForMariSession(sessionId);
+  if (!chatId) return;
+  try {
+    const chats = createChatsStorage(app.db);
+    for (const message of (await chats.listMessages(chatId)).reverse()) {
+      if (message.role !== "assistant") continue;
+      let extra: { mariWorkspaceActionResults?: unknown } | null;
+      try {
+        extra = typeof message.extra === "string" ? JSON.parse(message.extra || "{}") : (message.extra ?? null);
+      } catch {
+        continue;
+      }
+      const next = withMariReceiptOutcome(extra?.mariWorkspaceActionResults, reviewId, outcome);
+      if (!next) continue;
+      await chats.updateMessageExtra(message.id, { mariWorkspaceActionResults: next });
+      return;
+    }
+  } catch (err) {
+    logger.warn(err, "[professor-mari] could not record the receipt outcome for review %s", reviewId);
+  }
+}
+
 function privileged(request: FastifyRequest, reply: FastifyReply, loopbackOnly = false) {
   return requirePrivilegedAccess(request, reply, {
     loopbackOnly,
@@ -158,7 +356,17 @@ function privileged(request: FastifyRequest, reply: FastifyReply, loopbackOnly =
   });
 }
 
+/** A full or unusable queue is the user's to fix, so it is a plain 4xx with words, not a 500. */
+function sendPendingError(reply: FastifyReply, err: unknown) {
+  if (err instanceof MariPendingStoreError) {
+    return reply.status(err.code === "limit" ? 409 : 400).send({ error: err.message });
+  }
+  throw err;
+}
+
 export async function professorMariWorkspaceRoutes(app: FastifyInstance) {
+  // Counts Stops, so a drain between two messages can tell one came in while no run was there to abort.
+  let stopCount = 0;
   app.get<{ Querystring: { connectionId?: string; chatId?: string } }>("/status", async (req, reply) => {
     if (!privileged(req, reply)) return;
     return getProfessorMariWorkspaceService(app).status(req.query.connectionId ?? null, req.query.chatId ?? null);
@@ -166,15 +374,92 @@ export async function professorMariWorkspaceRoutes(app: FastifyInstance) {
 
   app.post("/abort", async (req, reply) => {
     if (!privileged(req, reply)) return;
+    stopCount += 1;
+    const input = abortSchema.parse(req.body ?? {});
+    // Cleared BEFORE the abort, so the drain that wakes up when the run stops finds nothing left to send. Without
+    // a chatId the queue stays held, as before.
+    let returned: MariPendingMessage[] = [];
+    if (input.chatId) {
+      try {
+        returned = await clearPending(input.chatId);
+      } catch (err) {
+        // Stop must still stop; an unusable queue file leaves its messages held.
+        logger.warn(err, "[professor-mari] Could not return the queued messages for chat %s", input.chatId);
+      }
+    }
     await getProfessorMariWorkspaceService(app).abort();
-    return { ok: true };
+    return { ok: true, returned };
+  });
+
+  // Messages typed while she works. Summaries only on the way out: attachments can be 20 MB each.
+  app.post("/pending", async (req, reply) => {
+    if (!privileged(req, reply)) return;
+    const input = pendingCreateSchema.parse(req.body);
+    const chat = await createChatsStorage(app.db).getById(input.chatId);
+    let metadata: Record<string, unknown> = {};
+    try {
+      metadata = chat?.metadata ? (JSON.parse(chat.metadata) as Record<string, unknown>) : {};
+    } catch {
+      // Unreadable metadata counts as no marker below.
+    }
+    if (!chat || metadata.internalAssistant !== "professor-mari") {
+      return reply.status(404).send({ error: "Professor Mari chat not found" });
+    }
+    let added: { id: string };
+    try {
+      added = await addPending(input.chatId, {
+        text: input.message,
+        attachments: input.attachments,
+        references: input.references,
+        context: input.context,
+        steer: input.steer && (await getProfessorMariWorkspaceService(app).canSteerNow(input.chatId, input.context)),
+      });
+    } catch (err) {
+      return sendPendingError(reply, err);
+    }
+    return { addedId: added.id, pending: await listPendingSummaries(input.chatId) };
+  });
+
+  // Send now on a row that is already waiting.
+  app.post<{ Params: { chatId: string; id: string } }>("/pending/:chatId/:id/steer", async (req, reply) => {
+    if (!privileged(req, reply)) return;
+    try {
+      const row = (await listPendingSummaries(req.params.chatId)).find((message) => message.id === req.params.id);
+      const promoted =
+        !!row &&
+        (await getProfessorMariWorkspaceService(app).canSteerNow(req.params.chatId, row.context)) &&
+        (await promotePendingToSteer(req.params.chatId, req.params.id));
+      if (!promoted) return reply.status(409).send({ error: "That message can't go now. Send it from the queue." });
+      return { pending: await listPendingSummaries(req.params.chatId) };
+    } catch (err) {
+      return sendPendingError(reply, err);
+    }
+  });
+
+  app.delete<{ Params: { chatId: string; id: string } }>("/pending/:chatId/:id", async (req, reply) => {
+    if (!privileged(req, reply)) return;
+    try {
+      await removePending(req.params.chatId, req.params.id);
+      return { pending: await listPendingSummaries(req.params.chatId) };
+    } catch (err) {
+      return sendPendingError(reply, err);
+    }
   });
 
   app.post("/reset", async (req, reply) => {
     if (!privileged(req, reply)) return;
     const input = resetSchema.parse(req.body ?? {});
-    await getProfessorMariWorkspaceService(app).reset({ clearHistory: input.clearHistory === true });
+    await getProfessorMariWorkspaceService(app).reset({
+      clearHistory: input.clearHistory === true,
+      keepRun: input.keepRun === true,
+    });
     return { ok: true };
+  });
+
+  // The canonical docs the composer's `@` picker offers (the same set `docs_read` can open).
+  app.get("/docs", async (req, reply) => {
+    if (!privileged(req, reply)) return;
+    return listCanonicalDocumentation(getMonorepoRoot());
   });
 
   app.get("/skills", async (req, reply) => {
@@ -192,6 +477,11 @@ export async function professorMariWorkspaceRoutes(app: FastifyInstance) {
 
   app.put<{ Params: { id: string } }>("/skills/:id", async (req, reply) => {
     if (!privileged(req, reply)) return;
+    // Shipped procedure: the app's own copy is the only source of truth, so neither
+    // editing nor toggling one is a server operation. Copy it into a user skill to change it.
+    if (await getProfessorMariWorkspaceSkillsService().isReadOnly(req.params.id)) {
+      return reply.code(403).send({ error: "Built-in skills are read-only. Copy it into a new skill to change it." });
+    }
     const input = skillUpdateSchema.parse(req.body);
     const skill = await getProfessorMariWorkspaceSkillsService().update(req.params.id, input);
     await getProfessorMariWorkspaceService(app).reset();
@@ -200,6 +490,9 @@ export async function professorMariWorkspaceRoutes(app: FastifyInstance) {
 
   app.delete<{ Params: { id: string } }>("/skills/:id", async (req, reply) => {
     if (!privileged(req, reply)) return;
+    if (await getProfessorMariWorkspaceSkillsService().isReadOnly(req.params.id)) {
+      return reply.code(403).send({ error: "Built-in skills are read-only." });
+    }
     await getProfessorMariWorkspaceSkillsService().delete(req.params.id);
     await getProfessorMariWorkspaceService(app).reset();
     return { ok: true };
@@ -232,6 +525,32 @@ export async function professorMariWorkspaceRoutes(app: FastifyInstance) {
     }
     await createAppSettingsStorage(app.db).set(MARI_PERMISSIONS_MODE_SETTINGS_KEY, input.mode);
     return { ok: true, mode: input.mode };
+  });
+
+  // The runtime applies to the next run, so a switch never aborts an in-flight turn.
+  app.get("/runtime", async (req, reply) => {
+    if (!privileged(req, reply)) return;
+    return { runtime: await readStoredMariRuntime(createAppSettingsStorage(app.db)) };
+  });
+
+  app.put("/runtime", async (req, reply) => {
+    if (!privileged(req, reply)) return;
+    const input = runtimeSchema.parse(req.body);
+    await createAppSettingsStorage(app.db).set(MARI_RUNTIME_SETTINGS_KEY, input.runtime);
+    getProfessorMariWorkspaceService(app).resetRuntimeFailures();
+    return { ok: true, runtime: input.runtime };
+  });
+
+  app.get("/skill-gate", async (req, reply) => {
+    if (!privileged(req, reply)) return;
+    return { enabled: await readStoredMariSkillGate(createAppSettingsStorage(app.db)) };
+  });
+
+  app.put("/skill-gate", async (req, reply) => {
+    if (!privileged(req, reply)) return;
+    const input = skillGateSchema.parse(req.body);
+    await createAppSettingsStorage(app.db).set(MARI_SKILL_GATE_SETTINGS_KEY, input.enabled ? "true" : "false");
+    return { ok: true, enabled: input.enabled };
   });
 
   app.get("/instructions", async (req, reply) => {
@@ -291,7 +610,7 @@ export async function professorMariWorkspaceRoutes(app: FastifyInstance) {
 
   app.post("/prompt", async (req, reply) => {
     if (!privileged(req, reply)) return;
-    const body = promptSchema.parse(req.body);
+    const body = professorMariPromptSchema.parse(req.body);
     const service = getProfessorMariWorkspaceService(app);
     startSseReply(reply, { "X-Accel-Buffering": "no" });
     reply.raw.flushHeaders?.();
@@ -314,15 +633,73 @@ export async function professorMariWorkspaceRoutes(app: FastifyInstance) {
 
     try {
       send({ type: "metadata", data: { phase: "starting" } });
-      await service.prompt({
-        chatId: body.chatId,
-        text: body.message,
-        connectionId: body.connectionId ?? null,
-        debugMode: body.debugMode,
-        attachments: body.attachments,
-        existingUserMessageId: body.existingUserMessageId,
-        onEvent: send,
-      });
+      const runPrompt = (
+        message: Pick<MariPendingMessage, "text" | "attachments" | "references" | "context">,
+        existingUserMessageId?: string,
+        onUserMessageSaved?: () => void,
+      ) =>
+        service.prompt({
+          chatId: body.chatId,
+          text: message.text,
+          connectionId: body.connectionId ?? null,
+          debugMode: body.debugMode,
+          attachments: message.attachments,
+          references: message.references,
+          existingUserMessageId,
+          context: message.context,
+          seasonalPackId: body.seasonalPackId,
+          onUserMessageSaved,
+          onEvent: send,
+        });
+      // A queued message left the file before it reached the thread. If the run is refused in that gap (no
+      // connection, a failed save), it goes back to the front of the queue instead of vanishing.
+      const runQueued = async (message: MariPendingMessage) => {
+        let saved = false;
+        try {
+          return await runPrompt(message, undefined, () => {
+            saved = true;
+          });
+        } catch (err) {
+          if (!saved) await restorePending(body.chatId, message);
+          throw err;
+        }
+      };
+      const stopCountAtStart = stopCount;
+      if (isSafePendingChatId(body.chatId)) {
+        // Best effort: an unusable file only means the drain below finds nothing it can read either.
+        await holdPending(body.chatId, body.queuedSinceSendIds).catch((err) => {
+          logger.warn(err, "[professor-mari] Could not hold the queued messages for chat %s", body.chatId);
+        });
+      }
+      let outcome: MariPromptOutcome;
+      if (body.pendingMessageId) {
+        // Send on a held message: it leaves the queue and runs as if typed now.
+        const taken = await takePending(body.chatId, body.pendingMessageId);
+        if (!taken) throw new Error("That queued message is gone. It may have been sent or removed already.");
+        outcome = await runQueued(taken);
+      } else {
+        outcome = await runPrompt(
+          { text: body.message, attachments: body.attachments, references: body.references, context: body.context },
+          body.existingUserMessageId,
+        );
+      }
+      // The queue runs on this same reply, so the client's stream spans the whole drain and "done" waits for it.
+      if (isSafePendingChatId(body.chatId)) {
+        await drainPendingMessages({
+          chatId: body.chatId,
+          outcome,
+          isBusy: () => service.isRunActive() || stopCount !== stopCountAtStart,
+          // Her answer is already saved, so an unreadable file leaves the messages held rather than failing it.
+          takeNext: () =>
+            takeNextPending(body.chatId).catch((err) => {
+              logger.warn(err, "[professor-mari] Could not read the queued messages for chat %s", body.chatId);
+              return null;
+            }),
+          runPrompt: runQueued,
+          onNext: (message) => send({ type: "queue_next", data: { id: message.id, text: message.text } }),
+          putBack: (message) => restorePending(body.chatId, message),
+        });
+      }
       send({ type: "done", data: { ok: true } });
     } catch (err) {
       send({ type: "error", data: err instanceof Error ? err.message : String(err) });
@@ -361,6 +738,7 @@ export async function professorMariWorkspaceRoutes(app: FastifyInstance) {
     }
     if (!result) return reply.status(404).send({ error: "Applied change review not found" });
     if (result.approval.affectedTables.installed_extensions) await personalServerExtensionRuntime.reloadAll();
+    await recordMariReceiptOutcome(app, result.approval.sessionId, result.approval.id, "kept");
     return { ok: true, ...result };
   });
 
@@ -387,6 +765,7 @@ export async function professorMariWorkspaceRoutes(app: FastifyInstance) {
       return { ok: false, completed: true, ...result };
     }
     if (result.approval.affectedTables.installed_extensions) await personalServerExtensionRuntime.reloadAll();
+    await recordMariReceiptOutcome(app, result.approval.sessionId, result.approval.id, "undone");
     return { ok: true, ...result, completed: true };
   });
 

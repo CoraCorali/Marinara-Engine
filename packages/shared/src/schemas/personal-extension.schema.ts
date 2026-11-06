@@ -2,7 +2,8 @@
 // Personal Extension Schemas
 // ──────────────────────────────────────────────
 import { z } from "zod";
-import { PERSONAL_EXTENSION_CAPABILITIES } from "../types/personal-extension.js";
+import { partialInput } from "../utils/zod-input.js";
+import { PERSONAL_EXTENSION_CAPABILITIES, PERSONAL_EXTENSION_UI_LIMITS } from "../types/personal-extension.js";
 import { cssByteLimit, cssByteMessage } from "./css-size.js";
 
 function utf8ByteLength(value: string): number {
@@ -31,6 +32,34 @@ const extensionCapabilitySchema = z.enum(PERSONAL_EXTENSION_CAPABILITIES);
 const extensionVersionSchema = z
   .union([z.string().trim().min(1).max(64), z.number().finite().nonnegative().transform(String)])
   .nullable();
+
+const personalExtensionContributionIdSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(PERSONAL_EXTENSION_UI_LIMITS.idLength)
+  .regex(/^[A-Za-z0-9._-]+$/);
+
+export const personalExtensionCommandContributionSchema = z
+  .object({
+    id: personalExtensionContributionIdSchema,
+    kind: z.literal("command"),
+    label: z.string().trim().min(1).max(PERSONAL_EXTENSION_UI_LIMITS.labelLength),
+    description: z.string().trim().max(PERSONAL_EXTENSION_UI_LIMITS.descriptionLength).optional(),
+    icon: z
+      .string()
+      .max(PERSONAL_EXTENSION_UI_LIMITS.iconLength)
+      .regex(/^[a-z0-9-]+$/)
+      .optional(),
+    targetContributionId: personalExtensionContributionIdSchema,
+  })
+  .strict()
+  .refine((value) => value.targetContributionId !== value.id, {
+    path: ["targetContributionId"],
+    message: "Command contribution cannot target itself",
+  });
+
+export type PersonalExtensionCommandContribution = z.infer<typeof personalExtensionCommandContributionSchema>;
 
 const personalExtensionPayloadSchema = z.object({
   name: z.string().trim().min(1).max(200),
@@ -78,8 +107,7 @@ function validateRuntimePayload(
 
 export const createPersonalExtensionSchema = personalExtensionPayloadSchema.superRefine(validateRuntimePayload);
 
-export const updatePersonalExtensionSchema = personalExtensionPayloadSchema
-  .partial()
+export const updatePersonalExtensionSchema = partialInput(personalExtensionPayloadSchema)
   .extend({
     enabled: z.literal(false).optional(),
   })
@@ -98,6 +126,14 @@ export const approvePersonalExtensionSchema = z.object({
 
 export const externalExtensionsPolicyUpdateSchema = z.object({
   enabled: z.boolean(),
+});
+
+export const PERSONAL_EXTENSION_MAX_REVISIONS = 10;
+export const PERSONAL_EXTENSION_DEFAULT_REVISIONS = 10;
+
+export const personalExtensionRevisionRetentionSchema = z.object({
+  limit: z.number().int().min(0).max(PERSONAL_EXTENSION_MAX_REVISIONS),
+  confirmPrune: z.literal(true).optional(),
 });
 
 export const rollbackPersonalExtensionSchema = z.object({
@@ -119,3 +155,4 @@ export const personalExtensionStoragePatchSchema = z.record(z.string(), z.unknow
 export type CreatePersonalExtensionInput = z.input<typeof createPersonalExtensionSchema>;
 export type UpdatePersonalExtensionInput = z.infer<typeof updatePersonalExtensionSchema>;
 export type PersonalExtensionStoragePatchInput = z.infer<typeof personalExtensionStoragePatchSchema>;
+export type PersonalExtensionRevisionRetentionInput = z.infer<typeof personalExtensionRevisionRetentionSchema>;

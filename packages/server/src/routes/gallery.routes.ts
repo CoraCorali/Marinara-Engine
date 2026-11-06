@@ -2,21 +2,23 @@
 // Routes: Chat Gallery (upload, list, delete, serve)
 // ──────────────────────────────────────────────
 import type { FastifyInstance, FastifyReply } from "fastify";
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync } from "fs";
+import { existsSync, mkdirSync, readFileSync, unlinkSync } from "fs";
 import { writeFile } from "fs/promises";
 import { basename, extname, join } from "path";
 import { z } from "zod";
 import {
+  buildChatImageGenerationRecord,
   findImageStyleProfile,
+  parseChatImageGenerationRecord,
   LOCAL_SIDECAR_CONNECTION_ID,
   readImageAppearanceOverride,
   resolveGameSetupArtStylePrompt,
   VIDEO_GENERATION_SETTINGS_KEY,
   normalizeVideoGenerationUserSettings,
-  type GameSceneVideoAspectRatio,
-  type GeneratedSceneVideo,
 } from "@marinara-engine/shared";
 import { createGalleryStorage } from "../services/storage/gallery.storage.js";
+import { listSpriteCatalog } from "../services/sprites/sprite-catalog.js";
+import { resolveChatUserIdentity } from "../services/chat-user-identity.js";
 import { createChatsStorage } from "../services/storage/chats.storage.js";
 import { createCharactersStorage } from "../services/storage/characters.storage.js";
 import { createCharacterGalleryStorage } from "../services/storage/character-gallery.storage.js";
@@ -27,12 +29,7 @@ import { createGameSceneVideosStorage } from "../services/storage/game-scene-vid
 import { createPromptOverridesStorage } from "../services/storage/prompt-overrides.storage.js";
 import { createAppSettingsStorage } from "../services/storage/app-settings.storage.js";
 import { loadGameVideoPrompt } from "../services/video/game-video-prompt.js";
-import {
-  generateVideo,
-  removeSavedVideoFromDisk,
-  saveVideoToDisk,
-  type VideoReferenceImage,
-} from "../services/video/video-generation.js";
+import { removeSavedVideoFromDisk, type VideoReferenceImage } from "../services/video/video-generation.js";
 import { resolveGameVideoRuntime } from "../services/video/game-video-runtime.js";
 import { generateImage, removeSavedImageFromDisk, saveImageToDisk } from "../services/image/image-generation.js";
 import { resolveGalleryImagePath } from "../services/image/gallery-image-path.js";
@@ -45,6 +42,7 @@ import { loadImageGenerationUserSettings } from "../services/image/image-generat
 import {
   compileImagePrompt,
   formatImageStylePromptGuidance,
+  removeCopiedPromptGuidance,
   resolveImageStyleGuidanceText,
 } from "../services/image/image-prompt-compiler.js";
 import {
@@ -52,7 +50,6 @@ import {
   resolveReviewedImagePromptSubmission,
 } from "../services/image/image-prompt-review.js";
 import { buildBackgroundProviderPrompt } from "../services/game/game-asset-generation.js";
-import { runImageGenerationRequest } from "../services/image/image-generation-queue.js";
 import { generateIllustratorImageVariants } from "../services/image/illustrator-image-variants.js";
 import { persistGeneratedImageToEntityGalleries } from "../services/image/generated-image-entity-gallery.js";
 import { deleteChatGalleryImageEverywhere } from "../services/image/chat-gallery-cascade-deletion.js";
@@ -61,30 +58,61 @@ import {
   resolveStoredGalleryFile,
   storedGalleryFilename,
 } from "../services/image/gallery-file-lifecycle.js";
-import {
-  resolveImageConnectionFallback,
-  resolveVideoConnectionFallback,
-} from "../services/generation/media-connection-fallback.js";
+import { resolveImageConnectionFallback } from "../services/generation/media-connection-fallback.js";
 import { resolveIllustratorPromptRuntime } from "../services/generation/illustrator-prompt-runtime.js";
 import { resolveIllustratorImageConnectionId } from "../services/generation/illustrator-background-generation.js";
 import { resolveConversationSelfieSystemPrompt } from "../services/conversation/selfie-prompt.js";
 import { appendImagePromptInstructions } from "../services/generation/image-prompt-instructions.js";
 import {
   suppressesReferencePromptLine,
+  readRecordedReferenceImages,
   resolveIllustratorCharacterReferences,
 } from "./generate/illustrator-references.js";
+import {
+  mergeSpatialLocationReferenceImages,
+  readSpatialLocationReferenceImageById,
+} from "../services/image/spatial-location-reference.js";
+import { createGameStoryboardsStorage } from "../services/storage/game-storyboards.storage.js";
 import { resolveBaseUrl } from "./generate/generate-route-utils.js";
 import {
   compactVideoPromptText,
   excerptIllustrationPromptForVideo,
   resolveGalleryVideoNarrationSummary,
+  formatRecentVideoContext,
   resolveGalleryVideoSourceExchange,
 } from "../services/video/prompt-context.js";
 import { resolveSceneVideoPrompt, SceneVideoPromptReviewError } from "../services/video/scene-video-prompt-review.js";
 import {
-  buildRoleplayVideoDirectionMessages,
-  resolveRoleplayVideoDirection,
-} from "../services/video/roleplay-video-direction.js";
+  formatVideoAppearanceDetails,
+  videoInstructionsUseAppearance,
+} from "../services/video/appearance-reference.js";
+import { writeRoleplayClipDirection } from "../services/video/roleplay-clip-writer.js";
+import {
+  generateConversationVideo,
+  namesMentionedByPart,
+  withoutQuotedSpeech,
+  loadIllustratorContextSize,
+} from "../services/generation/conversation-video-runtime.js";
+import {
+  ChatVideoError,
+  generateAndSaveChatVideo,
+  generateRoleplayClip,
+  resolveChatVideoSetup,
+  roleplayVideoFirstFrame,
+  toVideoReferenceImage,
+} from "../services/video/chat-video-generation.js";
+import {
+  readPreferredCharacterReferenceImage,
+  readPreferredPersonaReferenceImage,
+} from "../services/image/illustrator-references.js";
+import {
+  attachVideoToMessage,
+  buildChatVideoAttachment,
+  resolveChatVideoAnchor,
+  resolveSceneVideoConnectionId,
+  type ChatVideoAnchor,
+  serializeSceneVideo,
+} from "../services/video/chat-video-messages.js";
 import { isDebugAgentsEnabled } from "../config/runtime-config.js";
 import { newId } from "../utils/id-generator.js";
 import { DATA_DIR } from "../utils/data-dir.js";
@@ -94,18 +122,16 @@ import {
   validateImageAssetFile,
   validateVideoAssetFile,
 } from "../utils/media-file-security.js";
-import { logger, logDebugOverride } from "../lib/logger.js";
+import { debugJson, logger, logDebugOverride } from "../lib/logger.js";
 
 const GALLERY_DIR = join(DATA_DIR, "gallery");
 const SPRITES_DIR = join(DATA_DIR, "sprites");
 const GAME_SCENE_VIDEOS_ROOT = join(DATA_DIR, "game-scene-videos");
 const ALLOWED_EXTS = new Set([".jpg", ".jpeg", ".png", ".gif", ".webp", ".avif"]);
 const GALLERY_UPLOAD_MAX_BYTES = 20 * 1024 * 1024;
-const SPRITE_FILE_RE = /\.(png|jpg|jpeg|gif|webp|avif|svg)$/i;
 const SCENE_VIDEO_FILENAME_RE = /^[A-Za-z0-9_-]+\.mp4$/;
 const SCENE_VIDEO_GENERATION_TIMEOUT_MS = 31 * 60 * 1000;
 
-type SceneVideoRow = NonNullable<Awaited<ReturnType<ReturnType<typeof createGameSceneVideosStorage>["getById"]>>>;
 type ChatGalleryImageRow = NonNullable<Awaited<ReturnType<ReturnType<typeof createGalleryStorage>["getById"]>>>;
 type ChatRow = NonNullable<Awaited<ReturnType<ReturnType<typeof createChatsStorage>["getById"]>>>;
 
@@ -156,6 +182,20 @@ const generateConversationSelfieSchema = z.object({
   debugMode: z.boolean().optional().default(false),
 });
 
+const generateConversationVideoSchema = z.object({
+  characterId: z.string().min(1),
+  context: z.string().max(2000).optional(),
+  /** Animate this gallery image (the clip then joins the newest reply) instead of sending a new video message. */
+  galleryImageId: z.string().min(1).optional(),
+  promptOverride: z.string().trim().min(1).max(200_000).optional(),
+  /** The reviewed prompt of the selfie the clip starts from, when First frame makes one. */
+  selfiePromptOverride: z.string().trim().min(1).max(200_000).optional(),
+  selfieNegativePromptOverride: z.string().max(200_000).optional(),
+  previewOnly: z.boolean().optional().default(false),
+  queueMediaGenerationRequests: z.boolean().optional().default(true),
+  debugMode: z.boolean().optional().default(false),
+});
+
 const mapsArtworkContextSchema = z
   .object({
     locationName: z.string().trim().max(200),
@@ -173,6 +213,28 @@ const generateGalleryImageSchema = z.object({
   mapsArtworkContext: mapsArtworkContextSchema.optional(),
   promptOverride: z.string().trim().min(1).max(200_000).optional(),
   negativePromptOverride: z.string().max(200_000).optional(),
+  debugMode: z.boolean().optional().default(false),
+});
+
+/** Re-send an existing image's final request, possibly edited (#7767). */
+const regenerateGalleryImageSchema = z.object({
+  prompt: z.string().trim().min(1).max(200_000),
+  negativePrompt: z.string().max(200_000).optional(),
+  characterPrompts: z
+    .array(
+      z.object({
+        name: z.string().trim().min(1).max(200),
+        prompt: z.string().trim().min(1).max(20_000),
+        negativePrompt: z.string().max(20_000).optional(),
+        position: z.object({ x: z.number().min(0).max(1), y: z.number().min(0).max(1) }).optional(),
+      }),
+    )
+    .max(6)
+    .optional(),
+  /** Another image connection to try; defaults to the one that made the image. */
+  connectionId: z.string().trim().min(1).max(200).optional(),
+  /** Message the image was opened from, so its attachment is swapped without scanning swipes. */
+  messageId: z.string().trim().min(1).max(200).optional(),
   debugMode: z.boolean().optional().default(false),
 });
 
@@ -199,29 +261,6 @@ class GalleryImageRequestError extends Error {
     super(message);
     this.name = "GalleryImageRequestError";
   }
-}
-
-function sceneVideoUrl(chatId: string, filePath: string): string {
-  const filename = filePath.split(/[\\/]/).pop() ?? "";
-  return `/api/gallery/scene-videos/file/${encodeURIComponent(chatId)}/${encodeURIComponent(filename)}`;
-}
-
-function serializeSceneVideo(row: SceneVideoRow): GeneratedSceneVideo {
-  const aspectRatio: GameSceneVideoAspectRatio = row.aspectRatio === "9:16" ? "9:16" : "16:9";
-  return {
-    id: row.id,
-    chatId: row.chatId,
-    filePath: row.filePath,
-    url: sceneVideoUrl(row.chatId, row.filePath),
-    sourceIllustrationTag: row.sourceIllustrationTag ?? null,
-    sourceIllustrationPath: row.sourceIllustrationPath ?? null,
-    prompt: row.prompt,
-    provider: row.provider,
-    model: row.model,
-    durationSeconds: row.durationSeconds,
-    aspectRatio,
-    createdAt: row.createdAt,
-  };
 }
 
 // Reject any chatId segment that could escape GALLERY_DIR (traversal, absolute
@@ -360,22 +399,28 @@ function readStringArray(value: unknown): string[] {
   return value.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0);
 }
 
-function getCharacterAppearance(data: Record<string, unknown>): string {
+/**
+ * The card's appearance text and its Image Appearance Override, kept apart (#7243).
+ *
+ * #7053 folded the override into the appearance, which left the prompt-builder with
+ * the override alone — an unexplained token for a ComfyUI LoRA user — and no visual
+ * context, so it discarded the token and invented a look.
+ */
+function getCharacterAppearance(data: Record<string, unknown>): {
+  appearance: string;
+  imageAppearance: string;
+} {
   const extensions = parseJsonRecord(data.extensions);
-  // #7053: gallery selfies are image prompts, so an enabled non-empty override
-  // replaces the card appearance here too. Read it before the fallback chain is
-  // resolved so the override wins over the normal appearance.
-  const override = readImageAppearanceOverride(extensions, null);
-  if (override) return override;
-  const appearance =
+  const appearance = (
     typeof extensions.appearance === "string"
       ? extensions.appearance
       : typeof data.appearance === "string"
         ? data.appearance
         : typeof data.description === "string"
           ? data.description
-          : "";
-  return appearance.trim();
+          : ""
+  ).trim();
+  return { appearance, imageAppearance: readImageAppearanceOverride(extensions, null) ?? "" };
 }
 
 function titleCaseSlug(value: string): string {
@@ -397,19 +442,9 @@ function sourceGalleryImagePathForMetadata(image: ChatGalleryImageRow): string {
   return `gallery/${image.filePath.replace(/\\/g, "/")}`;
 }
 
-function imageMimeTypeForPath(path: string): VideoReferenceImage["mimeType"] | null {
-  const ext = extname(path).toLowerCase();
-  if (ext === ".png") return "image/png";
-  if (ext === ".jpg" || ext === ".jpeg") return "image/jpeg";
-  return null;
-}
-
-function readSceneVideoReferenceImage(path: string, url?: string | null): VideoReferenceImage {
-  const mimeType = imageMimeTypeForPath(path);
-  if (!mimeType) throw new Error("Scene videos require a PNG or JPEG gallery image");
-  return { base64: readFileSync(path).toString("base64"), mimeType, url };
-}
-
+// Kept apart from roleplay-clip-writer's copy on purpose: these reads off this file's parseChatMetadata binding are
+// how the capability guard (capability-gm-verbs regression) knows `scenario` is the Engine's own chat-metadata key.
+// A shared helper reading it off a parameter is invisible to that sweep, which would let a package claim the key.
 function buildRoleplayVideoSettingLine(chat: ChatRow, meta: Record<string, unknown>, maxPartLength: number): string {
   const parts = [
     readTrimmedString(meta.groupScenarioText),
@@ -420,18 +455,6 @@ function buildRoleplayVideoSettingLine(chat: ChatRow, meta: Record<string, unkno
   ].filter((part): part is string => Boolean(part));
   const setting = Array.from(new Set(parts.map((part) => compactVideoPromptText(part, maxPartLength)).filter(Boolean)));
   return setting.length ? setting.join("; ") : "Current roleplay scene";
-}
-
-async function resolveSceneVideoConnectionId(
-  meta: Record<string, unknown>,
-  connections: ReturnType<typeof createConnectionsStorage>,
-): Promise<string | null> {
-  const chatConnectionId =
-    readTrimmedString(meta.sceneVideoConnectionId) ?? readTrimmedString(meta.gameVideoConnectionId);
-  if (chatConnectionId) return chatConnectionId;
-
-  const defaultConnection = await connections.getDefaultForVideoGeneration();
-  return defaultConnection?.id ?? null;
 }
 
 function createResponseAbortSignal(reply: FastifyReply, timeoutMs: number, label: string): AbortSignal {
@@ -474,35 +497,34 @@ function buildSpriteAssets(
   if (!existsSync(dir)) return [];
 
   try {
-    return readdirSync(dir)
-      .filter((filename) => SPRITE_FILE_RE.test(filename))
-      .sort((a, b) => a.localeCompare(b))
-      .map((filename) => {
-        const ext = extname(filename);
-        const expression = filename.slice(0, -ext.length);
-        const cleanExpression = expression.replace(/^full[_-]/i, "");
-        const mtime = statSync(join(dir, filename)).mtimeMs;
-        return {
-          id: `sprite:${ownerType}:${ownerId}:${filename}`,
-          kind: "sprite" as const,
-          ownerType,
-          ownerId,
-          ownerName,
-          name: cleanExpression || filename,
-          prompt: "",
-          width: null,
-          height: null,
-          createdAt: null,
-          url: `/api/sprites/${encodeURIComponent(ownerId)}/file/${encodeURIComponent(filename)}?v=${Math.floor(mtime)}`,
-          cardUrl: cardUrl("sprites", ownerId, filename),
-        };
-      });
+    return listSpriteCatalog(ownerId).sprites.map(({ filename, expression, label, url }) => {
+      const cleanExpression = (label ?? expression).replace(/^full[_-]/i, "");
+      return {
+        id: `sprite:${ownerType}:${ownerId}:${filename}`,
+        kind: "sprite" as const,
+        ownerType,
+        ownerId,
+        ownerName,
+        name: cleanExpression || filename,
+        prompt: "",
+        width: null,
+        height: null,
+        createdAt: null,
+        url,
+        cardUrl: cardUrl("sprites", ownerId, filename),
+      };
+    });
   } catch {
     return [];
   }
 }
 
-function spriteMatchesTarget(filename: string, category: "facial" | "fullbody", target: string): boolean {
+function spriteMatchesTarget(
+  filename: string,
+  category: "facial" | "fullbody",
+  target: string,
+  label?: string,
+): boolean {
   const ext = extname(filename);
   const expression = filename.slice(0, -ext.length).toLowerCase();
   const targetExt = extname(target);
@@ -513,13 +535,14 @@ function spriteMatchesTarget(filename: string, category: "facial" | "fullbody", 
 
   if (category === "facial") {
     if (/^full[_-]/i.test(expression)) return false;
-    return expression === targetBase;
+    return expression === targetBase || label?.toLowerCase() === targetBase;
   }
 
   return (
     expression === targetBase ||
     expression === `full_${targetBase}` ||
-    expression.replace(/^full[_-]/, "") === targetBase
+    expression.replace(/^full[_-]/, "") === targetBase ||
+    label?.toLowerCase().replace(/^full[_-]/, "") === targetBase
   );
 }
 
@@ -693,16 +716,126 @@ export async function galleryRoutes(app: FastifyInstance) {
     const names = new Set<string>();
     const { characterIds, personaIds } = await collectChatAssetParticipants(chat);
     for (const characterId of characterIds.slice(0, 8)) {
-      const character = await characters.getById(characterId);
+      const character = await characters.getById(characterId, chat.id);
       const name = getCharacterName(character, "");
       if (name) names.add(name);
     }
     for (const personaId of personaIds.slice(0, 2)) {
-      const persona = await characters.getPersona(personaId);
+      const persona = await characters.getPersona(personaId, chat.id);
       const name = getPersonaName(persona, "");
       if (name) names.add(name);
     }
     return Array.from(names).slice(0, 10);
+  }
+
+  /**
+   * Who a Roleplay clip shows, read from its prompt: chat characters and the persona named in full or by a name part
+   * no one else in the chat shares. Gives their ids (for galleries) and their appearance lines.
+   */
+  async function resolveRoleplayClipCast(
+    chat: Awaited<ReturnType<typeof chats.getById>> & {},
+    promptText: string,
+  ): Promise<{ characterIds: string[]; appearanceBlock: string | null }> {
+    const chatCharacters = [];
+    for (const id of (await collectChatAssetParticipants(chat)).characterIds) {
+      const row = await characters.getById(id, chat.id);
+      if (!row) continue;
+      const data = parseJsonRecord(row.data);
+      chatCharacters.push({
+        id,
+        name: readTrimmedString(data.name) ?? "",
+        avatarPath: row.avatarPath ?? null,
+        appearance: getCharacterAppearance(data).appearance,
+      });
+    }
+    // A character played as the user is already listed; a persona joins when the prompt names them.
+    const identity = await resolveChatUserIdentity(characters, chat);
+    const persona =
+      identity?.source === "persona"
+        ? {
+            id: identity.id,
+            name: identity.name,
+            avatarPath: identity.avatarPath,
+            appearance: identity.appearance,
+            appearanceOverride: identity.imageAppearanceOverride || null,
+          }
+        : null;
+    const members = [...chatCharacters, ...(persona ? [persona] : [])].map(({ id, name }) => ({ id, name }));
+    const mentioned = namesMentionedByPart(withoutQuotedSpeech(promptText), members);
+    const cast = await resolveIllustratorCharacterReferences({
+      charactersStore: characters,
+      chatCharacters,
+      persona,
+      requestedNames: members.filter(({ id }) => mentioned.has(id)).map(({ name }) => name),
+      promptText,
+      fallbackToChatCharacters: false,
+      includeReferenceImages: false,
+    });
+    return {
+      characterIds: cast.personaId ? [...cast.characterIds, cast.personaId] : cast.characterIds,
+      appearanceBlock: cast.appearanceBlock,
+    };
+  }
+
+  /**
+   * The Roleplay video director's prompt for a clip: written by the Prompt Model from the exchange it shows,
+   * following the video connection's Video Prompting Instructions, with the named characters' appearance lines
+   * when the chat sends appearance with videos.
+   */
+  async function writeRoleplayClipPrompt(args: {
+    chat: Awaited<ReturnType<typeof chats.getById>> & {};
+    meta: Record<string, unknown>;
+    videoConn: { videoPromptInstructions?: string | null };
+    videoRuntime: ReturnType<typeof resolveGameVideoRuntime>;
+    durationSeconds: number;
+    aspectRatio: "16:9" | "9:16";
+    sourceExchange: string;
+    referenceImagePrompt: string;
+    characterNames: string[];
+    /** The clip has no picture of this moment, so the director describes the scene (Roleplay Clip Director). */
+    withoutPicture?: boolean;
+    debugMode?: boolean;
+    signal?: AbortSignal;
+  }): Promise<string> {
+    // Instructions that speak to appearance get the people's appearance details to build in, as Illustrator clips do;
+    // otherwise the named characters' appearance lines go after the prompt.
+    const appearanceInPrompt =
+      args.meta.illustratorVideoIncludeCharacterAppearance === true &&
+      videoInstructionsUseAppearance(args.videoConn.videoPromptInstructions);
+    let promptDraft: string;
+    try {
+      // The shared writer: the video connection's Video Prompting Instructions decide the prompt's format.
+      promptDraft = await writeRoleplayClipDirection(app.db, {
+        chat: args.chat,
+        meta: args.meta,
+        setup: {
+          videoConn: args.videoConn,
+          runtime: args.videoRuntime,
+          durationSeconds: args.durationSeconds,
+          aspectRatio: args.aspectRatio,
+        },
+        sourceExchange: args.sourceExchange,
+        referenceImagePrompt: args.referenceImagePrompt,
+        characterNames: args.characterNames,
+        appearanceDetails: appearanceInPrompt
+          ? formatVideoAppearanceDetails(
+              (await resolveRoleplayClipCast(args.chat, args.sourceExchange)).appearanceBlock,
+            )
+          : undefined,
+        withoutPicture: args.withoutPicture === true,
+        debugMode: args.debugMode,
+        signal: args.signal,
+      });
+    } catch (err) {
+      if (err instanceof ChatVideoError) throw new GallerySceneVideoRequestError(err.statusCode, err.message);
+      throw err;
+    }
+    if (args.meta.illustratorVideoIncludeCharacterAppearance === true && !appearanceInPrompt) {
+      // The characters the direction names get their appearance lines, as Illustrator images do.
+      const { appearanceBlock } = await resolveRoleplayClipCast(args.chat, promptDraft);
+      if (appearanceBlock) promptDraft = `${promptDraft}\n\n${appearanceBlock}`;
+    }
+    return promptDraft;
   }
 
   async function prepareGallerySceneVideoRequest(input: GenerateSceneVideoInput, signal?: AbortSignal) {
@@ -758,69 +891,26 @@ export async function galleryRoutes(app: FastifyInstance) {
     const characterNames = await collectChatSceneCharacterNames(chat);
     let promptDraft = input.promptOverride?.trim() ?? "";
     if (!promptDraft && chat.mode === "roleplay") {
-      const defaultPromptConnection =
-        chat.connectionId && chat.connectionId !== LOCAL_SIDECAR_CONNECTION_ID
-          ? await connections.getWithKey(chat.connectionId)
-          : null;
-      let promptRuntime;
-      try {
-        promptRuntime = await resolveIllustratorPromptRuntime({
-          chatMetadata: meta,
-          defaultConnection: defaultPromptConnection,
-          defaultConnectionId: chat.connectionId,
-          connections,
-          resolveBaseUrl,
-        });
-      } catch (err) {
-        logger.warn(err, "[gallery/roleplay-video-director] Prompt Model is unavailable for chat %s", input.chatId);
-        throw new GallerySceneVideoRequestError(
-          400,
-          "Choose a text Prompt Model or main chat connection before planning a Roleplay animation.",
-        );
-      }
-      const sourceExchange = resolveGalleryVideoSourceExchange(messages, swipes, galleryImage.id);
-      const directionMessages = await buildRoleplayVideoDirectionMessages(promptOverridesStorage, {
+      // The same recent messages Illustrator reads (its context size), ending where the picture was made.
+      const { sourceMessageId } = resolveGalleryVideoSourceExchange(messages, swipes, galleryImage.id);
+      const recentContext = formatRecentVideoContext(messages, {
+        count: await loadIllustratorContextSize(app.db),
+        endMessageId: sourceMessageId,
+      });
+      promptDraft = await writeRoleplayClipPrompt({
+        chat,
+        meta,
+        videoConn,
+        videoRuntime,
         durationSeconds,
         aspectRatio,
         sourceExchange:
-          sourceExchange.content || "Animate the illustrated Roleplay scene without advancing into a new story beat.",
+          recentContext || "Animate the illustrated Roleplay scene without advancing into a new story beat.",
         referenceImagePrompt: galleryImage.prompt ?? "",
         characterNames,
-        setting: buildRoleplayVideoSettingLine(chat, meta, videoRuntime.promptLimits.artStyle),
+        debugMode: input.debugMode,
+        signal,
       });
-      const [systemMessage, userMessage] = directionMessages;
-      const debugOverrideEnabled = input.debugMode === true || isDebugAgentsEnabled();
-      logDebugOverride(
-        debugOverrideEnabled,
-        "[debug/gallery/roleplay-video-director] system:\n%s\nuser:\n%s",
-        systemMessage.content,
-        userMessage.content,
-      );
-      try {
-        const result = await promptRuntime.provider.chatComplete(directionMessages, {
-          model: promptRuntime.model,
-          ...(promptRuntime.suppressModelParameters ? {} : { temperature: 0.5, maxTokens: 1_200 }),
-          suppressModelParameters: promptRuntime.suppressModelParameters,
-          signal,
-          enableCaching: promptRuntime.enableCaching,
-          anthropicExtendedCacheTtl: promptRuntime.anthropicExtendedCacheTtl,
-        });
-        promptDraft = resolveRoleplayVideoDirection(result.content, videoRuntime.promptLimits.finalPrompt);
-      } catch (err) {
-        logger.warn(err, "[gallery/roleplay-video-director] Failed to plan animation for chat %s", input.chatId);
-        const message =
-          err instanceof Error && err.message.trim()
-            ? err.message.trim()
-            : "The Roleplay animation Prompt Model failed to plan this clip.";
-        throw new GallerySceneVideoRequestError(502, message);
-      }
-      if (!promptDraft) {
-        throw new GallerySceneVideoRequestError(
-          502,
-          "The Roleplay animation Prompt Model returned an empty direction.",
-        );
-      }
-      logDebugOverride(debugOverrideEnabled, "[debug/gallery/roleplay-video-director] final prompt:\n%s", promptDraft);
     } else if (!promptDraft) {
       promptDraft = await loadGameVideoPrompt({
         promptOverridesStorage,
@@ -853,16 +943,14 @@ export async function galleryRoutes(app: FastifyInstance) {
       promptOverride: input.promptOverride,
       maxPromptLength: videoRuntime.promptLimits.finalPrompt,
     });
-    const videoFallback = await resolveVideoConnectionFallback(connections, videoConnectionId);
-
     return {
+      chatMode: chat.mode,
       videoConnectionId,
       galleryImage,
       videoRuntime,
       durationSeconds,
       aspectRatio,
       prompt,
-      videoFallback,
     };
   }
 
@@ -873,21 +961,26 @@ export async function galleryRoutes(app: FastifyInstance) {
   ) {
     const { characterIds, personaIds } = await collectChatAssetParticipants(chat);
     const ownerIds = [...characterIds, ...personaIds];
+    let labelMatch: { ownerId: string; filename: string } | null = null;
     for (const ownerId of ownerIds) {
       if (!isSafeAssetSegment(ownerId)) continue;
       const dir = join(SPRITES_DIR, ownerId);
       if (!existsSync(dir)) continue;
       try {
-        const filename = readdirSync(dir)
-          .filter((candidate) => SPRITE_FILE_RE.test(candidate))
-          .sort((a, b) => a.localeCompare(b))
-          .find((candidate) => spriteMatchesTarget(candidate, category, target));
-        if (filename) return { ownerId, filename };
+        const sprites = listSpriteCatalog(ownerId).sprites;
+        const match = sprites.find((sprite) => spriteMatchesTarget(sprite.filename, category, target));
+        if (match) return { ownerId, filename: match.filename };
+        if (!labelMatch) {
+          const labeled = sprites.find((sprite) =>
+            spriteMatchesTarget(sprite.filename, category, target, sprite.label),
+          );
+          if (labeled) labelMatch = { ownerId, filename: labeled.filename };
+        }
       } catch {
         // Ignore unreadable sprite folders and continue to the next participant.
       }
     }
-    return null;
+    return labelMatch;
   }
 
   // Resolve short chat-scoped card:// links such as card://gallery/foo.png or card://sprites/facial/happy.png.
@@ -960,7 +1053,7 @@ export async function galleryRoutes(app: FastifyInstance) {
     const { characterIds, personaIds } = await collectChatAssetParticipants(chat);
     for (const characterId of characterIds) {
       if (!isSafeAssetSegment(characterId)) continue;
-      const character = await characters.getById(characterId);
+      const character = await characters.getById(characterId, chatId);
       if (!character) continue;
       const ownerName = getCharacterName(character, "Character");
       const images = await characterGallery.listByCharacterId(characterId);
@@ -986,7 +1079,7 @@ export async function galleryRoutes(app: FastifyInstance) {
 
     for (const personaId of personaIds) {
       if (!isSafeAssetSegment(personaId)) continue;
-      const persona = await characters.getPersona(personaId);
+      const persona = await characters.getPersona(personaId, chat.id);
       if (!persona) continue;
       const ownerName = getPersonaName(persona, "Persona");
       const images = await personaGallery.listByPersonaId(personaId);
@@ -1111,22 +1204,8 @@ export async function galleryRoutes(app: FastifyInstance) {
     const debugLog = (message: string, ...args: unknown[]) => {
       logDebugOverride(debugOverrideEnabled, message, ...args);
     };
-    const sceneVideos = createGameSceneVideosStorage(app.db);
-    const { videoConnectionId, galleryImage, videoRuntime, durationSeconds, aspectRatio, prompt, videoFallback } =
-      prepared;
-    const {
-      source,
-      serviceHint,
-      baseUrl,
-      apiKey,
-      model,
-      resolution,
-      publicReferenceUpload,
-      comfyWorkflow,
-      comfyLoras,
-      comfyFps,
-      atlasModelOptions,
-    } = videoRuntime;
+    const { chatMode, videoConnectionId, galleryImage, videoRuntime, durationSeconds, aspectRatio, prompt } = prepared;
+    const { source, model } = videoRuntime;
 
     const galleryImagePath = resolveGalleryImagePath(galleryImage);
     if (!galleryImagePath) {
@@ -1135,7 +1214,10 @@ export async function galleryRoutes(app: FastifyInstance) {
 
     let referenceImage: VideoReferenceImage;
     try {
-      referenceImage = readSceneVideoReferenceImage(galleryImagePath, sourceGalleryImagePathForMetadata(galleryImage));
+      referenceImage = await toVideoReferenceImage(
+        readFileSync(galleryImagePath).toString("base64"),
+        sourceGalleryImagePathForMetadata(galleryImage),
+      );
     } catch (err) {
       const message = err instanceof Error ? err.message : "The selected gallery image cannot be used.";
       return reply.status(400).send({ error: message });
@@ -1155,58 +1237,341 @@ export async function galleryRoutes(app: FastifyInstance) {
       debugLog("[debug/gallery/scene-video] prompt:\n%s", prompt);
     }
 
-    let savedFilePath: string | null = null;
-    let metadataSaved = false;
     try {
-      const generated = await generateVideo(source, baseUrl, apiKey, serviceHint, {
-        prompt,
-        model,
-        durationSeconds,
-        aspectRatio,
-        resolution,
-        comfyWorkflow,
-        comfyLoras,
-        fps: comfyFps,
-        atlasModelOptions,
-        referenceImage,
-        publicReferenceUpload,
-        queue: input.queueMediaGenerationRequests,
-        connectionKey: videoConnectionId,
-        signal: sceneVideoAbortSignal,
-        fallback: videoFallback,
-      });
-      const filePath = await saveVideoToDisk(input.chatId, generated.base64);
-      savedFilePath = filePath;
-      const row = await sceneVideos.create({
-        chatId: input.chatId,
-        filePath,
-        sourceIllustrationTag: `gallery:${galleryImage.id}`,
-        sourceIllustrationPath: sourceGalleryImagePathForMetadata(galleryImage),
-        prompt,
-        provider: source,
-        model,
-        durationSeconds,
-        aspectRatio,
-      });
-      if (!row) throw new Error("Scene video metadata could not be saved");
-      metadataSaved = true;
-
-      await chats.patchMetadata(input.chatId, () => ({ sceneLastVideoId: row.id }));
-      logger.info("[gallery/generate-scene-video] saved video %s for chat %s", row.id, input.chatId);
-      return { video: serializeSceneVideo(row) };
-    } catch (err) {
-      if (savedFilePath && !metadataSaved) {
-        await removeSavedVideoFromDisk(savedFilePath).catch((cleanupErr) => {
-          logger.warn(
-            cleanupErr,
-            "[gallery/generate-scene-video] Failed to clean up orphaned video file %s",
-            savedFilePath,
-          );
-        });
+      const video = await generateAndSaveChatVideo(
+        app.db,
+        { videoConnectionId, runtime: videoRuntime, durationSeconds, aspectRatio },
+        {
+          chatId: input.chatId,
+          prompt,
+          referenceImage,
+          sourceTag: `gallery:${galleryImage.id}`,
+          sourcePath: sourceGalleryImagePathForMetadata(galleryImage),
+          queue: input.queueMediaGenerationRequests,
+          signal: sceneVideoAbortSignal,
+        },
+      );
+      // Shown inline under the newest reply, chosen now rather than before generating: the user may have sent
+      // or swiped a message meanwhile. Game Mode keeps its clips in the gallery only. The video is saved by now,
+      // so a failure to find or update the reply still reports success, with no messageId.
+      let messageId: string | null = null;
+      try {
+        const anchor = chatMode === "game" ? null : resolveChatVideoAnchor(await chats.listMessages(input.chatId));
+        if (anchor) {
+          // Reported only when the clip really landed on the reply (it may have been deleted meanwhile).
+          if (await attachVideoToMessage(chats, anchor, buildChatVideoAttachment(video))) messageId = anchor.messageId;
+        }
+      } catch (attachErr) {
+        logger.warn(attachErr, "[gallery/generate-scene-video] Failed to attach video %s to a message", video.id);
       }
+      return { video, messageId };
+    } catch (err) {
       logger.warn(err, "[gallery/generate-scene-video] Scene video generation failed for chat %s", input.chatId);
       const message = err instanceof Error ? err.message : "Scene video generation failed";
       return reply.status(502).send({ error: message });
+    }
+  });
+
+  app.post<{ Params: { chatId: string } }>("/:chatId/video", async (req, reply) => {
+    const { chatId } = req.params;
+    if (!isValidChatId(chatId)) return reply.status(400).send({ error: "Invalid chatId" });
+    const input = generateConversationVideoSchema.parse(req.body);
+
+    const chat = await chats.getById(chatId);
+    if (!chat) return reply.status(404).send({ error: "Chat not found" });
+    if (chat.mode !== "conversation") {
+      return reply.status(400).send({ error: "Video messages are only available in Conversation mode." });
+    }
+    const chatCharacterIds = parseStringArray(chat.characterIds);
+    if (!chatCharacterIds.includes(input.characterId)) {
+      return reply.status(400).send({ error: "Selected character is not in this conversation." });
+    }
+    const charInfo = [];
+    for (const id of chatCharacterIds) {
+      const row = await characters.getById(id, chatId);
+      if (!row) continue;
+      const data = parseJsonRecord(row.data);
+      const { appearance, imageAppearance } = getCharacterAppearance(data);
+      charInfo.push({
+        id,
+        name: readTrimmedString(data.name) ?? "character",
+        avatarPath: row.avatarPath ?? null,
+        appearance,
+        imageAppearanceOverride: imageAppearance || null,
+      });
+    }
+    // The built-in local model has no stored connection; its id still reaches the Prompt Model, as /selfie does.
+    const promptConnectionId = chat.connectionId ?? null;
+    const storedPromptConnectionId =
+      promptConnectionId && promptConnectionId !== LOCAL_SIDECAR_CONNECTION_ID ? promptConnectionId : null;
+
+    try {
+      const result = await generateConversationVideo({
+        db: app.db,
+        chatId,
+        chatMeta: parseChatMetadata(chat.metadata),
+        characterId: input.characterId,
+        charInfo,
+        // Who the user is (a persona, or a character played as the user), with their Appearance, for a clip that
+        // names them. A played character already in the chat is matched as a chat character instead.
+        persona: await (async () => {
+          const identity = await resolveChatUserIdentity(characters, chat);
+          return identity && !chatCharacterIds.includes(identity.id)
+            ? {
+                id: identity.id,
+                name: identity.name,
+                avatarPath: identity.avatarPath,
+                appearance: identity.appearance,
+                appearanceOverride: identity.imageAppearanceOverride || null,
+              }
+            : null;
+        })(),
+        promptConnection: storedPromptConnectionId
+          ? await createConnectionsStorage(app.db).getWithKey(storedPromptConnectionId)
+          : null,
+        promptConnectionId,
+        context: input.context,
+        promptOverride: input.promptOverride,
+        selfiePromptOverride: input.selfiePromptOverride,
+        selfieNegativePromptOverride: input.selfieNegativePromptOverride,
+        galleryImageId: input.galleryImageId,
+        previewOnly: input.previewOnly,
+        queue: input.queueMediaGenerationRequests,
+        debugMode: input.debugMode,
+        signal: createResponseAbortSignal(reply, SCENE_VIDEO_GENERATION_TIMEOUT_MS, "Conversation video"),
+      });
+      if (!("video" in result)) return result;
+
+      // A new clip arrives as its own message from the character; an animated picture joins the newest reply.
+      // If the clip can't be attached, it stays in the gallery: the reply says so with a null messageId, and a
+      // message created for it is removed rather than left empty.
+      let messageId: string | null = null;
+      let createdMessageId: string | null = null;
+      try {
+        let anchor: ChatVideoAnchor | null = null;
+        if (input.galleryImageId) {
+          anchor = resolveChatVideoAnchor(await chats.listMessages(chatId));
+        } else {
+          const message = await chats.createMessage({
+            chatId,
+            role: "assistant",
+            characterId: input.characterId,
+            content: "",
+          });
+          createdMessageId = message?.id ?? null;
+          anchor = message ? { messageId: message.id, swipeIndex: 0 } : null;
+        }
+        if (anchor) {
+          // Only a video message the character sent names it; an animated picture under someone's reply doesn't, so
+          // later prompts never credit the character with a clip it didn't send.
+          const attached = await attachVideoToMessage(
+            chats,
+            anchor,
+            buildChatVideoAttachment(result.video, input.galleryImageId ? undefined : result.characterName),
+          );
+          // The message vanished before the clip landed: handled like a failed attach (an empty new message goes).
+          if (!attached) throw new Error(`Message ${anchor.messageId} no longer has the swipe for this video`);
+          messageId = anchor.messageId;
+        }
+      } catch (attachErr) {
+        logger.warn(attachErr, "[gallery/video] Saved video %s but could not attach it", result.video.id);
+        if (createdMessageId) {
+          await chats.removeMessage(createdMessageId).catch((removeErr) => {
+            logger.warn(removeErr, "[gallery/video] Could not remove empty message %s", createdMessageId);
+          });
+        }
+      }
+      return { video: result.video, messageId, firstFrame: result.firstFrame };
+    } catch (err) {
+      if (err instanceof ChatVideoError || err instanceof SceneVideoPromptReviewError) {
+        return reply.status(err.statusCode).send({ error: err.message });
+      }
+      logger.warn(err, "[gallery/video] Conversation video failed for chat %s", chatId);
+      return reply.status(502).send({ error: err instanceof Error ? err.message : "Video generation failed" });
+    }
+  });
+
+  // Roleplay /video: a clip of the latest reply (or of what the user describes) under that reply, following the
+  // chat's First frame. A new Illustrator picture is drawn by /illustrate first, so this answers needsPicture.
+  app.post<{ Params: { chatId: string } }>("/:chatId/roleplay-video", async (req, reply) => {
+    const { chatId } = req.params;
+    if (!isValidChatId(chatId)) return reply.status(400).send({ error: "Invalid chatId" });
+    const input = z
+      .object({
+        description: z.string().trim().max(2_000).optional(),
+        debugMode: z.boolean().optional(),
+        /** Return the written prompt for review instead of making the clip. */
+        previewOnly: z.boolean().optional(),
+        /** The prompt as the user reviewed it; skips writing a new one. */
+        promptOverride: z.string().trim().max(20_000).optional(),
+      })
+      .parse(req.body ?? {});
+    const chat = await chats.getById(chatId);
+    if (!chat) return reply.status(404).send({ error: "Chat not found" });
+    if (chat.mode !== "roleplay") return reply.status(400).send({ error: "This command is for Roleplay chats." });
+    const meta = parseChatMetadata(chat.metadata);
+    // Ends the clip's writing and making when the request goes away, as the other video routes do.
+    const signal = createResponseAbortSignal(reply, SCENE_VIDEO_GENERATION_TIMEOUT_MS, "Roleplay video");
+    try {
+      const setup = await resolveChatVideoSetup(app.db, meta);
+      const connections = createConnectionsStorage(app.db);
+      const illustrator = await createAgentsStorage(app.db).getByType("illustrator");
+      const agentImageConnectionId = parseJsonRecord(illustrator?.settings).imageConnectionId;
+      const hasImageConnection = Boolean(
+        resolveIllustratorImageConnectionId("roleplay", meta, agentImageConnectionId) ||
+        (await connections.getDefaultForImageGeneration()),
+      );
+      const firstFrame = roleplayVideoFirstFrame(meta, hasImageConnection);
+      if (firstFrame === "picture") return { needsPicture: true };
+
+      const messages = await chats.listMessages(chatId);
+      if (!messages.some((message) => message.role === "assistant")) {
+        return reply.status(400).send({ error: "Send a message before making a video." });
+      }
+      // The same recent messages Illustrator reads (its context size), the latest reply last, as /illustrate does.
+      const exchange = formatRecentVideoContext(messages, { count: await loadIllustratorContextSize(app.db) });
+      const maxPromptLength = setup.runtime.promptLimits.finalPrompt;
+      const prompt = input.promptOverride
+        ? resolveSceneVideoPrompt({ generatedPrompt: "", promptOverride: input.promptOverride, maxPromptLength })
+        : await writeRoleplayClipPrompt({
+            chat,
+            meta,
+            videoConn: setup.videoConn,
+            videoRuntime: setup.runtime,
+            durationSeconds: setup.durationSeconds,
+            aspectRatio: setup.aspectRatio,
+            sourceExchange: [input.description ? `Requested clip: ${input.description}` : "", exchange]
+              .filter(Boolean)
+              .join("\n\n"),
+            referenceImagePrompt: "",
+            // /video never animates a picture here (that path asks for one first), so the director describes the scene.
+            withoutPicture: true,
+            characterNames: await collectChatSceneCharacterNames(chat),
+            debugMode: input.debugMode,
+            signal,
+          });
+      if (input.previewOnly) {
+        return {
+          prompt,
+          durationSeconds: setup.durationSeconds,
+          aspectRatio: setup.aspectRatio,
+          resolution: setup.runtime.resolution ?? null,
+          maxPromptLength,
+        };
+      }
+      // The Avatar first frame starts from whoever the description names first (the persona too), else from the
+      // chat's first character with a usable avatar or sprite.
+      let avatar: { base64: string; name: string } | null = null;
+      const { characterIds, personaIds } = await collectChatAssetParticipants(chat);
+      const shown = (await resolveRoleplayClipCast(chat, prompt)).characterIds;
+      if (firstFrame !== "none") {
+        const candidates: Array<{ name: string; read: () => Promise<{ base64: string } | null> }> = [];
+        for (const id of characterIds) {
+          const row = await characters.getById(id, chat.id);
+          if (!row) continue;
+          candidates.push({
+            name: readTrimmedString(parseJsonRecord(row.data).name) ?? "",
+            read: () =>
+              readPreferredCharacterReferenceImage({
+                characterId: id,
+                avatarPath: row.avatarPath ?? null,
+                characterGallery: createCharacterGalleryStorage(app.db),
+              }),
+          });
+        }
+        const persona =
+          chat.personaId && personaIds.includes(chat.personaId)
+            ? await characters.getPersona(chat.personaId, chat.id)
+            : null;
+        const people = [
+          ...candidates,
+          ...(persona
+            ? [
+                {
+                  name: persona.name,
+                  read: () =>
+                    readPreferredPersonaReferenceImage({
+                      personaId: persona.id,
+                      avatarPath: persona.avatarPath ?? null,
+                      personaGallery,
+                    }),
+                },
+              ]
+            : []),
+        ];
+        const description = input.description ?? "";
+        // Whole words only, so "Bram" doesn't match "Bramble" and "Al" doesn't match "also".
+        const wordAt = (word: string) =>
+          description
+            .toLowerCase()
+            .search(
+              new RegExp(
+                `(?<![\\p{L}\\p{N}])${word.toLowerCase().replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")}(?![\\p{L}\\p{N}])`,
+                "u",
+              ),
+            );
+        // A unique, capitalised part of a name counts too ("Lena" for "Dr. Lena Kowalski"), as in Conversation clips.
+        const namedByPart = namesMentionedByPart(
+          withoutQuotedSpeech(description),
+          people.map((person) => ({ id: person.name, name: person.name })),
+        );
+        const named = (name: string) => {
+          if (!name) return -1;
+          const whole = wordAt(name);
+          if (whole >= 0 || !namedByPart.has(name)) return whole;
+          const parts = name
+            .split(/[^\p{L}\p{N}]+/u)
+            .filter((part) => part.length >= 2)
+            .map(wordAt)
+            .filter((index) => index >= 0);
+          return parts.length ? Math.min(...parts) : -1;
+        };
+        const namedCandidates = people
+          .filter((candidate) => named(candidate.name) >= 0)
+          .sort((left, right) => named(left.name) - named(right.name));
+        for (const candidate of [...namedCandidates, ...candidates]) {
+          const image = await candidate.read();
+          if (image) {
+            avatar = { base64: image.base64, name: candidate.name };
+            break;
+          }
+        }
+      }
+      const video = await generateRoleplayClip(app.db, {
+        chatId,
+        chatMeta: meta,
+        prompt,
+        firstFrame,
+        avatar,
+        // Filed under the people the clip shows; a clip that names no one belongs to the whole chat.
+        characterIds: shown.length ? shown : [...characterIds, ...personaIds],
+        queue: true,
+        signal,
+        debugMode: input.debugMode,
+      });
+      // Picked after generating, so a reply that arrived meanwhile gets the clip. The clip is saved by now, so a
+      // failure to find or update the reply still reports it as made, with no messageId.
+      let messageId: string | null = null;
+      try {
+        const anchor = resolveChatVideoAnchor(await chats.listMessages(chatId));
+        // Reported only when the clip really landed on the reply (it may have been deleted meanwhile).
+        if (anchor && (await attachVideoToMessage(chats, anchor, buildChatVideoAttachment(video)))) {
+          messageId = anchor.messageId;
+        }
+      } catch (attachErr) {
+        logger.warn(attachErr, "[gallery/roleplay-video] Saved video %s but could not attach it", video.id);
+      }
+      return { video, messageId };
+    } catch (err) {
+      if (
+        err instanceof ChatVideoError ||
+        err instanceof GallerySceneVideoRequestError ||
+        err instanceof SceneVideoPromptReviewError
+      ) {
+        return reply.status(err.statusCode).send({ error: err.message });
+      }
+      logger.warn(err, "[gallery/roleplay-video] Roleplay video failed for chat %s", chatId);
+      return reply.status(502).send({ error: err instanceof Error ? err.message : "Video generation failed" });
     }
   });
 
@@ -1233,7 +1598,7 @@ export async function galleryRoutes(app: FastifyInstance) {
       return reply.status(400).send({ error: "Selected character is not in this conversation." });
     }
 
-    const character = await characters.getById(input.characterId);
+    const character = await characters.getById(input.characterId, chatId);
     if (!character) return reply.status(404).send({ error: "Character not found" });
 
     const meta = parseChatMetadata(chat.metadata);
@@ -1257,7 +1622,12 @@ export async function galleryRoutes(app: FastifyInstance) {
 
     const characterData = parseJsonRecord(character.data);
     const characterName = readTrimmedString(characterData.name) ?? "character";
-    const appearance = getCharacterAppearance(characterData);
+    const { appearance, imageAppearance } = getCharacterAppearance(characterData);
+    // Same inputs the character-sent selfie passes (conversation-selfie-command-runtime.ts),
+    // so `/selfie` and the gallery button get the personality and image-instruction blocks too.
+    const personality = readTrimmedString(characterData.personality) ?? "";
+    const characterImageInstructions =
+      readTrimmedString(parseJsonRecord(characterData.extensions).conversationImageInstructions) ?? "";
     const selfiePromptTemplate = readTrimmedString(meta.selfiePrompt) ?? "";
     const selfieTags = readStringArray(meta.selfieTags);
     const selfiePositivePrompt = readTrimmedString(meta.selfiePositivePrompt) ?? selfieTags.join(", ").trim();
@@ -1282,7 +1652,10 @@ export async function galleryRoutes(app: FastifyInstance) {
       promptOverridesStorage,
       chatPromptTemplate: selfiePromptTemplate,
       appearance,
+      imageAppearance,
       charName: characterName,
+      characterImageInstructions,
+      personality,
     });
     const selfieSystemPrompt = styleGuidance
       ? `${baseSelfieSystemPrompt}${formatImageStylePromptGuidance(styleGuidance)}`
@@ -1333,7 +1706,12 @@ export async function galleryRoutes(app: FastifyInstance) {
             anthropicExtendedCacheTtl: promptRuntime.anthropicExtendedCacheTtl,
           },
         );
-        imagePrompt = (promptResult.content ?? "").trim();
+        // A sentence of the guidance the writer copied word for word is not image-model text (#7357).
+        imagePrompt = removeCopiedPromptGuidance((promptResult.content ?? "").trim(), [
+          styleGuidance,
+          imageConn.imagePromptInstructions,
+          characterImageInstructions,
+        ]);
       } catch (err) {
         logger.warn(err, "[gallery/selfie] Failed to build selfie image prompt for chat %s", chatId);
         const message = err instanceof Error ? err.message : "Failed to build selfie prompt";
@@ -1458,29 +1836,22 @@ export async function galleryRoutes(app: FastifyInstance) {
     }
 
     try {
-      const imageConnectionQueueKey = imageConn.id?.trim() || `${imageServiceHint}:${imageBaseUrl}:${imageModel}`;
       const imageResults = await generateIllustratorImageVariants({
         count: meta.illustratorImagesPerGeneration,
         generate: () =>
-          runImageGenerationRequest({
-            connectionKey: imageConnectionQueueKey,
-            queue: input.queueImageGenerationRequests,
+          generateImage(imageSource, imageBaseUrl, imageConn.apiKey || "", imageServiceHint, {
+            prompt: providerPrompt,
+            negativePrompt: providerNegativePrompt || undefined,
+            model: imageModel,
+            width,
+            height,
+            imageEndpointId: imageConn.imageEndpointId || undefined,
+            comfyWorkflow: imageConn.comfyuiWorkflow || undefined,
+            imageDefaults,
+            quality: resolveConnectionImageQuality(imageConn),
+            referenceImages,
             signal: selfieAbortSignal,
-            task: () =>
-              generateImage(imageSource, imageBaseUrl, imageConn.apiKey || "", imageServiceHint, {
-                prompt: providerPrompt,
-                negativePrompt: providerNegativePrompt || undefined,
-                model: imageModel,
-                width,
-                height,
-                imageEndpointId: imageConn.imageEndpointId || undefined,
-                comfyWorkflow: imageConn.comfyuiWorkflow || undefined,
-                imageDefaults,
-                quality: resolveConnectionImageQuality(imageConn),
-                referenceImages,
-                signal: selfieAbortSignal,
-                fallback: imageFallback,
-              }),
+            fallback: imageFallback,
           }),
         onVariantError: (error, index) =>
           logger.warn(error, "[gallery/selfie] Variant %d failed for chat %s", index + 1, chatId),
@@ -1496,6 +1867,12 @@ export async function galleryRoutes(app: FastifyInstance) {
           model: imageModel || "unknown",
           width,
           height,
+          generation: buildChatImageGenerationRecord({
+            prompt: providerPrompt,
+            connectionId: imageConn.id,
+            negativePrompt: providerNegativePrompt,
+            referenceCharacterIds: referenceImages ? [character.id] : [],
+          }),
         });
         if (!image) throw new Error("Generated selfie metadata could not be saved");
         await persistGeneratedImageToEntityGalleries({
@@ -1617,34 +1994,25 @@ export async function galleryRoutes(app: FastifyInstance) {
     let savedFilePath: string | null = null;
     let metadataSaved = false;
     try {
-      const connectionKey =
-        context.imageConnection.id?.trim() ||
-        `${context.imageServiceHint}:${context.imageBaseUrl}:${context.imageModel}`;
-      const generated = await runImageGenerationRequest({
-        connectionKey,
-        queue: true,
-        signal,
-        task: () =>
-          generateImage(
-            context.imageSource,
-            context.imageBaseUrl,
-            context.imageConnection.apiKey || "",
-            context.imageServiceHint,
-            {
-              prompt: compiledPrompt.prompt,
-              negativePrompt: compiledPrompt.negativePrompt || undefined,
-              model: context.imageModel,
-              width: compiledPrompt.width,
-              height: compiledPrompt.height,
-              imageEndpointId: context.imageConnection.imageEndpointId || undefined,
-              comfyWorkflow: context.imageConnection.comfyuiWorkflow || undefined,
-              imageDefaults: context.imageDefaults,
-              quality: resolveConnectionImageQuality(context.imageConnection),
-              signal,
-              fallback: context.imageFallback,
-            },
-          ),
-      });
+      const generated = await generateImage(
+        context.imageSource,
+        context.imageBaseUrl,
+        context.imageConnection.apiKey || "",
+        context.imageServiceHint,
+        {
+          prompt: compiledPrompt.prompt,
+          negativePrompt: compiledPrompt.negativePrompt || undefined,
+          model: context.imageModel,
+          width: compiledPrompt.width,
+          height: compiledPrompt.height,
+          imageEndpointId: context.imageConnection.imageEndpointId || undefined,
+          comfyWorkflow: context.imageConnection.comfyuiWorkflow || undefined,
+          imageDefaults: context.imageDefaults,
+          quality: resolveConnectionImageQuality(context.imageConnection),
+          signal,
+          fallback: context.imageFallback,
+        },
+      );
       const filePath = saveImageToDisk(chatId, generated.base64, generated.ext);
       savedFilePath = filePath;
       const image = await storage.create({
@@ -1655,6 +2023,11 @@ export async function galleryRoutes(app: FastifyInstance) {
         model: context.imageModel || "unknown",
         width: compiledPrompt.width,
         height: compiledPrompt.height,
+        generation: buildChatImageGenerationRecord({
+          prompt: compiledPrompt.prompt,
+          connectionId: context.imageConnection.id,
+          negativePrompt: compiledPrompt.negativePrompt,
+        }),
       });
       if (!image) throw new Error("Generated Gallery image metadata could not be saved");
       metadataSaved = true;
@@ -1674,6 +2047,253 @@ export async function galleryRoutes(app: FastifyInstance) {
       });
     }
   });
+
+  // Regenerate an existing image from its final request, optionally edited (#7767). The new image
+  // replaces the old one wherever a message or storyboard frame shows it; the old one stays in the
+  // gallery.
+  app.post<{ Params: { chatId: string; imageId: string } }>(
+    "/:chatId/images/:imageId/regenerate",
+    async (req, reply) => {
+      const { chatId, imageId } = req.params;
+      if (!isValidChatId(chatId)) return reply.status(400).send({ error: "Invalid chatId" });
+
+      const input = regenerateGalleryImageSchema.parse(req.body);
+      const chat = await chats.getById(chatId);
+      if (!chat) return reply.status(404).send({ error: "Chat not found" });
+      const original = await storage.getById(imageId, chatId);
+      if (!original) return reply.status(404).send({ error: "Image not found" });
+      const record = parseChatImageGenerationRecord(original.generation);
+
+      // The connection that made the image, unless the user picked another; images from before
+      // records existed (or whose connection is gone) use the chat's current image connection.
+      const connectionsStore = createConnectionsStorage(app.db);
+      const preferredConnectionId = input.connectionId ?? record?.connectionId ?? null;
+      let imageConnection = preferredConnectionId ? await connectionsStore.getWithKey(preferredConnectionId) : null;
+      if (imageConnection && imageConnection.provider !== "image_generation") imageConnection = null;
+      if (input.connectionId && !imageConnection) {
+        return reply.status(400).send({ error: "That image connection no longer exists." });
+      }
+      const chatMeta = parseChatMetadata(chat.metadata);
+      // Conversation selfies use the chat's own image connection, not the Illustrator's.
+      const conversationConnectionId =
+        chat.mode === "conversation" ? readTrimmedString(chatMeta.imageGenConnectionId) : null;
+      if (!imageConnection && conversationConnectionId) {
+        const conversationConnection = await connectionsStore.getWithKey(conversationConnectionId);
+        if (conversationConnection?.provider === "image_generation") imageConnection = conversationConnection;
+      }
+      imageConnection ??= (await resolveGalleryImageConnection(app, chat.mode, chatMeta)).connection;
+      if (!imageConnection) {
+        return reply
+          .status(400)
+          .send({ error: "Choose an image connection for Illustrator or set a default Images connection first." });
+      }
+
+      const imageSettings = await loadImageGenerationUserSettings(app.db);
+      const imageDefaults = resolveConnectionImageDefaults(imageConnection);
+      const imageModel = imageConnection.model || "";
+      const imageBaseUrl = imageConnection.baseUrl || "https://image.pollinations.ai";
+      const imageSource = imageConnection.imageGenerationSource || imageModel;
+      const imageServiceHint = imageConnection.imageService || imageSource;
+      const imageFallback = await resolveImageConnectionFallback(connectionsStore, imageConnection.id);
+      const width = original.width ?? imageSettings.illustration.width;
+      const height = original.height ?? imageSettings.illustration.height;
+      const negativePrompt = (input.negativePrompt ?? record?.negativePrompt ?? "").trim();
+      const characterPrompts = input.characterPrompts ?? record?.characterPrompts ?? [];
+
+      const references = record?.references ?? {
+        characterIds: [],
+        personaId: null,
+        personaSource: null,
+        locationImageId: null,
+      };
+      const locationImage = references.locationImageId
+        ? await readSpatialLocationReferenceImageById({
+            db: app.db,
+            chatId,
+            referenceImageId: references.locationImageId,
+          })
+        : null;
+      const referenceImages = mergeSpatialLocationReferenceImages(
+        locationImage,
+        await readRecordedReferenceImages({
+          characterIds: references.characterIds,
+          personaId: references.personaId,
+          personaSource: references.personaSource,
+          charactersStore: characters,
+          characterGallery,
+          personaGallery,
+        }),
+        6,
+      );
+
+      const debugOverrideEnabled = input.debugMode || isDebugAgentsEnabled();
+      logDebugOverride(debugOverrideEnabled, "[debug/gallery/regenerate] final prompt:\n%s", input.prompt);
+      if (negativePrompt) {
+        logDebugOverride(debugOverrideEnabled, "[debug/gallery/regenerate] negative prompt:\n%s", negativePrompt);
+      }
+      if (characterPrompts.length > 0) {
+        logDebugOverride(
+          debugOverrideEnabled,
+          "[debug/gallery/regenerate] character prompts:\n%s",
+          debugJson(characterPrompts),
+        );
+      }
+
+      const signal = createResponseAbortSignal(reply, SCENE_VIDEO_GENERATION_TIMEOUT_MS, "Gallery image regeneration");
+      let savedFilePath: string | null = null;
+      let savedImageId: string | null = null;
+      // Swaps already applied, undone in reverse if a later step fails so a retry starts clean.
+      const undoSwaps: Array<() => Promise<unknown>> = [];
+      try {
+        const generated = await generateImage(
+          imageSource,
+          imageBaseUrl,
+          imageConnection.apiKey || "",
+          imageServiceHint,
+          {
+            prompt: input.prompt,
+            negativePrompt: negativePrompt || undefined,
+            model: imageModel,
+            width,
+            height,
+            imageEndpointId: imageConnection.imageEndpointId || undefined,
+            comfyWorkflow: imageConnection.comfyuiWorkflow || undefined,
+            imageDefaults,
+            quality: resolveConnectionImageQuality(imageConnection),
+            ...(referenceImages.length > 0 ? { referenceImages } : {}),
+            ...(characterPrompts.length > 0 ? { characterPrompts } : {}),
+            signal,
+            debugMode: input.debugMode,
+            fallback: imageFallback,
+          },
+        );
+        const filePath = saveImageToDisk(chatId, generated.base64, generated.ext, { shared: true });
+        savedFilePath = filePath;
+        const prompt = generated.effectivePrompt ?? input.prompt;
+        const provider = generated.effectiveConnection?.provider ?? imageConnection.provider ?? "image_generation";
+        const model = generated.effectiveConnection?.model || imageModel || "unknown";
+        const image = await storage.create({
+          chatId,
+          filePath,
+          prompt,
+          provider,
+          model,
+          width,
+          height,
+          generation: buildChatImageGenerationRecord({
+            prompt: input.prompt,
+            connectionId: imageConnection.id,
+            negativePrompt,
+            characterPrompts,
+            referenceCharacterIds: references.characterIds,
+            referencePersonaId: references.personaId,
+            referencePersonaSource: references.personaSource,
+            locationImageId: references.locationImageId,
+          }),
+        });
+        if (!image) throw new Error("Regenerated image metadata could not be saved");
+        savedImageId = image.id;
+
+        const url = buildGalleryImageUrl(image, chatId);
+        const attachmentPatch = { url, prompt, galleryId: image.id };
+        const restorePatch = {
+          url: buildGalleryImageUrl(original, chatId),
+          prompt: original.prompt,
+          galleryId: original.id,
+        };
+        // Every message showing the image is updated, in its active mirror or an inactive swipe;
+        // the message it was opened from (if any) goes first.
+        const mentionsImage = (row: { extra: unknown }) =>
+          (typeof row.extra === "string" ? row.extra : JSON.stringify(row.extra ?? {})).includes(original.id);
+        const messages = await chats.listMessages(chatId);
+        const swipes = await chats.listSwipesByMessageIds(messages.map((message) => message.id));
+        const openedFrom = messages.some((message) => message.id === input.messageId) ? [input.messageId!] : [];
+        const candidateMessageIds = Array.from(
+          new Set([
+            ...openedFrom,
+            ...messages.filter(mentionsImage).map((message) => message.id),
+            ...swipes.filter(mentionsImage).map((swipe) => swipe.messageId),
+          ]),
+        );
+        const replacedMessageIds: string[] = [];
+        for (const messageId of candidateMessageIds) {
+          if (await chats.replaceGalleryImageAttachment(messageId, original.id, attachmentPatch)) {
+            replacedMessageIds.push(messageId);
+            undoSwaps.push(() => chats.replaceGalleryImageAttachment(messageId, image.id, restorePatch));
+          }
+        }
+        const storyboards = createGameStoryboardsStorage(app.db);
+        const replacedKeyframeIds: string[] = [];
+        for (const keyframe of await storyboards.listKeyframesByChatImageId(chatId, original.id)) {
+          await storyboards.updateKeyframe(keyframe.id, { chatImageId: image.id });
+          replacedKeyframeIds.push(keyframe.id);
+          undoSwaps.push(() => storyboards.updateKeyframe(keyframe.id, { chatImageId: original.id }));
+        }
+        // Committed: nothing below may roll the swaps back.
+        undoSwaps.length = 0;
+        savedImageId = null;
+        savedFilePath = null;
+
+        await persistGeneratedImageToEntityGalleries({
+          enabled: imageSettings.autoSaveToGalleries,
+          sourceFilePath: filePath,
+          sourceChatImageId: image.id,
+          characterIds: references.characterIds,
+          personaIds: references.personaId ? [references.personaId] : [],
+          characterGallery,
+          personaGallery,
+          prompt,
+          provider,
+          model,
+          width,
+          height,
+        }).catch((galleryErr) =>
+          logger.warn(galleryErr, "[gallery/regenerate] Could not copy image %s to entity galleries", image.id),
+        );
+
+        logger.info(
+          "[gallery/regenerate] Regenerated image %s as %s for chat %s (messages=%d keyframes=%d)",
+          original.id,
+          image.id,
+          chatId,
+          replacedMessageIds.length,
+          replacedKeyframeIds.length,
+        );
+        return { image: { ...image, url }, replacedMessageIds, replacedKeyframeIds };
+      } catch (err) {
+        let allUndone = true;
+        for (const undo of undoSwaps.reverse()) {
+          await undo().catch((undoErr) => {
+            allUndone = false;
+            logger.warn(undoErr, "[gallery/regenerate] Could not restore a reference to image %s", original.id);
+          });
+        }
+        // A reference that could not be restored still points at the new image, so keep it.
+        if (!allUndone) {
+          savedImageId = null;
+          savedFilePath = null;
+        }
+        if (savedImageId) {
+          await storage
+            .remove(savedImageId, chatId)
+            .catch((cleanupErr) =>
+              logger.warn(cleanupErr, "[gallery/regenerate] Failed to remove unused image row %s", savedImageId),
+            );
+        }
+        if (savedFilePath) {
+          try {
+            removeSavedImageFromDisk(savedFilePath);
+          } catch (cleanupErr) {
+            logger.warn(cleanupErr, "[gallery/regenerate] Failed to clean up orphaned image file %s", savedFilePath);
+          }
+        }
+        logger.warn(err, "[gallery/regenerate] Image regeneration failed for chat %s", chatId);
+        return reply.status(502).send({
+          error: err instanceof Error ? err.message : "Image regeneration failed",
+        });
+      }
+    },
+  );
 
   // List all images for a chat
   app.get<{ Params: { chatId: string } }>("/:chatId", async (req) => {

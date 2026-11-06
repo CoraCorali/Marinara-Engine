@@ -13,7 +13,11 @@ import type { Message } from "@marinara-engine/shared";
 import { useTranslation as useUiTranslation } from "react-i18next";
 // Fork: Scene Spark marks which kind of choice each one is.
 import { parseChoiceLabel } from "../../lib/fork/choice-kind";
-import { buildCyoaChoiceSubmissionPayload } from "./cyoa-choice-submission";
+import {
+  appendCyoaChoiceToDraft,
+  buildCyoaChoiceSubmissionPayload,
+  resolveCyoaChoiceAction,
+} from "./cyoa-choice-submission";
 
 type CyoaChoice = {
   label: string;
@@ -50,6 +54,7 @@ export function CyoaChoices({ messages }: Props) {
   );
   const impersonateCyoaChoices = useUIStore((s) => s.impersonateCyoaChoices);
   const setImpersonateCyoaChoices = useUIStore((s) => s.setImpersonateCyoaChoices);
+  const addCyoaChoicesToMessage = useUIStore((s) => s.addCyoaChoicesToMessage);
   const updateMessageExtra = useUpdateMessageExtra(activeChatId);
   const [isEditing, setIsEditing] = useState(false);
   const [isRerolling, setIsRerolling] = useState(false);
@@ -153,9 +158,37 @@ export function CyoaChoices({ messages }: Props) {
     setChoicesForActiveChat,
   ]);
 
+  const handleAddToMessage = useCallback(
+    (text: string) => {
+      if (!activeChatId) return;
+      const state = useChatStore.getState();
+      const composer = document.querySelector<HTMLTextAreaElement>("textarea[data-chat-composer]");
+      if (composer?.dataset.chatId !== activeChatId) {
+        state.setInputDraft(activeChatId, appendCyoaChoiceToDraft(state.inputDrafts.get(activeChatId) ?? "", text));
+        return;
+      }
+      composer.value = appendCyoaChoiceToDraft(composer.value, text);
+      // Same as ChatArea's guidance draft update: reuse the composer's own input handling.
+      composer.dispatchEvent(new Event("input", { bubbles: true }));
+      state.setInputDraft(activeChatId, composer.value);
+      composer.focus();
+      composer.setSelectionRange(composer.value.length, composer.value.length);
+    },
+    [activeChatId],
+  );
+
   const handleChoice = useCallback(
     async (text: string) => {
       if (!activeChatId || isStreaming || isEditing) return;
+      const action = resolveCyoaChoiceAction({
+        addToMessage: addCyoaChoicesToMessage,
+        impersonate: impersonateCyoaChoices,
+      });
+      // Adding keeps the choices on screen so several can be combined into one message.
+      if (action === "add") {
+        handleAddToMessage(text);
+        return;
+      }
       if (persistedChoiceState?.messageId) {
         await updateMessageExtra.mutateAsync({
           messageId: persistedChoiceState.messageId,
@@ -165,9 +198,8 @@ export function CyoaChoices({ messages }: Props) {
       clearChoicesForActiveChat();
       const queuedSpatialTransition =
         pendingSpatialTransition?.status === "ready" ? pendingSpatialTransition.transition : null;
-      if (impersonateCyoaChoices) {
-        const { impersonatePresetId, impersonateConnectionId, impersonateBlockAgents, impersonatePromptTemplate } =
-          useUIStore.getState();
+      if (action === "impersonate") {
+        const { impersonatePresetId, impersonateBlockAgents, impersonatePromptTemplate } = useUIStore.getState();
         const impersonated = await generate(
           buildCyoaChoiceSubmissionPayload({
             chatId: activeChatId,
@@ -175,7 +207,6 @@ export function CyoaChoices({ messages }: Props) {
             pendingSpatialTransition: queuedSpatialTransition,
             impersonation: {
               presetId: impersonatePresetId,
-              connectionId: impersonateConnectionId,
               blockAgents: impersonateBlockAgents,
               promptTemplate: impersonatePromptTemplate,
             },
@@ -200,6 +231,8 @@ export function CyoaChoices({ messages }: Props) {
       isStreaming,
       isEditing,
       pendingSpatialTransition,
+      addCyoaChoicesToMessage,
+      handleAddToMessage,
       impersonateCyoaChoices,
       persistedChoiceState?.messageId,
       clearChoicesForActiveChat,
@@ -268,27 +301,30 @@ export function CyoaChoices({ messages }: Props) {
           <Sparkles size="0.8125rem" />
           <span>{localizeUi("ui.chat.cyoachoices.whatWillYouDo")}</span>
         </div>
-        <button
-          type="button"
-          aria-pressed={impersonateCyoaChoices}
-          onClick={() => setImpersonateCyoaChoices(!impersonateCyoaChoices)}
-          disabled={controlsBusy}
-          className={cn(
-            "inline-flex min-h-9 items-center rounded-lg border px-2.5 text-[0.6875rem] font-semibold transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)] active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-40",
-            impersonateCyoaChoices
-              ? "mari-chrome-accent-surface mari-accent-animated border-[var(--marinara-chat-chrome-button-border-active)]"
-              : "border-[var(--border)] bg-[var(--muted)]/20 text-[var(--foreground)]/60 hover:bg-[var(--muted)]/40 hover:text-[var(--foreground)] dark:border-white/10 dark:bg-black/35 dark:text-white/50 dark:hover:bg-white/10 dark:hover:text-white/80",
-          )}
-          title={localizeUi(
-            impersonateCyoaChoices
-              ? "ui.chat.cyoachoices.switchToSendingChoicesNormally"
-              : "ui.chat.cyoachoices.switchToImpersonatingChoices",
-          )}
-        >
-          {localizeUi(
-            impersonateCyoaChoices ? "settings.quickReplies.impersonate.label" : "ui.chat.cyoachoices.sendNormally",
-          )}
-        </button>
+        {/* The send/impersonate switch does nothing while choices go to the message box. */}
+        {!addCyoaChoicesToMessage && (
+          <button
+            type="button"
+            aria-pressed={impersonateCyoaChoices}
+            onClick={() => setImpersonateCyoaChoices(!impersonateCyoaChoices)}
+            disabled={controlsBusy}
+            className={cn(
+              "inline-flex min-h-9 items-center rounded-lg border px-2.5 text-[0.6875rem] font-semibold transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--primary)] active:scale-[0.97] disabled:cursor-not-allowed disabled:opacity-40",
+              impersonateCyoaChoices
+                ? "mari-chrome-accent-surface mari-accent-animated border-[var(--marinara-chat-chrome-button-border-active)]"
+                : "border-[var(--border)] bg-[var(--muted)]/20 text-[var(--foreground)]/60 hover:bg-[var(--muted)]/40 hover:text-[var(--foreground)] dark:border-white/10 dark:bg-black/35 dark:text-white/50 dark:hover:bg-white/10 dark:hover:text-white/80",
+            )}
+            title={localizeUi(
+              impersonateCyoaChoices
+                ? "ui.chat.cyoachoices.switchToSendingChoicesNormally"
+                : "ui.chat.cyoachoices.switchToImpersonatingChoices",
+            )}
+          >
+            {localizeUi(
+              impersonateCyoaChoices ? "settings.quickReplies.impersonate.label" : "ui.chat.cyoachoices.sendNormally",
+            )}
+          </button>
+        )}
         <button
           type="button"
           onClick={isEditing ? handleCancelEdit : handleStartEdit}

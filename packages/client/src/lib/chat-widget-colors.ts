@@ -1,5 +1,5 @@
 import type { CSSProperties } from "react";
-import { getCssGradientColorStops, isCssGradient } from "./css-colors";
+import { getCssGradientColorStops, isCssGradient, withCssPaintAlpha } from "./css-colors";
 
 export interface ChatWidgetColors {
   border?: string;
@@ -13,6 +13,7 @@ export const CHAT_WIDGET_COLOR_PROPERTIES = [
   "--mari-widget-custom-background",
   "--mari-widget-custom-background-solid",
   "--mari-widget-custom-background-image",
+  "--mari-widget-custom-roleplay-background",
   "--mari-widget-custom-text",
   "--mari-widget-custom-text-solid",
   "--mari-widget-custom-text-image",
@@ -20,6 +21,22 @@ export const CHAT_WIDGET_COLOR_PROPERTIES = [
   "--mari-widget-custom-border-content",
   "--mari-widget-custom-isolation",
 ] as const;
+
+/** Marks a character's or persona's own name or dialogue color so Apply preset colors keeps it
+ *  (chat-widget-surfaces.css). Fallback colors leave it off and follow the preset text. */
+export const CHARACTER_COLOR_CLASS = "mari-character-color";
+/** Marks dialogue the Engine colors with the fallback inside rich HTML messages, so it still
+ *  follows the preset text there while the message's own colors are kept (#7296). */
+export const FALLBACK_DIALOGUE_CLASS = "mari-fallback-dialogue";
+/** A Game section the player sees (the logs, the Inventory, a combat panel…): a chat-style
+ *  surface whose white, black, amber and pale color tints follow the chat style (chat-widget-surfaces.css).
+ *  Each also carries data-game-section="<name>" for custom themes. Never nest one directly
+ *  inside another. Game content inside a window takes GAME_WINDOW_CONTENT_CLASS instead. */
+export const GAME_SECTION_CLASS = "mari-chat-style-surface mari-game-section";
+/** Game content inside a shared window (the Journal): its tints follow the window's style. */
+export const GAME_WINDOW_CONTENT_CLASS = "mari-game-section";
+/** A Game dialog's Modal panel: Roleplay's chat dialog classes plus the Game tint remap. */
+export const GAME_DIALOG_CLASS = "mari-chat-style-surface mari-chat-action-panel mari-game-section";
 
 type WidgetColorStyle = CSSProperties & Partial<Record<(typeof CHAT_WIDGET_COLOR_PROPERTIES)[number], string>>;
 
@@ -51,6 +68,7 @@ export function getChatWidgetColorStyle(colors: ChatWidgetColors = {}): WidgetCo
   }
   if (background) {
     style["--mari-widget-custom-background"] = background;
+    style["--mari-widget-custom-roleplay-background"] = withCssPaintAlpha(background, "var(--mari-rp-bubble-opacity)");
     style["--mari-widget-custom-background-solid"] = solidFallback(background, "transparent");
     style["--mari-widget-custom-background-image"] = isCssGradient(background)
       ? background

@@ -7,6 +7,8 @@ import { motion, AnimatePresence } from "framer-motion";
 import { Minimize2 } from "lucide-react";
 import { cn } from "../../lib/utils";
 import { handleTextareaTab } from "../../lib/textarea-editing";
+import { isBrowserExtensionUi } from "../../lib/chat-floating-ui-events";
+import { useKeepFocusedFieldAboveKeyboard } from "../../hooks/use-keep-focused-field-above-keyboard";
 import {
   NEUTRAL_PANEL_HEADER,
   NEUTRAL_PANEL_SCROLL_AREA,
@@ -44,12 +46,15 @@ export function ExpandedTextarea({
 }: ExpandedTextareaProps) {
   const { t: localizeUi } = useUiTranslation();
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
   const isChatSurface = surface === "chat";
+  useKeepFocusedFieldAboveKeyboard(panelRef);
 
   useEffect(() => {
     if (!open) return;
     const handler = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      // Escape in a browser extension's card (Grammarly's) closes that card, not this editor.
+      if (e.key === "Escape" && !isBrowserExtensionUi(e.target)) onClose();
     };
     document.addEventListener("keydown", handler);
     return () => document.removeEventListener("keydown", handler);
@@ -66,6 +71,7 @@ export function ExpandedTextarea({
     <AnimatePresence>
       {open && (
         <motion.div
+          ref={panelRef}
           // This overlay portals to <body> and sits above any chat drawer that
           // opened it. Mark it as a chat floating panel so the drawer's
           // outside-pointerdown close handler treats clicks inside the editor as
@@ -73,9 +79,14 @@ export function ExpandedTextarea({
           // closes the drawer, unmounting the editor before its edit can commit.
           data-chat-floating-panel="true"
           data-component="ExpandedTextarea"
-          style={overlayStyle}
+          style={{
+            top: "var(--mari-visual-viewport-offset-top, 0px)",
+            bottom: "auto",
+            height: "var(--mari-visual-viewport-height, 100dvh)",
+            ...overlayStyle,
+          }}
           className={cn(
-            "fixed inset-0 z-[100] flex flex-col bg-[var(--sidebar)] max-md:pt-[env(safe-area-inset-top)]",
+            "fixed inset-0 z-[100] flex flex-col overflow-y-auto bg-[var(--sidebar)] pr-(--mari-safe-area-inset-right) pl-(--mari-safe-area-inset-left) max-md:pt-[env(safe-area-inset-top)]",
             isChatSurface && `text-[var(--marinara-chat-chrome-panel-text)] ${NEUTRAL_SURFACE_VARIABLES}`,
           )}
           initial={{ opacity: 0 }}
@@ -113,7 +124,9 @@ export function ExpandedTextarea({
           </div>
 
           {/* Textarea */}
-          <div className={cn("flex-1 overflow-hidden p-4 md:p-6", isChatSurface && NEUTRAL_PANEL_SCROLL_AREA)}>
+          {/* Keep a readable editing area when the keyboard leaves less room than the header and footer need.
+              The overlay scrolls to the field and still lets the user reach both sets of controls. */}
+          <div className={cn("min-h-32 flex-1 p-4 md:p-6", isChatSurface && NEUTRAL_PANEL_SCROLL_AREA)}>
             <textarea
               ref={textareaRef}
               aria-label={title}

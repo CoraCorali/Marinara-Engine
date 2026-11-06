@@ -5,9 +5,10 @@ import { useMessagePresetVariables } from "../../hooks/use-message-preset-variab
 // Resolves character/persona identity, builds render context,
 // and delegates to the appropriate layout component.
 // ──────────────────────────────────────────────
-import { useState, useCallback, useRef, useEffect, memo, useMemo, type CSSProperties } from "react";
+import { useState, useCallback, useRef, useEffect, memo, useMemo, type CSSProperties, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { Phone, PhoneIncoming, PhoneOff, Trash2 } from "lucide-react";
+import { ChatImageLightbox } from "./ChatImageLightbox";
+import { AlertTriangle, Phone, PhoneIncoming, PhoneOff, Trash2 } from "lucide-react";
 import { useQueryClient, type InfiniteData } from "@tanstack/react-query";
 import {
   formatTextQuotes,
@@ -21,6 +22,7 @@ import { useUIStore, type ConversationMessageStyle } from "../../stores/ui.store
 import { cn, copyToClipboard, getAvatarCropStyle } from "../../lib/utils";
 import { normalizeAvatarCrop } from "@marinara-engine/shared";
 import { resolveMessageMacros } from "../../lib/chat-macros";
+import { readChatVariables } from "../../lib/state-editor/chat-variables-editor-source";
 import { useTranslate } from "../../hooks/use-translate";
 import { useApplyRegex } from "../../hooks/use-apply-regex";
 import { api } from "../../lib/api-client";
@@ -29,15 +31,19 @@ import { useChatGalleryFilenameIndex } from "../../hooks/use-characters";
 import type { CharacterMap, MessageSelectionToggle, PersonaInfo } from "./chat-area.types";
 import { MESSAGE_SELECTION_SURFACE_CLASS } from "./message-selection-styles";
 import { GenerationReplayDetailsModal, hasGenerationReplayDetails } from "./GenerationReplayDetailsModal";
+import { GenerationFallbackMarker } from "./GenerationFallbackMarker";
 import {
   HiddenFromAIConversationButton,
   ConversationMessageLightbox,
+  ConversationMessageEditForm,
   ConversationMessageSwipes,
   type MessageData,
   type MessageRenderContext,
 } from "./ConversationMessageShared";
 import { MessageReplyPreview } from "./MessageReplyPreview";
 import { ConversationMessageActions } from "./ConversationMessageActions";
+import { SystemMessage } from "./SystemMessage";
+import { RoleplayMessagePreview } from "./ChatMessage";
 import { MessageMarkIndicators } from "./MessageMarks";
 import { ConversationMessageGrouped } from "./ConversationMessageGrouped";
 import { ConversationMessageBubble } from "./ConversationMessageBubble";
@@ -101,6 +107,12 @@ interface ConversationMessageProps {
   onDelete?: (messageId: string) => void;
   onRegenerate?: (messageId: string) => void;
   onEdit?: (messageId: string, content: string) => void;
+  /** N1: this message's reply failed — renders the quiet "Failed · Retry" line. */
+  failedReply?: boolean;
+  failedReplyReason?: string;
+  onRetryFailedReply?: () => void;
+  /** R2: the reply checkup's quiet line, set only on the reply it describes. */
+  replyCheckup?: ReactNode;
   onSetActiveSwipe?: (messageId: string, index: number) => void;
   onToggleHiddenFromAI?: (messageId: string, current: boolean) => void;
   onPeekPrompt?: () => void;
@@ -143,6 +155,10 @@ export const ConversationMessage = memo(function ConversationMessage({
   onDelete,
   onRegenerate,
   onEdit,
+  failedReply,
+  failedReplyReason,
+  onRetryFailedReply,
+  replyCheckup,
   onSetActiveSwipe,
   onToggleHiddenFromAI,
   onPeekPrompt,
@@ -172,7 +188,11 @@ export const ConversationMessage = memo(function ConversationMessage({
   const [showThinking, setShowThinking] = useState(false);
   const [showGenerationReplay, setShowGenerationReplay] = useState(false);
   const [manuallyExpandedHidden, setManuallyExpandedHidden] = useState(false);
-  const [imageLightbox, setImageLightbox] = useState<{ url: string; prompt?: string | null } | null>(null);
+  const [imageLightbox, setImageLightbox] = useState<{
+    url: string;
+    prompt?: string | null;
+    galleryId?: string | null;
+  } | null>(null);
   const editRef = useRef<HTMLTextAreaElement>(null);
   const msgRef = useRef<HTMLDivElement>(null);
   const thinkingButtonRef = useRef<HTMLButtonElement>(null);
@@ -189,6 +209,7 @@ export const ConversationMessage = memo(function ConversationMessage({
   const activeChatMetadata = useChatStore((s) => s.activeChat?.metadata);
   const presetVariables = useMessagePresetVariables(`${message.id}:${message.activeSwipeIndex ?? 0}`);
   const scopedRegexMode = useMemo(() => parseChatMetadata(activeChatMetadata).scopedRegexMode, [activeChatMetadata]);
+  const chatVariables = useMemo(() => readChatVariables(activeChatMetadata), [activeChatMetadata]);
   const { applyToAIOutput } = useApplyRegex();
 
   // ── Translation ──
@@ -342,6 +363,7 @@ export const ConversationMessage = memo(function ConversationMessage({
   const macroContext = useMemo(
     () => ({
       variables: presetVariables,
+      chatVariables,
       userName: macroUserName,
       persona: {
         name: macroUserName,
@@ -353,12 +375,15 @@ export const ConversationMessage = memo(function ConversationMessage({
       },
       primaryCharacter: primaryCharInfo ?? { name: displayName },
       characters: scopedCharacterMap
-        ? Array.from(scopedCharacterMap.values())
+        ? Array.from(scopedCharacterMap, ([id, character]) => ({ ...character, id }))
         : displayName
           ? [{ name: displayName }]
           : [],
+      inactiveCharacterIds: parseChatMetadata(activeChatMetadata).inactiveCharacterIds,
     }),
     [
+      activeChatMetadata,
+      chatVariables,
       displayName,
       macroUserName,
       presetVariables,
@@ -935,7 +960,7 @@ export const ConversationMessage = memo(function ConversationMessage({
     onCopy: handleCopy,
     onTranslate: handleTranslate,
     onStartEdit: handleStartEdit,
-    onImageOpen: (url, prompt) => setImageLightbox({ url, prompt }),
+    onImageOpen: (url, prompt, galleryId) => setImageLightbox({ url, prompt, galleryId }),
     onRemoveAttachment: handleRemoveAttachment,
     onSetActiveSwipe: handleSetActiveSwipe,
     onRegenerate,
@@ -994,7 +1019,28 @@ export const ConversationMessage = memo(function ConversationMessage({
           onClose={() => setShowGenerationReplay(false)}
         />
       )}
+      {imageLightbox?.galleryId ? (
+        // Generated images saved to the chat gallery get the shared lightbox, which can regenerate them (#7767).
+        <ChatImageLightbox
+          image={{
+            id: imageLightbox.galleryId,
+            chatId: message.chatId,
+            filePath: "",
+            prompt: imageLightbox.prompt ?? "",
+            provider: "",
+            model: "",
+            width: null,
+            height: null,
+            createdAt: message.createdAt,
+            url: imageLightbox.url,
+          }}
+          pinEnabled={false}
+          regenerate={{ messageId: message.id }}
+          onClose={() => setImageLightbox(null)}
+        />
+      ) : null}
       {imageLightbox &&
+        !imageLightbox.galleryId &&
         createPortal(
           <ConversationMessageLightbox
             url={imageLightbox.url}
@@ -1075,35 +1121,42 @@ export const ConversationMessage = memo(function ConversationMessage({
     }
 
     return (
-      <div
-        ref={msgRef}
-        className={cn(
-          "group flex justify-center py-1",
-          multiSelectMode && isSelected && cn("rounded-lg", MESSAGE_SELECTION_SURFACE_CLASS),
-        )}
-        onClick={handleMobileTap}
-      >
-        <div className="relative">
-          {!multiSelectMode && onDelete && (
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                onDelete(message.id);
-              }}
-              className={cn(
-                "absolute -right-1 -top-1 rounded-md p-1 text-[var(--muted-foreground)]/30 opacity-0 transition-all hover:bg-[var(--accent)] hover:text-[var(--foreground)] group-hover:opacity-100",
-                showActions && "opacity-100",
-              )}
-              title={localizeUi("lorebook.editor.batch.delete")}
-            >
-              <Trash2 size="0.75rem" />
-            </button>
+      <>
+        <SystemMessage
+          message={message}
+          messageRef={msgRef}
+          editing={editing}
+          copied={copied}
+          showActions={showActions || !!forceShowActions}
+          multiSelectMode={multiSelectMode}
+          isSelected={isSelected}
+          hiddenFromAI={isHiddenFromAI}
+          fontSize={chatFontSize}
+          onClick={handleMobileTap}
+          onCopy={handleCopy}
+          onEdit={onEdit ? handleStartEdit : undefined}
+          onBranch={onBranch ? () => onBranch(message.id) : undefined}
+          onToggleHiddenFromAI={
+            onToggleHiddenFromAI ? () => onToggleHiddenFromAI(message.id, isHiddenFromAI) : undefined
+          }
+          onDelete={onDelete ? () => onDelete(message.id) : undefined}
+        >
+          {editing ? (
+            <ConversationMessageEditForm
+              editRef={editRef}
+              editValue={editValue}
+              onValueChange={setEditValue}
+              onSave={handleSaveEdit}
+              onCancel={handleCancelEdit}
+              messageTextStyle={messageTextStyle}
+              quoteFormat={quoteFormat}
+            />
+          ) : (
+            <RoleplayMessagePreview content={displayedContent} />
           )}
-          <span className="rounded-full bg-[var(--secondary)] px-3 py-1 text-[0.6875rem] text-[var(--marinara-chat-chrome-panel-muted)]">
-            {message.content}
-          </span>
-        </div>
-      </div>
+        </SystemMessage>
+        {modals}
+      </>
     );
   }
 
@@ -1112,11 +1165,16 @@ export const ConversationMessage = memo(function ConversationMessage({
       <ConversationSceneInvitation chatId={message.chatId} request={extra.sceneRequest} />
     ) : null;
 
+  // Conversation replies show no model label, so the marker gets its own line under the reply (#7697).
+  const fallback = isUser ? null : extra.generationInfo?.fallback;
+
   // ── Grouped multi-speaker layout ──
   if (groupedLayoutActive) {
     return (
       <>
         <ConversationMessageGrouped ctx={ctx} msgRef={msgRef} reactionRow={reactionRow} />
+        <GenerationFallbackMarker fallback={fallback} className="flex w-fit px-4" />
+        {replyCheckup && <div className="px-4">{replyCheckup}</div>}
         {sceneInvitation}
         {modals}
       </>
@@ -1165,6 +1223,24 @@ export const ConversationMessage = memo(function ConversationMessage({
         </div>
         <div className="px-4">
           <MessageMarkIndicators message={message} className="px-1" />
+          <GenerationFallbackMarker fallback={fallback} className="flex w-fit px-1" />
+          {!isUser && replyCheckup && <div className="px-1">{replyCheckup}</div>}
+          {isUser && failedReply && (
+            <p className="mari-send-failed" role="alert" title={failedReplyReason}>
+              <AlertTriangle size="0.8rem" aria-hidden="true" />
+              <button
+                type="button"
+                className="mari-send-failed__text bg-transparent p-0 text-start"
+                onClick={() => failedReplyReason && toast(failedReplyReason)}
+              >
+                {localizeUi("ui.chat.conversationmessage.failedReply")}
+              </button>
+              <span aria-hidden="true">·</span>
+              <button type="button" onClick={onRetryFailedReply} className="mari-link">
+                {localizeUi("ui.chat.conversationmessage.retryFailedReply")}
+              </button>
+            </p>
+          )}
           {reactionRow}
           {(!hideActions || (hasReasoning && !isUser)) && (
             <ConversationMessageActions

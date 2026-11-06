@@ -4,21 +4,24 @@
 import type { FastifyInstance } from "fastify";
 import type { DB } from "../db/connection.js";
 import { z } from "zod";
-import { createHash, randomUUID } from "crypto";
-import { addAbortListener } from "node:events";
-import { access, mkdir, readdir, rename, unlink, writeFile } from "fs/promises";
-import { join } from "path";
 import {
   ttsConfigSchema,
   ttsSourceProfileFromConfig,
+  ttsConnectionProfileFromConfig,
   ttsVoiceAssignmentInputSchema,
   ttsVoiceModeInputSchema,
   setCharacterVoiceAssignment,
   TTS_VOICE_MAX_LENGTH,
   normalizeMusicEnemyTier,
+  resolveTtsRequestTimeoutMs,
   TTS_SETTINGS_KEY,
   TTS_API_KEY_MASK,
+  ELEVENLABS_AUDIO_TAG_FOR_GAME_EMOTION,
+  elevenLabsModelSupportsAudioTags,
+  elevenLabsModelSupportsSpeed,
+  normalizeElevenLabsTtsModelId,
   ttsRoleplaySpeakerExtractorResponseSchema,
+  type GameTtsEmotion,
   type TTSSource,
   type TTSConfig,
   type TTSRoleplaySpeakerExtractorResponse,
@@ -27,16 +30,25 @@ import {
   type TTSVoicesResponse,
 } from "@marinara-engine/shared";
 import { createAppSettingsStorage } from "../services/storage/app-settings.storage.js";
+import { TTS_EMOTION_CUE_GUIDANCE } from "../services/tts-emotion-guidance.js";
 import { createConnectionsStorage } from "../services/storage/connections.storage.js";
 import { encryptApiKey, decryptApiKey } from "../utils/crypto.js";
 import { getChatGenerationTimeoutMs, isTtsLocalUrlsEnabled } from "../config/runtime-config.js";
 import { safeFetch } from "../utils/security.js";
+import { detectTTSAudioMimeType, resolveTTSAudioResponseContentType } from "../services/audio/audio-content-type.js";
+export {
+  isAllowedTTSAudioContentType,
+  detectTTSAudioMimeType,
+  resolveTTSAudioResponseContentType,
+} from "../services/audio/audio-content-type.js";
 import { logger, logDebugOverride } from "../lib/logger.js";
-import { buildAssetManifest, GAME_ASSETS_DIR } from "../services/game/asset-manifest.service.js";
+import { isRefusedFetch } from "../services/decision/system-one.client.js";
 import { createLLMProvider } from "../services/llm/provider-registry.js";
 import { resolveBaseUrl } from "../services/generation/connection-base-url.js";
 import { resolveStoredChatOptions, resolveStoredMaxTokens } from "../services/generation/generation-parameters.js";
 import { clampGenerationMaxOutputTokens } from "../services/generation/output-token-limits.js";
+
+import { AudioGenerationConfigurationError, generateAudioAsset } from "../services/audio/generative-audio.service.js";
 
 // OpenAI built-in voices used as fallback when the provider has no /audio/voices endpoint
 const OPENAI_FALLBACK_VOICES = ["alloy", "ash", "coral", "echo", "fable", "nova", "onyx", "sage", "shimmer"];
@@ -53,6 +65,7 @@ const ELEVENLABS_DEFAULT_VOICES: VoiceOption[] = [
   { id: "yoZ06aMxZJJ28mfd3POQ", name: "Sam", category: "ElevenLabs default" },
 ];
 const ELEVENLABS_FALLBACK_MODELS = [
+  "eleven_v4",
   "eleven_v3",
   "eleven_multilingual_v2",
   "eleven_flash_v2_5",
@@ -81,11 +94,6 @@ const TTS_SOURCE_DEFAULTS: Record<TTSSource, { baseUrl: string; model: string }>
 const TTS_SOURCES: readonly TTSSource[] = ["openai", "elevenlabs", "pockettts", "xai"];
 
 const ELEVENLABS_NON_TTS_MODELS = new Set(["eleven_ttv_v3", "eleven_multilingual_ttv_v2"]);
-const ELEVENLABS_TTS_MODEL_ALIASES: Record<string, string> = {
-  tts_v3: "eleven_v3",
-  elevenlabs_v3: "eleven_v3",
-  elevenlabs_tts_v3: "eleven_v3",
-};
 const NANOGPT_TTS_MODEL_ALIASES: Record<string, string> = {
   eleven_v3: "Elevenlabs-V3",
   "elevenlabs-v3": "Elevenlabs-V3",
@@ -143,9 +151,6 @@ const NANOGPT_ELEVENLABS_VOICES = [
   "Will",
 ];
 const MAX_TTS_AUDIO_BYTES = 20 * 1024 * 1024;
-const MAX_GAME_AUDIO_BYTES = 60 * 1024 * 1024;
-const gameAudioGenerationLocks = new Map<string, Promise<{ tag: string; path: string; cached: boolean }>>();
-let gameAssetManifestRebuildTimer: ReturnType<typeof setTimeout> | null = null;
 
 const speakSchema = z.object({
   text: z.string().min(1).max(4096),
@@ -180,6 +185,7 @@ const extractedDialogueSchema = z.object({
 const gameAudioSchema = z.object({
   kind: z.enum(["sfx", "music"]),
   prompt: z.string().trim().min(1).max(4_100),
+  debugMode: z.boolean().default(false),
   /** Optional audio-connection override (#5146); absent = default/legacy resolution. */
   audioConnectionId: z.string().optional(),
   /** Context-track request (#5161): a persistent composition generated ONCE
@@ -200,127 +206,10 @@ const gameAudioSchema = z.object({
     .optional(),
 });
 
-const AUDIO_FILE_PATTERN = /\.(mp3|wav|ogg|m4a|flac)$/i;
-
 type VoiceOption = NonNullable<TTSVoicesResponse["voiceOptions"]>[number];
 type ModelOption = TTSModelsResponse["models"][number];
 
-function normalizeGameAudioPrompt(prompt: string): string {
-  return prompt.trim().replace(/\s+/g, " ");
-}
-
-function scheduleGameAssetManifestRebuild(): void {
-  if (gameAssetManifestRebuildTimer) clearTimeout(gameAssetManifestRebuildTimer);
-  gameAssetManifestRebuildTimer = setTimeout(() => {
-    gameAssetManifestRebuildTimer = null;
-    try {
-      buildAssetManifest();
-    } catch (error) {
-      logger.error(error, "Failed to rebuild the game asset manifest after generating audio");
-    }
-  }, 500);
-  gameAssetManifestRebuildTimer.unref();
-}
-
-type GameAudioContext = { axis: "area" | "tier"; key: string; lengthMs?: number };
-
-async function generateElevenLabsGameAudio(
-  cfg: TTSConfig,
-  kind: "sfx" | "music",
-  prompt: string,
-  context?: GameAudioContext,
-): Promise<{ tag: string; path: string; cached: boolean }> {
-  const normalizedPrompt = normalizeGameAudioPrompt(prompt);
-  const hash = createHash("sha256").update(`${kind}\0${normalizedPrompt.toLowerCase()}`).digest("hex");
-  let category: string;
-  let fileName: string;
-  let tag: string;
-  if (context) {
-    // Context tracks (#5161) land in the scoreable library keyed by area/tier
-    // and generate ONCE per key: ANY existing audio file under the key —
-    // generated earlier or dropped in by the user as a replacement — means
-    // the key is covered, regardless of how today's prompt is worded.
-    category = `music/${context.axis}/${context.key}`;
-    const existing = (await readdir(join(GAME_ASSETS_DIR, "music", context.axis, context.key)).catch(() => [])).filter(
-      // Dotfiles never enter the manifest; counting one as coverage would
-      // permanently block generation for the key.
-      (name) => !name.startsWith(".") && AUDIO_FILE_PATTERN.test(name),
-    );
-    const coveredBy = existing[0];
-    if (coveredBy) {
-      return {
-        tag: `music:${context.axis}:${context.key}:${coveredBy.replace(/\.[^.]+$/, "")}`,
-        path: `${category}/${coveredBy}`,
-        cached: true,
-      };
-    }
-    fileName = `generated-${hash.slice(0, 16)}.mp3`;
-    tag = `music:${context.axis}:${context.key}:${fileName.replace(/\.mp3$/, "")}`;
-  } else {
-    category = kind === "sfx" ? "sfx" : "music";
-    fileName = `${hash}.mp3`;
-    tag = `${category}:generated:${hash}`;
-    category = `${category}/generated`;
-  }
-  const relativePath = `${category}/${fileName}`;
-  const targetDirectory = join(GAME_ASSETS_DIR, category);
-  const targetPath = join(GAME_ASSETS_DIR, relativePath);
-
-  try {
-    await access(targetPath);
-    return { tag, path: relativePath, cached: true };
-  } catch {
-    // Generate below.
-  }
-
-  const endpoint = kind === "sfx" ? "/v1/sound-generation" : "/v1/music";
-  // Longer compositions take the provider longer to render; give context
-  // tracks the headroom a 2-minute piece needs.
-  const timeoutMs = context ? 300_000 : 180_000;
-  const response = await safeFetch(`${elevenLabsApiRoot(configuredBaseUrl(cfg))}${endpoint}`, {
-    method: "POST",
-    headers: elevenLabsHeaders(cfg.apiKey),
-    body: JSON.stringify(
-      kind === "sfx"
-        ? { text: normalizedPrompt, prompt_influence: 0.3 }
-        : {
-            prompt: normalizedPrompt,
-            music_length_ms: context ? (context.lengthMs ?? 120_000) : 30_000,
-            force_instrumental: true,
-          },
-    ),
-    signal: AbortSignal.timeout(timeoutMs),
-    policy: {
-      allowLocal: false,
-      allowedProtocols: ["https:"],
-    },
-    maxResponseBytes: MAX_GAME_AUDIO_BYTES,
-    decodeCompressedResponse: true,
-  });
-  if (!response.ok) {
-    const detail = readProviderErrorDetail(await response.text().catch(() => ""));
-    throw new Error(detail || `ElevenLabs returned ${response.status}`);
-  }
-
-  const bytes = new Uint8Array(await response.arrayBuffer());
-  if (!resolveTTSAudioResponseContentType(response.headers.get("content-type"), bytes)) {
-    throw new Error("ElevenLabs returned a non-audio response");
-  }
-
-  await mkdir(targetDirectory, { recursive: true });
-  const temporaryPath = join(targetDirectory, `.${hash}.${randomUUID()}.tmp`);
-  try {
-    await writeFile(temporaryPath, bytes);
-    await rename(temporaryPath, targetPath);
-  } catch (error) {
-    await unlink(temporaryPath).catch(() => {});
-    throw error;
-  }
-  scheduleGameAssetManifestRebuild();
-  return { tag, path: relativePath, cached: false };
-}
-
-/** Host command entry point using the same connection, cache, and file validation as Game audio. */
+/** Compatibility entry point for the existing Roleplay sound command. */
 export async function generateRoleplaySoundEffect(
   db: DB,
   prompt: string,
@@ -328,37 +217,7 @@ export async function generateRoleplaySoundEffect(
   debugMode: boolean,
   signal?: AbortSignal,
 ) {
-  signal?.throwIfAborted();
-  const cfg = await resolveAudioConfig(createAppSettingsStorage(db), createConnectionsStorage(db), connectionId);
-  signal?.throwIfAborted();
-  if (cfg.source !== "elevenlabs" || cfg.elevenLabsGameSoundEffects !== true || !cfg.apiKey)
-    throw new Error("Choose an ElevenLabs audio connection with sound effect generation enabled.");
-  const normalized = normalizeGameAudioPrompt(prompt);
-  logDebugOverride(debugMode, "[debug/roleplay/sound] Prompt sent to audio provider:\n%s", normalized);
-  const key = `sfx\0${normalized.toLowerCase()}`;
-  let generation = gameAudioGenerationLocks.get(key);
-  if (!generation) {
-    // Shared Game/Roleplay work finishes for other waiters and the audio cache.
-    generation = generateElevenLabsGameAudio(cfg, "sfx", normalized).finally(() =>
-      gameAudioGenerationLocks.delete(key),
-    );
-    gameAudioGenerationLocks.set(key, generation);
-  }
-  let abortListener: ReturnType<typeof addAbortListener> | undefined;
-  try {
-    const result = signal
-      ? await Promise.race([
-          generation,
-          new Promise<never>((_, reject) => {
-            abortListener = addAbortListener(signal, () => reject(signal.reason));
-          }),
-        ])
-      : await generation;
-    signal?.throwIfAborted();
-    return result;
-  } finally {
-    abortListener?.[Symbol.dispose]();
-  }
+  return generateAudioAsset(db, { kind: "sfx", prompt, audioConnectionId: connectionId, debugMode, signal });
 }
 
 // ── Helpers ─────────────────────────────────────
@@ -376,7 +235,7 @@ export function buildRoleplaySpeakerExtractorPrompt(input: {
     ? `This response was generated for ${input.messageAuthor}. Use that exact name for dialogue not explicitly attributed to a different speaker.`
     : "";
   const emotionInstruction = input.includeEmotions
-    ? 'In "speech", copy the exact dialogue and insert emotional indicators directly in [brackets] before the words they affect. You may use multiple bracketed emotional indicators within a dialogue line, including pauses, small sounds, sighs, and different intonations for different parts. Do not otherwise add, remove, reorder, or rewrite any dialogue.'
+    ? `In "speech", copy the exact dialogue and insert emotional indicators directly in [brackets] before the words they affect. ${TTS_EMOTION_CUE_GUIDANCE} Preserve every original word, punctuation mark, quote, and space; only insert bracketed cues and their separating spaces. Do not otherwise add, remove, reorder, or rewrite any dialogue.`
     : 'Do not add emotional indicators. Omit the "speech" field.';
 
   return `You are preparing a message for text-to-speech reading from a roleplay chat between ${roleplayName} and ${input.user}, but it is possible there are other characters involved and mentioned in the message itself.
@@ -395,7 +254,7 @@ A pregnant pause settles in the room.
 "Skill issue," Mari chuckles, crossing her arms.
 
 Example output:
-{"dialogue":[{"speaker":"Dottore","text":"\\\"I've had enough of your shenanigans,\\\""${input.includeEmotions ? ',"speech":"[irritated] \\\"I\'ve had enough of your shenanigans,\\\""' : ""}},{"speaker":"Dottore","text":"\\\"You're wasting my time, subject. This is your last chance to change my mind before I send you to Lab Thirteen.\\\""${input.includeEmotions ? ',"speech":"[irritated] \\\"You\'re wasting my time, subject. [sigh] This is your last chance to change my mind before I send you to Lab Thirteen.\\\""' : ""}},{"speaker":"Mari","text":"\\\"Skill issue,\\\""${input.includeEmotions ? ',"speech":"[chuckle] \\\"Skill issue,\\\""' : ""}}]}`;
+{"dialogue":[{"speaker":"Dottore","text":"\\\"I've had enough of your shenanigans,\\\""${input.includeEmotions ? ',"speech":"[Low, steady voice, restrained irritation] \\\"I\'ve had enough of your shenanigans,\\\""' : ""}},{"speaker":"Dottore","text":"\\\"You're wasting my time, subject. This is your last chance to change my mind before I send you to Lab Thirteen.\\\""${input.includeEmotions ? ',"speech":"[Firm, controlled impatience] \\\"You\'re wasting my time, subject. [sigh] This is your last chance to change my mind before I send you to Lab Thirteen.\\\""' : ""}},{"speaker":"Mari","text":"\\\"Skill issue,\\\""${input.includeEmotions ? ',"speech":"[Dry chuckle, faint amusement] \\\"Skill issue,\\\""' : ""}}]}`;
 }
 
 export function buildRoleplaySpeakerExtractorUserPrompt(message: string): string {
@@ -502,7 +361,15 @@ function parseStoredConfig(raw: string | null) {
   return readStoredConfig(raw) ?? ttsConfigSchema.parse({});
 }
 
+/** The top-level voice and speech fields, copied to the profile of the source or Audio connection chosen. */
 function withActiveSourceProfile(config: TTSConfig): TTSConfig {
+  const connectionId = config.connectionId.trim();
+  if (connectionId) {
+    return {
+      ...config,
+      connectionProfiles: { ...config.connectionProfiles, [connectionId]: ttsConnectionProfileFromConfig(config) },
+    };
+  }
   return {
     ...config,
     sourceProfiles: {
@@ -555,12 +422,29 @@ export function prepareTTSConfigForStorage(
     };
   }
 
+  const connectionProfiles = { ...existing.connectionProfiles, ...input.connectionProfiles };
+  const connectionId = input.connectionId.trim();
+  if (connectionId) {
+    // The connection supplies the address, key and model, so the source's own stay exactly as stored.
+    return withActiveSourceProfile({
+      ...input,
+      source: existing.source,
+      baseUrl: existing.baseUrl,
+      apiKey: existing.apiKey,
+      model: existing.model,
+      connectionId,
+      sourceProfiles,
+      connectionProfiles,
+    });
+  }
+
   const apiKey =
     input.apiKey === TTS_API_KEY_MASK ? (existingProfiles[input.source]?.apiKey ?? "") : encryptKey(input.apiKey);
   const storedConfig: TTSConfig = {
     ...input,
     apiKey,
     sourceProfiles,
+    connectionProfiles,
   };
   storedConfig.sourceProfiles[input.source] = ttsSourceProfileFromConfig(storedConfig);
   return storedConfig;
@@ -579,25 +463,37 @@ async function loadConfig(storage: ReturnType<typeof createAppSettingsStorage>) 
 
 /**
  * Resolve the effective audio configuration (#5146): an audio CONNECTION —
- * the explicitly requested one, else the category default — provides the
- * identity half (source, key, base URL, voice, and the sound-effect/music
- * capability flags), overlaid on the legacy TTS settings blob, which remains
- * the knob store (speed, stability, extractor settings, source profiles).
+ * the explicitly requested one, else the one chosen as the TTS card's Source
+ * (#7848), else the category default — provides the identity half (source,
+ * key, base URL, voice, and the sound-effect/music capability flags),
+ * overlaid on the legacy TTS settings blob, which remains the knob store
+ * (speed, stability, extractor settings, source profiles).
  * With no audio connection at all, behavior is exactly the legacy blob —
  * pre-migration installs keep working untouched.
  */
-/** Callers pass this sentinel to force the legacy settings blob even when audio connections exist. */
+/**
+ * Callers pass this sentinel for the TTS card's own choice: its Audio connection when one is
+ * chosen, else its source settings even when audio connections exist.
+ */
 export const LEGACY_TTS_CONFIG_SENTINEL = "";
 
-async function resolveAudioConfig(
+export const TTS_CONNECTION_UNAVAILABLE = "The Audio connection chosen for Text to Speech is missing or unavailable.";
+
+type ResolvedAudioConfig = TTSConfig & {
+  connectionName?: string;
+  connectionUnavailable?: true;
+  audioMusicEndpoint?: string | null;
+  audioSoundEffectsEndpoint?: string | null;
+  audioGenerationFormat?: string;
+};
+
+export async function resolveAudioConfig(
   storage: ReturnType<typeof createAppSettingsStorage>,
   connections: ReturnType<typeof createConnectionsStorage>,
   requestedConnectionId?: string | null,
-) {
+): Promise<ResolvedAudioConfig> {
   const cfg = await loadConfig(storage);
-  // The TTS settings card tests the blob it edits; the empty-string sentinel
-  // must reach it even when a default audio connection exists.
-  if (requestedConnectionId === LEGACY_TTS_CONFIG_SENTINEL) return cfg;
+  const chosenConnectionId = cfg.connectionId.trim();
   let row = null;
   let explicitlyRequested = false;
   if (requestedConnectionId) {
@@ -609,16 +505,23 @@ async function resolveAudioConfig(
       logger.warn("Requested audio connection %s missing or not audio; using the default", requestedConnectionId);
     }
   }
+  if (!row && chosenConnectionId) {
+    const candidate = await connections.getWithKey(chosenConnectionId);
+    if (candidate?.provider !== "audio") {
+      // Never another connection's credentials, nor the card's own: the user chose this one.
+      logger.warn("The TTS audio connection %s is missing or unavailable", chosenConnectionId);
+      return { ...cfg, apiKey: "", connectionUnavailable: true };
+    }
+    row = candidate;
+  }
+  // The TTS settings card tests the blob it edits; the empty-string sentinel
+  // must reach it even when a default audio connection exists.
+  if (!row && requestedConnectionId === LEGACY_TTS_CONFIG_SENTINEL) return cfg;
   if (!row) row = await connections.getDefaultForAudio();
   if (!row) row = await connections.getFallbackForAudio();
   if (!row) return cfg;
   const source = (row.audioSource ?? "elevenlabs") as TTSSource;
-  // Blank row fields fall back per the ROW's source. The blob's top-level
-  // fields belong to its own active source — inheriting them would leak
-  // cross-source values (e.g. the schema-default voice "alloy" into an
-  // ElevenLabs row, defeating the missing-voice guard downstream).
-  const profile = source === cfg.source ? cfg : withActiveSourceProfile(cfg).sourceProfiles[source];
-  return {
+  const resolved = {
     ...cfg,
     // An explicitly requested connection is a direct expression of intent;
     // default/fallback resolution keeps honoring the legacy master toggle so
@@ -626,11 +529,54 @@ async function resolveAudioConfig(
     enabled: explicitlyRequested ? true : cfg.enabled,
     source,
     apiKey: row.apiKey,
+    elevenLabsGameSoundEffects: row.audioSoundEffects === "true",
+    elevenLabsGameMusic: row.audioMusic === "true",
+    audioMusicEndpoint: row.audioMusicEndpoint,
+    audioSoundEffectsEndpoint: row.audioSoundEffectsEndpoint,
+    audioGenerationFormat: row.audioGenerationFormat,
+    // The connection's own limit, never the settings card's: each one is set where its server is.
+    requestTimeoutMs: resolveTtsRequestTimeoutMs(row.audioTimeoutMs),
+    connectionName: row.name,
+  };
+  const connectionProfile = withActiveSourceProfile(cfg).connectionProfiles[row.id];
+  if (connectionProfile) {
+    // A connection with its own card profile uses only its own address, model and voices, so two
+    // connections on the same adapter never borrow each other's or the source settings'.
+    return {
+      ...resolved,
+      ...connectionProfile,
+      baseUrl: row.baseUrl || TTS_SOURCE_DEFAULTS[source].baseUrl,
+      voice: connectionProfile.voice || row.audioVoice || "",
+      model: row.model || TTS_SOURCE_DEFAULTS[source].model,
+    };
+  }
+  // Blank row fields fall back per the ROW's source. The blob's top-level
+  // fields belong to its own active source — inheriting them would leak
+  // cross-source values (e.g. the schema-default voice "alloy" into an
+  // ElevenLabs row, defeating the missing-voice guard downstream).
+  const profile =
+    source === cfg.source && !chosenConnectionId ? cfg : withActiveSourceProfile(cfg).sourceProfiles[source];
+  return {
+    ...resolved,
     baseUrl: row.baseUrl || profile?.baseUrl || TTS_SOURCE_DEFAULTS[source].baseUrl,
     voice: row.audioVoice || profile?.voice || "",
     model: row.model || profile?.model || TTS_SOURCE_DEFAULTS[source].model,
-    elevenLabsGameSoundEffects: row.audioSoundEffects === "true",
-    elevenLabsGameMusic: row.audioMusic === "true",
+  };
+}
+
+/** The TTS card's Audio connection for display: its adapter, address and model, never its key. */
+async function readChosenConnectionIdentity(
+  connections: ReturnType<typeof createConnectionsStorage>,
+  connectionId: string,
+): Promise<Pick<TTSConfig, "source" | "baseUrl" | "model"> | null> {
+  if (!connectionId) return null;
+  const row = await connections.getById(connectionId);
+  if (row?.provider !== "audio" || row.profileImportReviewRequired === "true") return null;
+  const source = (row.audioSource ?? "elevenlabs") as TTSSource;
+  return {
+    source,
+    baseUrl: row.baseUrl || TTS_SOURCE_DEFAULTS[source].baseUrl,
+    model: row.model || TTS_SOURCE_DEFAULTS[source].model,
   };
 }
 
@@ -789,11 +735,6 @@ function clearPocketTtsApiModeCache(cfg: TTSConfig): void {
   pocketTtsApiModeCache.delete(configuredBaseUrl(cfg));
 }
 
-function normalizeElevenLabsTtsModelId(model: string) {
-  const trimmed = model.trim();
-  return ELEVENLABS_TTS_MODEL_ALIASES[trimmed.toLowerCase()] ?? trimmed;
-}
-
 function normalizeNanoGptTtsModelId(model: string) {
   const trimmed = model.trim();
   return NANOGPT_TTS_MODEL_ALIASES[trimmed.toLowerCase()] ?? trimmed;
@@ -805,10 +746,6 @@ function clampElevenLabsSpeed(speed: number) {
 
 function clampXaiSpeed(speed: number) {
   return Math.min(1.5, Math.max(0.7, Number.isFinite(speed) ? speed : 1));
-}
-
-function elevenLabsModelSupportsSpeed(model: string) {
-  return model.trim().toLowerCase() !== "eleven_v3";
 }
 
 function isNanoGptElevenLabsModel(model: string) {
@@ -930,6 +867,12 @@ function optionalBearerHeaders(apiKey: string) {
   return headers;
 }
 
+/** Auth headers for a source's model list: the same key headers /tts/speak sends. */
+export function ttsCatalogHeaders(source: string, apiKey: string): Record<string, string> {
+  if (source === "elevenlabs") return elevenLabsHeaders(apiKey);
+  return source === "nanogpt" ? nanoGptHeaders(apiKey) : openAiHeaders(apiKey);
+}
+
 function openAiModelSupportsSpeechInstructions(model: string) {
   return /^gpt-4o/i.test(model.trim());
 }
@@ -959,60 +902,6 @@ function readProviderErrorDetail(body: string): string {
   } catch {
     return body.slice(0, 500);
   }
-}
-
-/** Returns true only for an explicit provider-declared audio media type. */
-export function isAllowedTTSAudioContentType(contentType: string | null): boolean {
-  const normalized = contentType?.toLowerCase() ?? "";
-  return normalized.startsWith("audio/");
-}
-
-/** Detects the supported encoded audio container from its leading bytes. */
-export function detectTTSAudioMimeType(bytes: Uint8Array): string | null {
-  if (bytes.length >= 3 && bytes[0] === 0x49 && bytes[1] === 0x44 && bytes[2] === 0x33) {
-    return "audio/mpeg";
-  }
-  if (bytes.length >= 2 && bytes[0] === 0xff && (bytes[1]! & 0xe0) === 0xe0) {
-    return "audio/mpeg";
-  }
-  if (
-    bytes.length >= 12 &&
-    bytes[0] === 0x52 &&
-    bytes[1] === 0x49 &&
-    bytes[2] === 0x46 &&
-    bytes[3] === 0x46 &&
-    bytes[8] === 0x57 &&
-    bytes[9] === 0x41 &&
-    bytes[10] === 0x56 &&
-    bytes[11] === 0x45
-  ) {
-    return "audio/wav";
-  }
-  if (bytes.length >= 4 && bytes[0] === 0x4f && bytes[1] === 0x67 && bytes[2] === 0x67 && bytes[3] === 0x53) {
-    return "audio/ogg";
-  }
-  if (bytes.length >= 4 && bytes[0] === 0x66 && bytes[1] === 0x4c && bytes[2] === 0x61 && bytes[3] === 0x43) {
-    return "audio/flac";
-  }
-  if (bytes.length >= 4 && bytes[0] === 0x1a && bytes[1] === 0x45 && bytes[2] === 0xdf && bytes[3] === 0xa3) {
-    return "audio/webm";
-  }
-  if (bytes.length >= 12 && bytes[4] === 0x66 && bytes[5] === 0x74 && bytes[6] === 0x79 && bytes[7] === 0x70) {
-    return "audio/mp4";
-  }
-  return null;
-}
-
-/**
- * Resolves the safe response media type for provider audio.
- *
- * Generic or missing media types require a recognized encoded container so a
- * JSON/text error body cannot be relabeled as audio.
- */
-export function resolveTTSAudioResponseContentType(contentType: string | null, bytes: Uint8Array): string | null {
-  const declaredContentType = contentType?.trim() ?? "";
-  if (isAllowedTTSAudioContentType(declaredContentType)) return declaredContentType;
-  return detectTTSAudioMimeType(bytes);
 }
 
 /** OpenRouter exposes model-specific PCM layout in Content-Type, not a universal 24 kHz rate.
@@ -1113,10 +1002,21 @@ function buildSpeechInstructions(input: { speaker?: string; tone?: string; inclu
   return parts.join(" ");
 }
 
-export function buildElevenLabsTextInput(text: string, tone?: string): string {
-  const normalizedTone = tone?.replace(/[\[\]\r\n]/g, "").trim();
-  if (!normalizedTone || text.trimStart().startsWith(`[${normalizedTone}]`)) return text;
-  return `[${normalizedTone}] ${text}`;
+/**
+ * The text ElevenLabs speaks: the line's tone as a leading audio tag, only for a model that acts on tags (any other
+ * reads the bracket aloud). A game expression becomes the documented tag that means it, or no tag; any other tone is a
+ * cue written to be performed (the Roleplay speaker extractor's) and is kept as written (#8619).
+ */
+export function buildElevenLabsTextInput(text: string, tone: string | undefined, model: string): string {
+  if (!elevenLabsModelSupportsAudioTags(model)) return text;
+  const cue = tone?.replace(/[\[\]\r\n]/g, "").trim();
+  if (!cue) return text;
+  const expression = cue.toLowerCase();
+  const tag = Object.hasOwn(ELEVENLABS_AUDIO_TAG_FOR_GAME_EMOTION, expression)
+    ? ELEVENLABS_AUDIO_TAG_FOR_GAME_EMOTION[expression as GameTtsEmotion]
+    : cue;
+  if (!tag || text.trimStart().startsWith(`[${tag}]`)) return text;
+  return `[${tag}] ${text}`;
 }
 
 export function resolveTTSRequestVoice(configuredVoice: string, requestedVoice?: string | null): string {
@@ -1228,7 +1128,7 @@ async function fetchElevenLabsModelOptions(baseUrl: string, apiKey: string): Pro
   return parseElevenLabsModelOptions(await res.json());
 }
 
-async function fetchProviderModels(cfg: TTSConfig): Promise<TTSModelsResponse> {
+export async function fetchProviderModels(cfg: TTSConfig): Promise<TTSModelsResponse> {
   if (cfg.source !== "elevenlabs" || !cfg.apiKey || isNanoGptBaseUrl(configuredBaseUrl(cfg))) {
     return {
       models: ELEVENLABS_FALLBACK_MODELS.map((id) => ({ id, name: id })),
@@ -1338,7 +1238,9 @@ export async function ttsRoutes(app: FastifyInstance) {
   app.get("/config", async () => {
     const raw = await storage.get(TTS_SETTINGS_KEY);
     const cfg = parseStoredConfig(raw);
-    return maskTTSConfigForResponse(cfg);
+    // With an Audio connection chosen, every reader sees the adapter, address and model it speaks with.
+    const identity = await readChosenConnectionIdentity(connections, cfg.connectionId.trim());
+    return { ...maskTTSConfigForResponse(cfg), ...identity };
   });
 
   /**
@@ -1404,9 +1306,10 @@ export async function ttsRoutes(app: FastifyInstance) {
   app.get("/voices", async (req, reply) => {
     const { connectionId } = (req.query ?? {}) as { connectionId?: string };
     // Without an explicit connection this endpoint serves the TTS settings
-    // card, which edits the blob — resolving the default audio connection here
-    // would show the card voices for a source it is not configuring.
-    const cfg = connectionId ? await resolveAudioConfig(storage, connections, connectionId) : await loadConfig(storage);
+    // card — resolving the default audio connection here would show the card
+    // voices for a source it is not configuring.
+    const cfg = await resolveAudioConfig(storage, connections, connectionId || LEGACY_TTS_CONFIG_SENTINEL);
+    if (cfg.connectionUnavailable) return reply.status(409).send({ error: TTS_CONNECTION_UNAVAILABLE });
 
     try {
       return await fetchProviderVoices(cfg);
@@ -1428,7 +1331,8 @@ export async function ttsRoutes(app: FastifyInstance) {
    */
   app.get("/models", async (req, reply) => {
     const { connectionId } = (req.query ?? {}) as { connectionId?: string };
-    const cfg = connectionId ? await resolveAudioConfig(storage, connections, connectionId) : await loadConfig(storage);
+    const cfg = await resolveAudioConfig(storage, connections, connectionId || LEGACY_TTS_CONFIG_SENTINEL);
+    if (cfg.connectionUnavailable) return reply.status(409).send({ error: TTS_CONNECTION_UNAVAILABLE });
 
     try {
       return await fetchProviderModels(cfg);
@@ -1557,7 +1461,7 @@ export async function ttsRoutes(app: FastifyInstance) {
    * Generates and caches scene-specific Game Mode music or sound effects.
    */
   app.post("/game-audio", async (req, reply) => {
-    const { kind, prompt, audioConnectionId, context } = gameAudioSchema.parse(req.body);
+    const { kind, prompt, audioConnectionId, context, debugMode } = gameAudioSchema.parse(req.body);
     if (context && kind !== "music") {
       return reply.status(400).send({ error: "Context tracks are music only" });
     }
@@ -1577,32 +1481,15 @@ export async function ttsRoutes(app: FastifyInstance) {
       }
       context.key = canonicalTier;
     }
-    const cfg = await resolveAudioConfig(storage, connections, audioConnectionId);
-    const enabled = kind === "sfx" ? cfg.elevenLabsGameSoundEffects === true : cfg.elevenLabsGameMusic === true;
-    if (cfg.source !== "elevenlabs" || !enabled) {
-      return reply.status(400).send({ error: `ElevenLabs game ${kind} generation is not enabled` });
-    }
-    if (!cfg.apiKey) {
-      return reply.status(400).send({ error: "ElevenLabs API key is not configured" });
-    }
-
-    const normalizedPrompt = normalizeGameAudioPrompt(prompt);
-    // Context generations lock on their KEY: two turns racing the same area
-    // must collapse into one composition even when their prompts differ.
-    const lockKey = context ? `context\0${context.axis}\0${context.key}` : `${kind}\0${normalizedPrompt.toLowerCase()}`;
-    let generation = gameAudioGenerationLocks.get(lockKey);
-    if (!generation) {
-      generation = generateElevenLabsGameAudio(cfg, kind, normalizedPrompt, context).finally(() => {
-        gameAudioGenerationLocks.delete(lockKey);
-      });
-      gameAudioGenerationLocks.set(lockKey, generation);
-    }
     try {
-      return await generation;
+      return await generateAudioAsset(app.db, { kind, prompt, audioConnectionId, context, debugMode });
     } catch (error) {
-      logger.error(error, "ElevenLabs game %s generation failed", kind);
+      if (error instanceof AudioGenerationConfigurationError) {
+        return reply.status(error.statusCode).send({ error: error.message });
+      }
+      logger.error(error, "Game %s audio generation failed", kind);
       return reply.status(502).send({
-        error: `ElevenLabs game ${kind} generation failed`,
+        error: `Game ${kind} audio generation failed`,
         detail: error instanceof Error ? error.message : "Unknown provider error",
       });
     }
@@ -1619,6 +1506,10 @@ export async function ttsRoutes(app: FastifyInstance) {
 
     if (!cfg.enabled) {
       return reply.status(400).send({ error: "TTS is not enabled" });
+    }
+
+    if (cfg.connectionUnavailable) {
+      return reply.status(409).send({ error: TTS_CONNECTION_UNAVAILABLE });
     }
 
     if (cfg.source === "elevenlabs" && !cfg.apiKey) {
@@ -1652,7 +1543,7 @@ export async function ttsRoutes(app: FastifyInstance) {
     if (cfg.source === "elevenlabs" && ELEVENLABS_NON_TTS_MODELS.has(normalizedModel)) {
       return reply.status(400).send({
         error: `ElevenLabs model "${model}" cannot generate text-to-speech`,
-        detail: `That model is for Text to Voice / voice design. Use "eleven_v3" for Eleven v3 speech, or "eleven_multilingual_v2", "eleven_flash_v2_5", or "eleven_turbo_v2_5" for regular TTS.`,
+        detail: `That model is for Text to Voice / voice design. Use "eleven_v4" for Eleven v4 speech, "eleven_v3" for Eleven v3, or "eleven_multilingual_v2", "eleven_flash_v2_5", or "eleven_turbo_v2_5" for regular TTS.`,
       });
     }
 
@@ -1678,7 +1569,7 @@ export async function ttsRoutes(app: FastifyInstance) {
             ? `${elevenLabsApiRoot(base)}/v1/text-to-speech/${encodeURIComponent(requestVoice)}?output_format=mp3_44100_128`
             : `${base}/audio/speech`;
     const providerText =
-      cfg.source === "elevenlabs" || nanoGptElevenLabsModel ? buildElevenLabsTextInput(text, tone) : text;
+      cfg.source === "elevenlabs" || nanoGptElevenLabsModel ? buildElevenLabsTextInput(text, tone, model) : text;
     const elevenLabsLanguageCode = cfg.elevenLabsLanguageCode?.trim();
     const includeSpeakerInstructions = cfg.source !== "elevenlabs";
     const speechInstructions = useNanoGptSpeech
@@ -1744,7 +1635,9 @@ export async function ttsRoutes(app: FastifyInstance) {
                     response_format: audioFormat,
                     ...(speechInstructions ? { instructions: speechInstructions } : {}),
                   }),
-        signal: AbortSignal.timeout(60_000),
+        signal: AbortSignal.timeout(cfg.requestTimeoutMs),
+        // undici otherwise stops waiting after 300 s, whatever the limit above says.
+        agentOptions: { headersTimeout: cfg.requestTimeoutMs, bodyTimeout: cfg.requestTimeoutMs },
         policy: {
           allowLocal: allowLocalTtsUrl(cfg),
           allowedProtocols: ["https:", "http:"],
@@ -1754,10 +1647,22 @@ export async function ttsRoutes(app: FastifyInstance) {
         decodeCompressedResponse: cfg.source === "elevenlabs",
       });
     } catch (err: unknown) {
-      const msg =
-        err instanceof Error && err.name === "TimeoutError" ? "TTS request timed out" : "TTS provider unreachable";
+      if (err instanceof Error && err.name === "TimeoutError") {
+        const timeoutSeconds = cfg.requestTimeoutMs / 1000;
+        const setting = cfg.connectionName
+          ? `the "${cfg.connectionName}" audio connection`
+          : "Connections > Text to Speech";
+        logger.warn("TTS request timed out after %d s. Raise Request timeout in %s.", timeoutSeconds, setting);
+        // The client words this for the user from the code; `error` stays as before for anything else reading it.
+        return reply.status(502).send({
+          error: "TTS request timed out",
+          code: "tts_timeout",
+          timeoutSeconds,
+          connectionName: cfg.connectionName ?? null,
+        });
+      }
       req.log.error(err, "TTS provider request failed");
-      return reply.status(502).send({ error: msg });
+      return reply.status(502).send({ error: isRefusedFetch(err) ? err.message : "TTS provider unreachable" });
     }
 
     if (!providerRes.ok) {
