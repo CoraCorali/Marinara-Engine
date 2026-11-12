@@ -28,7 +28,8 @@ env:
 jobs:
   nightly:
     name: dispatch-nightly-staging
-    if: github.event_name == 'schedule'
+    # Forks have no staging branch, so the dispatch 422s every night there.
+    if: github.event_name == 'schedule' && github.repository_owner == 'Pasta-Devs'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
