@@ -256,6 +256,9 @@ export async function forkFixRoutes(app: FastifyInstance) {
     try {
       const result = await resolved.provider.chatComplete(messages, { model: resolved.model, ...FIX_CALL_OPTIONS });
       replacements = readAutoFixReply(result.content ?? "", originals);
+      if (result.finishReason === "length") {
+        logger.warn("[fork-fix] The automatic pass was cut off at the output limit for message %s", messageId);
+      }
     } catch (error) {
       logger.error(error, "[fork-fix] The model could not run the automatic pass");
       return reply.status(502).send({ error: error instanceof Error ? error.message : "The automatic fix failed" });
@@ -263,7 +266,7 @@ export async function forkFixRoutes(app: FastifyInstance) {
     // Sentences that came back with no answer (a cut-off or skipped <fix>) get one call of their own,
     // so a long reply is not left half fixed.
     const unanswered = replacements.flatMap((text, index) => (text === null ? [index] : []));
-    if (unanswered.length > 0 && unanswered.length < passages.length) {
+    if (unanswered.length > 0) {
       try {
         const again = await resolved.provider.chatComplete(
           buildAutoFixMessages({
@@ -305,7 +308,7 @@ export async function forkFixRoutes(app: FastifyInstance) {
             },
             {
               role: "user",
-              content: `Some of those still use phrases from the slop list:\n${notes.join("\n")}\nReturn every <fix> again, rewriting those without the phrases, ${SLOP_RETRY_HINT}.`,
+              content: `Some of those still use phrases from the slop list:\n${notes.join("\n")}\nReturn only those numbered <fix> tags again, rewritten without the phrases, ${SLOP_RETRY_HINT}.`,
             },
           ],
           { model: resolved.model, ...FIX_CALL_OPTIONS },
