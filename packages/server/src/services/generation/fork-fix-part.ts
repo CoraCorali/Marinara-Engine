@@ -75,6 +75,7 @@ function lineEditorRules(writer: string, avoid: readonly string[]): string[] {
     "- It must read seamlessly with the text right before and after it: the same point of view, tense, voice and names, and the same formatting: asterisks, quotation marks, and every HTML tag (such as a <span style=...> around a character's speech) kept exactly as written, in the same place around the same words.",
     '- A sentence written in second person ("The sheet was cold under your knees.") stays in second person; everything else keeps the person it was in.',
     "- Keep what is there. Every action, object, body detail and line of dialogue in the passage stays in the rewrite unless the writer asks to cut it. You change how it is written, not what is in it. Add no new description of anyone's body.",
+    "- A slop-list word can name a real thing in the scene (a kind of wood, a body part, a tool). The thing stays and the word goes: call the same thing by another plain, everyday name, or by what it is made of or used for. Keeping the listed word is never the way to keep the detail.",
     "- Keep it about the same length unless the writer asks otherwise.",
     "- Write it the way a sharp, unsentimental novelist would film it: concrete, physical, specific. Name the exact thing in everyday words (shoulder, thigh, sink) instead of a vague or grand one.",
     '- In a sex scene, name bodies in plain explicit words (cock, pussy, clit, ass, tits, cum). Heat and wetness are things a body feels, never a name for one: no "her heat," "walls," "entrance," "core," "length," "bud" or "slick" standing in for a body part or for wetness, and no clinical terms.',
@@ -86,12 +87,23 @@ function lineEditorRules(writer: string, avoid: readonly string[]): string[] {
     `- Never write dialogue, thoughts or actions for ${writer} unless the original passage already did.`,
     ...(avoid.length > 0
       ? [
-          "- Hard rule: the rewrite must not contain any of these phrases from the writer's slop list, or close variants of them. If the original used one, replace it with different, plain wording:",
+          "- Hard rule: the rewrite must not contain any of these phrases from the writer's slop list, or close variants of them, even as a single word inside a longer phrase. If the original used one, replace it with different, plain wording:",
           ...avoid.map((phrase) => `  - ${phrase}`),
         ]
       : []),
   ];
 }
+
+/**
+ * What every fix call asks the model for. A line edit needs little thought and a short answer, but a
+ * thinking model spends its output budget on thinking first: on the provider default the answer was
+ * cut off after two or three fixes, and the rest were left as they were.
+ */
+export const FIX_CALL_OPTIONS = { temperature: 0.8, maxTokens: 8192, reasoningEffort: "low" } as const;
+
+/** What a retry says about a listed phrase that survived a rewrite. */
+export const SLOP_RETRY_HINT =
+  "keeping what happens and what is said. A listed word that names a real thing gets another plain name for the same thing";
 
 /** The two messages sent to the model: the editing rules, and the reply with the passage marked. */
 export function buildFixPartMessages(request: FixPartRequest): Array<{ role: "system" | "user"; content: string }> {

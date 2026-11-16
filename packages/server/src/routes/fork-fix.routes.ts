@@ -9,6 +9,8 @@ import { createCharactersStorage } from "../services/storage/characters.storage.
 import { resolveChatUserIdentity } from "../services/chat-user-identity.js";
 import { resolveForkChatProvider } from "../services/generation/fork-chat-provider.js";
 import {
+  FIX_CALL_OPTIONS,
+  SLOP_RETRY_HINT,
   buildAutoFixMessages,
   buildFixPartMessages,
   findAvoidedPhrases,
@@ -149,7 +151,7 @@ export async function forkFixRoutes(app: FastifyInstance) {
 
     let raw = "";
     try {
-      const result = await resolved.provider.chatComplete(messages, { model: resolved.model, temperature: 0.8 });
+      const result = await resolved.provider.chatComplete(messages, { model: resolved.model, ...FIX_CALL_OPTIONS });
       raw = result.content ?? "";
     } catch (error) {
       logger.error(error, "[fork-fix] The model could not rewrite the passage");
@@ -171,10 +173,10 @@ export async function forkFixRoutes(app: FastifyInstance) {
             { role: "assistant", content: replacement.trim() },
             {
               role: "user",
-              content: `That still uses ${slipped.map((p) => `"${p}"`).join(", ")} from the slop list. Rewrite it again without those phrases, keeping every detail. Return only the passage.`,
+              content: `That still uses ${slipped.map((p) => `"${p}"`).join(", ")} from the slop list. Rewrite it again without those phrases, ${SLOP_RETRY_HINT}. Return only the passage.`,
             },
           ],
-          { model: resolved.model, temperature: 0.8 },
+          { model: resolved.model, ...FIX_CALL_OPTIONS },
         );
         const second = readFixPartReply(retry.content ?? "", content.slice(start, end));
         if (second.trim() && findAvoidedPhrases(second, avoidList).length < slipped.length) replacement = second;
@@ -252,11 +254,38 @@ export async function forkFixRoutes(app: FastifyInstance) {
 
     let replacements: Array<string | null>;
     try {
-      const result = await resolved.provider.chatComplete(messages, { model: resolved.model, temperature: 0.8 });
+      const result = await resolved.provider.chatComplete(messages, { model: resolved.model, ...FIX_CALL_OPTIONS });
       replacements = readAutoFixReply(result.content ?? "", originals);
     } catch (error) {
       logger.error(error, "[fork-fix] The model could not run the automatic pass");
       return reply.status(502).send({ error: error instanceof Error ? error.message : "The automatic fix failed" });
+    }
+    // Sentences that came back with no answer (a cut-off or skipped <fix>) get one call of their own,
+    // so a long reply is not left half fixed.
+    const unanswered = replacements.flatMap((text, index) => (text === null ? [index] : []));
+    if (unanswered.length > 0 && unanswered.length < passages.length) {
+      try {
+        const again = await resolved.provider.chatComplete(
+          buildAutoFixMessages({
+            reply: content,
+            passages: unanswered.map((index) => passages[index]!),
+            avoid,
+            previousTurn,
+            writerName,
+            characters: cardTexts,
+          }),
+          { model: resolved.model, ...FIX_CALL_OPTIONS },
+        );
+        const filled = readAutoFixReply(
+          again.content ?? "",
+          unanswered.map((index) => originals[index]!),
+        );
+        unanswered.forEach((index, at) => {
+          replacements[index] = filled[at] ?? null;
+        });
+      } catch (error) {
+        logger.warn(error, "[fork-fix] The follow-up for unanswered sentences failed; they stay as written");
+      }
     }
     // One more try for sentences that still carry a listed phrase, naming exactly what slipped through.
     const slipped = replacements.map((text) => (text ? findAvoidedPhrases(text, avoid) : []));
@@ -276,10 +305,10 @@ export async function forkFixRoutes(app: FastifyInstance) {
             },
             {
               role: "user",
-              content: `Some of those still use phrases from the slop list:\n${notes.join("\n")}\nReturn every <fix> again, rewriting those without the phrases and keeping every detail.`,
+              content: `Some of those still use phrases from the slop list:\n${notes.join("\n")}\nReturn every <fix> again, rewriting those without the phrases, ${SLOP_RETRY_HINT}.`,
             },
           ],
-          { model: resolved.model, temperature: 0.8 },
+          { model: resolved.model, ...FIX_CALL_OPTIONS },
         );
         const second = readAutoFixReply(retry.content ?? "", originals);
         replacements = replacements.map((first, index) => {

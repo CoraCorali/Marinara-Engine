@@ -226,7 +226,7 @@ assert.deepEqual(twoInOne[0]!.phrases, ["smirked", "breath hitched"]);
 assert.ok(!storyOnly(undertow).includes("margin_notes") && !storyOnly(undertow).includes("color:"));
 assert.equal(storyOnly(undertow).length, undertow.length, "blanking keeps every offset");
 assert.equal(autoFixPassages("Clean reply.", phrasesForTest).length, 0);
-const many = Array.from({ length: 12 }, (_, i) => `Line ${i} had her heat.`).join(" ");
+const many = Array.from({ length: 16 }, (_, i) => `Line ${i} had her heat.`).join(" ");
 assert.equal(autoFixPassages(many, ["her heat"]).length, MAX_AUTO_FIX_PASSAGES, "one pass is capped");
 
 // A rewrite must keep its tags, in order.
@@ -291,4 +291,9 @@ assert.equal(
 );
 assert.equal(applyKeptFixes(reviewOriginal, reviewSwaps, [false, false]), reviewOriginal, "undo all is the original");
 assert.equal(withoutTags('"Hi,"</span> he said.'), '"Hi," he said.', "the review shows text, not tags");
+// A thinking model must not run out of room before the last fix, and a listed word that names a
+// real thing is renamed, not kept.
+import { FIX_CALL_OPTIONS } from "../../packages/server/src/services/generation/fork-fix-part.js";
+assert.ok(FIX_CALL_OPTIONS.maxTokens >= 8192 && FIX_CALL_OPTIONS.reasoningEffort === "low");
+assert.ok(autoSystem!.content.includes("The thing stays and the word goes"), "real-thing words get another name");
 console.log("fork fix part, automatic pass: ok");

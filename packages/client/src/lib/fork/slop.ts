@@ -321,8 +321,8 @@ export function storyOnly(content: string): string {
   return content.replace(NOT_STORY_BLOCK, blank).replace(HTML_TAG, blank);
 }
 
-/** Most sentences one automatic pass rewrites; a reply with more is mostly fine as it is. */
-export const MAX_AUTO_FIX_PASSAGES = 8;
+/** Most sentences one automatic pass rewrites: what the server takes in one request. */
+export const MAX_AUTO_FIX_PASSAGES = 12;
 
 /**
  * The sentences an automatic fix rewrites: each one holding a listed phrase in the story text,

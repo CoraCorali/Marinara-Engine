@@ -1172,6 +1172,19 @@ started from a screen recording of the relationship tracker.
   A rate-limited script now waits a few seconds and tries again (a note says it is waiting), so the
   pack lands whole and in order. Both the preset and the character regex imports do this.
 
+### The automatic fix finishes the job (2026-11-16)
+
+- **Why it stopped after two or three.** A fix call used the provider's default output limit, and a
+  thinking model (Gemini 4 Carbon cannot turn thinking off) spent most of it thinking, so the answer
+  was cut off partway and the later sentences were left as they were. Fix calls now ask for low
+  thinking effort and a larger output limit (`FIX_CALL_OPTIONS`).
+- **A second call for anything unanswered.** Sentences that came back with no rewrite get one
+  call of their own before the pass gives up on them.
+- **Listed words that name real things.** The editor was told both to keep every object and to never
+  use a listed word, so "cedar doors" or a listed body word stayed. It is now told the thing stays
+  and the word goes: call it by another plain name.
+- **Up to 12 sentences a reply** (was 8), which is what the server already accepted.
+
 ### Synced with Marinara 2.5.2 (2026-11-05)
 
 Merged upstream v2.5.2 (through the fork's `main`, which took it first) into this branch, which already had
