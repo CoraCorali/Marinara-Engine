@@ -27,6 +27,7 @@ import {
 } from "../../lib/fork/slop";
 import { isChatProvider } from "@marinara-engine/shared";
 import { useConnections } from "../../hooks/use-connections";
+import { FORK_JOBS, useForkJobModels, useSetForkJobModels } from "../../hooks/use-fork-job-models";
 import { isSingleWordSelection } from "../../lib/fork/sentence-range";
 import { useBackDismiss } from "../../hooks/use-back-dismiss";
 import { FORK_SWITCH_CLASS } from "../../lib/fork/switch";
@@ -904,6 +905,27 @@ function SlopListEditor({ latestReply, onReview }: { latestReply: string; onRevi
     (connectionRows as Array<{ id: string; name?: string; model?: string; provider?: string }> | undefined) ?? []
   ).filter((connection) => isChatProvider(connection.provider));
   const [adding, setAdding] = useState("");
+  // The fork's other helpers, each on a model of its own: saved on the server, since the phone and
+  // chapter recaps can run with no screen open.
+  const { data: jobModels } = useForkJobModels();
+  const setJobModels = useSetForkJobModels();
+  const jobLabels = {
+    director: localizeUi("ui.chat.forkjobs.director"),
+    chapters: localizeUi("ui.chat.forkjobs.chapters"),
+    phone: localizeUi("ui.chat.forkjobs.phone"),
+    season: localizeUi("ui.chat.forkjobs.season"),
+    describe: localizeUi("ui.chat.forkjobs.describe"),
+  };
+  const connectionOptions = connections.map((connection) => (
+    <option key={connection.id} value={connection.id}>
+      {connection.model
+        ? localizeUi("ui.chat.forkfix.fixModelOption", {
+            name: connection.name ?? connection.id,
+            model: connection.model,
+          })
+        : (connection.name ?? connection.id)}
+    </option>
+  ));
 
   const matches = latestReply ? findSlopMatches(latestReply, phrases) : [];
   // Curly and straight apostrophes match each other, so compare them as one.
@@ -981,18 +1003,29 @@ function SlopListEditor({ latestReply, onReview }: { latestReply: string; onRevi
           className="min-h-9 w-full rounded-lg bg-[var(--background)] px-2 text-[0.8125rem] font-normal text-foreground outline-none"
         >
           <option value="">{localizeUi("ui.chat.forkfix.fixModelSameAsChat")}</option>
-          {connections.map((connection) => (
-            <option key={connection.id} value={connection.id}>
-              {connection.model
-                ? localizeUi("ui.chat.forkfix.fixModelOption", {
-                    name: connection.name ?? connection.id,
-                    model: connection.model,
-                  })
-                : (connection.name ?? connection.id)}
-            </option>
-          ))}
+          {connectionOptions}
         </select>
       </label>
+      {jobModels && (
+        <div className="flex flex-col gap-2 rounded-xl bg-[var(--secondary)] px-3 py-2 text-[0.8125rem] text-foreground">
+          <p className="font-semibold">{localizeUi("ui.chat.forkjobs.title")}</p>
+          <p className="text-[0.75rem] text-[var(--muted-foreground)]">{localizeUi("ui.chat.forkjobs.hint")}</p>
+          {FORK_JOBS.map((job) => (
+            <label key={job} className="flex flex-col gap-1 font-semibold">
+              {jobLabels[job]}
+              <select
+                value={jobModels[job] && connections.some((c) => c.id === jobModels[job]) ? jobModels[job] : ""}
+                disabled={setJobModels.isPending}
+                onChange={(event) => setJobModels.mutate({ ...jobModels, [job]: event.target.value })}
+                className="min-h-9 w-full rounded-lg bg-[var(--background)] px-2 text-[0.8125rem] font-normal text-foreground outline-none"
+              >
+                <option value="">{localizeUi("ui.chat.forkjobs.usual")}</option>
+                {connectionOptions}
+              </select>
+            </label>
+          ))}
+        </div>
+      )}
       <label className="flex min-h-9 items-center justify-between gap-3 rounded-xl bg-[var(--secondary)] px-3 text-[0.8125rem] font-semibold text-foreground">
         {localizeUi("ui.chat.forkfix.showAddToLorebook")}
         <input

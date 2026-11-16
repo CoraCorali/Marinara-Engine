@@ -1185,6 +1185,22 @@ started from a screen recording of the relationship tracker.
   and the word goes: call it by another plain name.
 - **Up to 12 sentences a reply** (was 8), which is what the server already accepted.
 
+### A model for each helper, and side calls that finish (2026-11-16)
+
+- **Pick a model per helper.** The Slop panel, under **Model for fixes**, has **Models for the other
+  helpers**: the Director, chapter recaps, the phone, the season lookup and "describe a board
+  picture" each take any chat connection, the way agents do. **Usual model** keeps what the helper
+  used before: the chat's own model for the Director and pictures, the agents' connection for
+  chapters, the phone and the season. The choice is saved on the server (`forkJobModels` in app
+  settings), because the phone and recaps can run with no screen open. A picked connection that was
+  deleted falls back to the usual model.
+- **Side calls leave room for thinking.** Every helper now asks for low thinking effort and a larger
+  output limit. A thinking model on the old limits (300 for the season, 400 for a picture, 800 and
+  1,500 for the phone) could answer cut off or not at all.
+- **A recap cut off at the limit is refused**, like one whose stream broke, instead of being saved as
+  the chapter's memory.
+- The Director panel's lint error is fixed, so `pnpm check` passes again.
+
 ### Synced with Marinara 2.5.2 (2026-11-05)
 
 Merged upstream v2.5.2 (through the fork's `main`, which took it first) into this branch, which already had

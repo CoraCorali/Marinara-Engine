@@ -5,6 +5,7 @@ import { createCharactersStorage } from "../storage/characters.storage.js";
 import { createConnectionsStorage } from "../storage/connections.storage.js";
 import { resolveChatUserIdentity } from "../chat-user-identity.js";
 import { resolveChatSummaryConnection } from "../chat-summary/connection-resolution.js";
+import { FORK_LOW_THINKING, resolvePickedForkJobProvider } from "../generation/fork-job-models.js";
 import { resolveBaseUrl } from "../generation/connection-base-url.js";
 import { listBondsBeforeTurn, listPairsBeforeTurn } from "../bonds/fork-bond-updates.js";
 import { bondsPromptBlock } from "../generation/fork-bonds-prompt.js";
@@ -82,6 +83,9 @@ export function createChapterWriter(db: DB) {
   const store = createChaptersStorage(db);
 
   async function provider(chat: ChatRow) {
+    // A model picked for recaps wins; otherwise the summary connection, as before.
+    const picked = await resolvePickedForkJobProvider(db, chat, "chapters");
+    if (picked) return picked;
     const resolved = await resolveChatSummaryConnection({
       chatConnectionId: chat.connectionId && chat.connectionId !== "random" ? chat.connectionId : null,
       defaultConnectionId: (await createConnectionsStorage(db).getDefault())?.id ?? null,
@@ -133,14 +137,17 @@ export function createChapterWriter(db: DB) {
     const result = await resolved.provider.chatComplete(messages, {
       model: resolved.model,
       temperature: 0.4,
-      maxTokens: 4096,
+      maxTokens: 8192,
+      ...FORK_LOW_THINKING,
       stream: true,
       signal,
     });
     if (signal.aborted) throw new ChapterError("The model took too long to write the recap", 504);
     // A stream that broke part-way hands back what it had; a recap cut off mid-sentence is worse
     // than none, since it would quietly become the story's memory.
-    if (result.finishReason === "error") throw new ChapterError("The model stopped partway through the recap", 502);
+    if (result.finishReason === "error" || result.finishReason === "length") {
+      throw new ChapterError("The model stopped partway through the recap", 502);
+    }
     return result.content ?? "";
   }
 

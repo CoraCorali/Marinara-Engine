@@ -7,6 +7,7 @@ import { createConnectionsStorage } from "../storage/connections.storage.js";
 import { createGameStateStorage } from "../storage/game-state.storage.js";
 import { resolveChatUserIdentity } from "../chat-user-identity.js";
 import { resolveChatSummaryConnection } from "../chat-summary/connection-resolution.js";
+import { FORK_LOW_THINKING, resolvePickedForkJobProvider } from "../generation/fork-job-models.js";
 import { resolveBaseUrl } from "../generation/connection-base-url.js";
 import { listBondsBeforeTurn, listPairsBeforeTurn } from "../bonds/fork-bond-updates.js";
 import { bondsPromptBlock } from "../generation/fork-bonds-prompt.js";
@@ -93,6 +94,7 @@ const OTHER_THREAD_LINES = 4;
 const CALL_LINES_MAX = 60;
 /** How long one phone model call may take; writing a whole phone gets longer. */
 const PHONE_CALL_TIMEOUT_MS = 150_000;
+const THINKING_HEADROOM_TOKENS = 2000;
 const PHONE_WRITE_TIMEOUT_MS = 240_000;
 /** Texts of a contact conversation the contact's answer is written from. */
 const CONTACT_TEXTS = 12;
@@ -162,6 +164,9 @@ export function createPhoneRunner(db: DB) {
   }
 
   async function provider(chat: ChatRow) {
+    // A model picked for the phone wins; otherwise the summary connection, as before.
+    const picked = await resolvePickedForkJobProvider(db, chat, "phone");
+    if (picked) return picked;
     const resolved = await resolveChatSummaryConnection({
       chatConnectionId: chat.connectionId && chat.connectionId !== "random" ? chat.connectionId : null,
       defaultConnectionId: (await createConnectionsStorage(db).getDefault())?.id ?? null,
@@ -193,7 +198,15 @@ export function createPhoneRunner(db: DB) {
     // would block every phone action in that chat. Both tries share one deadline.
     const signal = AbortSignal.timeout(maxTokens > 4000 ? PHONE_WRITE_TIMEOUT_MS : PHONE_CALL_TIMEOUT_MS);
     const ask = (stream: boolean) =>
-      resolved.provider.chatComplete(messages, { model: resolved.model, temperature: 0.8, maxTokens, stream, signal });
+      resolved.provider.chatComplete(messages, {
+        model: resolved.model,
+        temperature: 0.8,
+        // Room for a thinking model to think and still answer; the timeouts above go by the asked size.
+        maxTokens: maxTokens + THINKING_HEADROOM_TOKENS,
+        ...FORK_LOW_THINKING,
+        stream,
+        signal,
+      });
     const result = await ask(true)
       .then(
         (answer) => (answer.finishReason === "error" && !signal.aborted ? ask(false) : answer),

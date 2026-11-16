@@ -4,6 +4,7 @@ import { createChatsStorage } from "../services/storage/chats.storage.js";
 import { createConnectionsStorage } from "../services/storage/connections.storage.js";
 import { createGameStateStorage } from "../services/storage/game-state.storage.js";
 import { resolveChatSummaryConnection } from "../services/chat-summary/connection-resolution.js";
+import { FORK_LOW_THINKING, resolvePickedForkJobProvider } from "../services/generation/fork-job-models.js";
 import { resolveBaseUrl } from "../services/generation/connection-base-url.js";
 import {
   buildSeasonMessages,
@@ -47,13 +48,15 @@ export async function forkWeatherRoutes(app: FastifyInstance) {
 
     const fallback = { season: northernSeason(storyMonth(date)), source: "fallback" };
     const metadata = parseRecord(chat.metadata);
-    const resolved = await resolveChatSummaryConnection({
-      chatConnectionId: chat.connectionId && chat.connectionId !== "random" ? chat.connectionId : null,
-      defaultConnectionId: (await createConnectionsStorage(app.db).getDefault())?.id ?? null,
-      chatMetadata: metadata,
-      connections: createConnectionsStorage(app.db),
-      resolveBaseUrl,
-    });
+    const resolved =
+      (await resolvePickedForkJobProvider(app.db, chat, "season")) ??
+      (await resolveChatSummaryConnection({
+        chatConnectionId: chat.connectionId && chat.connectionId !== "random" ? chat.connectionId : null,
+        defaultConnectionId: (await createConnectionsStorage(app.db).getDefault())?.id ?? null,
+        chatMetadata: metadata,
+        connections: createConnectionsStorage(app.db),
+        resolveBaseUrl,
+      }));
     if (!resolved.ok) return fallback;
     const messages = buildSeasonMessages(date, location);
     logDebugOverride(
@@ -65,7 +68,13 @@ export async function forkWeatherRoutes(app: FastifyInstance) {
     // A one-word answer: asked plainly first, then streamed once if the gateway fails (LinkAPI
     // drops some requests of either kind at random; a second try in the other shape gets through).
     const ask = (stream: boolean) =>
-      resolved.provider.chatComplete(messages, { model: resolved.model, temperature: 0, maxTokens: 300, stream });
+      resolved.provider.chatComplete(messages, {
+        model: resolved.model,
+        temperature: 0,
+        maxTokens: 2000,
+        ...FORK_LOW_THINKING,
+        stream,
+      });
     try {
       const result = await ask(false).catch(() => ask(true));
       const season = readSeasonAnswer(result.content ?? "");

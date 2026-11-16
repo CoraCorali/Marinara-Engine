@@ -123,7 +123,7 @@ export function ForkDirectorPanel({
   const milestones = (recent ?? []).flatMap((change) => {
     const key = `${change.id}:${change.to}`;
     if (!change.milestone || change.repliesAgo > 1 || usedMilestones.includes(key)) return [];
-    let who = "";
+    let who: string;
     if (change.pair) {
       const pair = (pairs ?? []).find((candidate) => candidate.id === change.id);
       who = pair && nameOf(pair.aId) && nameOf(pair.bId) ? `${nameOf(pair.aId)} & ${nameOf(pair.bId)}` : "";

@@ -17,6 +17,7 @@ import { isDebugAgentsEnabled } from "../config/runtime-config.js";
 import { createClosetStorage } from "../services/board/fork-closet.js";
 import { createChatsStorage } from "../services/storage/chats.storage.js";
 import { resolveForkChatProvider } from "../services/generation/fork-chat-provider.js";
+import { FORK_LOW_THINKING, readForkJobModels } from "../services/generation/fork-job-models.js";
 import { readLorebookImageDataUrl } from "../services/lorebook/lorebook-images.js";
 import { PIN_DESCRIBE_PROMPT, readPinDescription } from "../services/generation/fork-pin-describe.js";
 
@@ -132,7 +133,7 @@ export async function forkBoardRoutes(app: FastifyInstance) {
     const chatId = pin.scopeType === "chat" ? pin.scopeId : typeof body.chatId === "string" ? body.chatId : "";
     const chat = chatId ? await createChatsStorage(app.db).getById(chatId) : null;
     if (!chat) return reply.status(400).send({ error: "Open a chat to describe this picture with its model" });
-    const resolved = await resolveForkChatProvider(app.db, chat);
+    const resolved = await resolveForkChatProvider(app.db, chat, (await readForkJobModels(app.db)).describe);
     if (!resolved.ok) return reply.status(400).send({ error: resolved.error });
     const image = await readLorebookImageDataUrl(pin.imagePath);
     if (!image) return reply.status(404).send({ error: "The picture is missing" });
@@ -160,7 +161,8 @@ export async function forkBoardRoutes(app: FastifyInstance) {
       const result = await resolved.provider.chatComplete(messages as never, {
         model: resolved.model,
         temperature: 0.2,
-        maxTokens: 400,
+        maxTokens: 2000,
+        ...FORK_LOW_THINKING,
       });
       raw = (result.content ?? "").trim();
     } catch (error) {

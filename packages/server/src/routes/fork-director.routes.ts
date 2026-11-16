@@ -6,6 +6,7 @@
 import type { FastifyInstance } from "fastify";
 import type { LorebookEntry } from "@marinara-engine/shared";
 import { resolveForkChatProvider } from "../services/generation/fork-chat-provider.js";
+import { FORK_LOW_THINKING, readForkJobModels, writeForkJobModels } from "../services/generation/fork-job-models.js";
 import { createChatsStorage } from "../services/storage/chats.storage.js";
 import { createCharactersStorage } from "../services/storage/characters.storage.js";
 import { createLorebooksStorage } from "../services/storage/lorebooks.storage.js";
@@ -105,6 +106,13 @@ export async function forkDirectorRoutes(app: FastifyInstance) {
   const lorebooks = createLorebooksStorage(app.db);
 
   /** One off-record turn. The client keeps the conversation and sends it back each time. */
+  // Fork: which model each side job uses ("" keeps the job's usual one). Kept on the server, since
+  // the phone and chapter recaps can run with no screen open.
+  app.get("/job-models", async () => ({ models: await readForkJobModels(app.db) }));
+  app.put("/job-models", async (req) => ({
+    models: await writeForkJobModels(app.db, (req.body as { models?: unknown } | null)?.models),
+  }));
+
   app.post("/talk", async (req, reply) => {
     const body = (req.body ?? {}) as {
       chatId?: unknown;
@@ -139,7 +147,11 @@ export async function forkDirectorRoutes(app: FastifyInstance) {
     const chat = await chats.getById(chatId);
     if (!chat) return reply.status(404).send({ error: "Chat not found" });
 
-    const resolved = await resolveForkChatProvider(app.db, chat, body.connectionId);
+    const resolved = await resolveForkChatProvider(
+      app.db,
+      chat,
+      (typeof body.connectionId === "string" && body.connectionId) || (await readForkJobModels(app.db)).director,
+    );
     if (!resolved.ok) return reply.status(400).send({ error: resolved.error });
 
     // ── The scene: who is in it, who the writer plays, the lore it runs on, and what happened ──
@@ -278,7 +290,12 @@ export async function forkDirectorRoutes(app: FastifyInstance) {
     );
     let raw = "";
     try {
-      const result = await resolved.provider.chatComplete(promptMessages, { model: resolved.model, temperature: 0.6 });
+      const result = await resolved.provider.chatComplete(promptMessages, {
+        model: resolved.model,
+        temperature: 0.6,
+        maxTokens: 8192,
+        ...FORK_LOW_THINKING,
+      });
       raw = (result.content ?? "").trim();
     } catch (error) {
       logger.error(error, "[fork-director] The model could not answer");
