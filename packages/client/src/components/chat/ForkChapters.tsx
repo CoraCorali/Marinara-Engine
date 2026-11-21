@@ -156,18 +156,25 @@ export function ForkChapterPill({
 
 /** "## What happened" headings and "- " lines, laid out as the recap reads. */
 function RecapText({ recap }: { recap: string }) {
+  const { t: localizeUi } = useUiTranslation();
   return (
     <div className="flex flex-col gap-1 text-[0.8125rem] leading-relaxed text-foreground/85">
       {recap.split("\n").map((line, index) => {
         const text = line.trim();
         if (!text) return null;
         if (text.startsWith("#")) {
+          const heading = text.replace(/^#+\s*/, "");
           return (
             <div
               key={index}
               className="mt-1.5 text-[0.6875rem] font-bold tracking-wider text-[var(--primary)] uppercase first:mt-0"
             >
-              {text.replace(/^#+\s*/, "")}
+              {heading}
+              {/^short version$/i.test(heading) && (
+                <span className="ml-1.5 font-normal tracking-normal text-foreground/50 normal-case">
+                  ({localizeUi("ui.chat.forkchapters.shortVersionHint")})
+                </span>
+              )}
             </div>
           );
         }

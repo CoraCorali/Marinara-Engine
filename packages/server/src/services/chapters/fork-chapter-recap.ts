@@ -17,8 +17,11 @@ export const RECAP_SECTIONS = [
   "Where people stand",
   "Open threads",
   "Keep in mind",
-  "Lines to remember",
+  "Short version",
 ] as const;
+
+/** The heading of the short recap the writer gets every message; the rest is for reading. */
+export const SHORT_VERSION_HEADING = "Short version";
 
 /** Markup out, words kept: a reply's HTML panels still say what happened. */
 export function plainMessageText(content: string): string {
@@ -50,9 +53,9 @@ export function sliceMessages<T>(messages: readonly T[], size = RECAP_SLICE_MESS
   return slices;
 }
 
-/** About one sentence per three or four messages, never under 200 words (eight sentences or so). */
+/** About one sentence per five messages, between 6 and 15: the full recap is read, not sent. */
 export function targetSentences(messageCount: number): number {
-  return Math.max(8, Math.ceil(messageCount / 3.5));
+  return Math.min(15, Math.max(6, Math.ceil(messageCount / 5)));
 }
 
 type RecapContext = {
@@ -70,19 +73,19 @@ const SHAPE = `Write the recap in exactly this shape, in plain text, with nothin
 Title: a short title for the chapter, story-flavoured, at most six words
 
 ## What happened
-The events in order, as prose paragraphs. Use names, places and story dates or times when they are known. Say who did what and why it mattered.
+The main events in order, as short sentences of one event each. Use names, places and story dates or times when they are known. Leave out small talk, logistics and moment-to-moment detail.
 
 ## Where people stand
-One line per relationship, as it stands at the chapter's end: "- Name and Name: where they stand, what each now believes about the other, and what changed this chapter". Keep tension, grudges and power between them as sharp as the chapter left them, and keep a belief that is wrong as the character holds it.
+One short line per relationship, as it stands at the chapter's end: "- Name and Name: where they stand, what each now believes about the other, and what changed this chapter". Keep tension, grudges and power between them as sharp as the chapter left them, and keep a belief that is wrong as the character holds it.
 
 ## Open threads
-One line each: promises, secrets, plans, unanswered questions, and anything a character is hiding. For a secret, say who knows it, who only suspects it, and who believes something else instead.
+At most six short lines: promises, secrets, plans and unanswered questions. For a secret, say who knows it, who only suspects it, and who believes something else.
 
 ## Keep in mind
-One line each: objects, outfits, injuries, places and running jokes that matter later.
+At most six short lines: objects, outfits, injuries, places and running jokes that matter later.
 
-## Lines to remember
-Two or three exact quotes worth calling back, each as: - "the quote" (who said it)`;
+## Short version
+150 to 250 words of plain, short facts, as "- " lines: the events that matter later, where each relationship stands, and every open thread or secret. This is the only part the story's writer reads from now on, so nothing important may be missing from it, and nothing unimportant may be in it.`;
 
 function contextLines(context: RecapContext): string {
   return [
@@ -100,7 +103,7 @@ function contextLines(context: RecapContext): string {
 
 const RULES = `Rules:
 - Only what happened in the chapter. Never invent events, and never continue the story.
-- Detailed enough that the story can be continued from the recap alone, without the messages.
+- Short and plain. Keep what changes the story later; drop what does not.
 - Third person, past tense. No commentary about the writing, the roleplay or the user.
 - Record things as they actually stand. A fight that ended unresolved stays unresolved, a lie that was never found out is still a secret, and nobody is kinder or closer in the recap than they were in the story.
 - Plain words, with commas or periods where an em dash might go.`;
@@ -131,7 +134,7 @@ export function buildSliceNoteMessages(
   return [
     {
       role: "system",
-      content: `You take detailed notes on one part of a roleplay chapter. The notes are merged with the other parts into the chapter's recap later.\n\n${RULES}\n\nWrite plain notes: the events in order (with names, places and story times), then any promise, secret, object, injury or outfit that matters later, then up to two exact quotes worth keeping.`,
+      content: `You take detailed notes on one part of a roleplay chapter. The notes are merged with the other parts into the chapter's recap later.\n\n${RULES}\n\nWrite plain notes: the events in order (with names, places and story times), then any promise, secret, object, injury or outfit that matters later, in short sentences.`,
     },
     {
       role: "user",
@@ -170,7 +173,7 @@ export function buildEarlierMergeMessages(
   return [
     {
       role: "system",
-      content: `You condense the early chapters of a long roleplay into one recap of the story so far. Keep every event that later chapters might depend on, every open thread that is still open, and how each relationship developed, including the tension and grudges that are still live. Drop moment-to-moment detail. Plain text with the same section headings as the recaps you are given (## What happened, ## Where people stand, ## Open threads, ## Keep in mind). Never invent anything.`,
+      content: `You condense the early chapters of a long roleplay into one recap of the story so far. Keep every event that later chapters might depend on, every open thread that is still open, and how each relationship developed, including the tension and grudges that are still live. Drop moment-to-moment detail. Plain, short facts as "- " lines under these headings: ## What happened, ## Where people stand, ## Open threads, ## Keep in mind. Never invent anything.`,
     },
     {
       role: "user",
@@ -179,6 +182,19 @@ export function buildEarlierMergeMessages(
         .join("\n\n")}\n\nWrite the condensed recap of these chapters, about half their combined length.`,
     },
   ];
+}
+
+/**
+ * What the writer gets for a chapter every message: the recap's "Short version" when it has one,
+ * otherwise the whole recap (older recaps, or one edited without it).
+ */
+export function promptRecap(recap: string): string {
+  const match = recap.match(new RegExp(`^##\\s*${SHORT_VERSION_HEADING}\\s*$`, "im"));
+  if (!match || match.index === undefined) return recap.trim();
+  const rest = recap.slice(match.index + match[0].length);
+  const next = rest.search(/^##\s/m);
+  const short = (next >= 0 ? rest.slice(0, next) : rest).trim();
+  return short || recap.trim();
 }
 
 /** The title line and the sections, from what the model wrote. Null when nothing usable came back. */

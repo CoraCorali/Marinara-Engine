@@ -17,6 +17,7 @@ import {
   buildMergeMessages,
   buildRecapMessages,
   buildSliceNoteMessages,
+  promptRecap,
   readRecap,
   RECAP_SLICE_MESSAGES,
   sliceMessages,
@@ -218,7 +219,10 @@ export function createChapterWriter(db: DB) {
       const resolved = await provider(chat);
       const text = await complete(
         resolved,
-        buildEarlierMergeMessages(toMerge, earlier?.text ?? ""),
+        buildEarlierMergeMessages(
+          toMerge.map((chapter) => ({ ...chapter, recap: promptRecap(chapter.recap) })),
+          earlier?.text ?? "",
+        ),
         "earlier chapters merge",
         debug,
       );

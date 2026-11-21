@@ -10561,6 +10561,7 @@
   "ui.chat.forkchapters.rewriteConfirm": "Write a fresh recap of this chapter? Your edits to the current one will be replaced.",
   "ui.chat.forkchapters.row": "Ch. {{number}} · {{title}}",
   "ui.chat.forkchapters.save": "Save",
+  "ui.chat.forkchapters.shortVersionHint": "what the model reads",
   "ui.chat.forkchapters.skipTo": "Skip to {{when}}",
   "ui.chat.forkchapters.split": "Mark where a chapter ends",
   "ui.chat.forkchapters.splitBar": "Tap “End a chapter here” under the message a chapter should end on.",

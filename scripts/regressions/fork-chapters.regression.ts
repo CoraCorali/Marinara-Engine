@@ -183,8 +183,22 @@ const sliceNote = recapModule.buildSliceNoteMessages(
   "Theo said he is selling the bakery.",
 );
 assert.match(sliceNote[1]!.content, /Notes on part 1, for context only[^\n]*\nTheo said he is selling the bakery\./);
-assert.equal(targetSentences(10), 8, "never under about 200 words");
-assert.equal(targetSentences(112), 32, "about one sentence per three or four messages");
+assert.equal(targetSentences(10), 6, "never under six sentences");
+assert.equal(targetSentences(41), 9, "about one sentence per five messages");
+assert.equal(targetSentences(300), 15, "never over fifteen sentences");
+
+// Only a recap's short version goes to the writer; an older recap without one goes whole.
+const fullRecap = "## What happened\nA long day.\n\n## Short version\n- Theo owes Kyli a favor.\n- The ring is lost.";
+assert.equal(recapModule.promptRecap(fullRecap), "- Theo owes Kyli a favor.\n- The ring is lost.");
+assert.equal(
+  recapModule.promptRecap("## Short version\n- First.\n\n## Keep in mind\n- Later."),
+  "- First.",
+  "stops at the next section",
+);
+assert.equal(recapModule.promptRecap("## What happened\nOld recap."), "## What happened\nOld recap.");
+const shortBlock = storySoFarBlock([{ ...all[0]!, recap: fullRecap }], null, 2);
+assert.match(shortBlock, /Theo owes Kyli a favor/);
+assert.doesNotMatch(shortBlock, /A long day/, "the full recap stays out of the prompt");
 assert.equal(plainMessageText("<details><summary>Stats</summary>HP 3</details><p>She ran.</p>"), "Stats HP 3 She ran.");
 // A preset's notes around the story are not the story: they never eat the message's budget.
 assert.equal(

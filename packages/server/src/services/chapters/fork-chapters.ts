@@ -12,6 +12,7 @@ import { asc, eq } from "../../db/file-query.js";
 import { fileTable, integer, text } from "../../db/file-schema.js";
 import type { DB } from "../../db/connection.js";
 import { newId, now } from "../../utils/id-generator.js";
+import { promptRecap } from "./fork-chapter-recap.js";
 
 export const MAX_CHAPTER_TITLE = 80;
 export const MAX_CHAPTER_RECAP = 24_000;
@@ -123,7 +124,7 @@ export function storySoFarBlock(
   for (const chapter of finished) {
     if (useEarlier && chapter.number <= useEarlier.through) continue;
     const heading = `### Chapter ${chapter.number}${chapter.title ? ` · ${chapter.title}` : ""}`;
-    parts.push(`${heading}\n${chapter.recap.trim() || "(No recap yet.)"}`);
+    parts.push(`${heading}\n${promptRecap(chapter.recap) || "(No recap yet.)"}`);
   }
   parts.push(`The story is now in Chapter ${currentChapterNumber}. Its messages follow in the history.`);
   return parts.join("\n\n");
@@ -150,7 +151,7 @@ export function needsEarlierMerge(
   const through = earlier?.through ?? 0;
   const whole = finished.filter((chapter) => chapter.number > through);
   const total = whole.reduce(
-    (sum, chapter) => sum + estimateTokens(chapter.recap),
+    (sum, chapter) => sum + estimateTokens(promptRecap(chapter.recap)),
     estimateTokens(earlier?.text ?? ""),
   );
   return total > budgetTokens && whole.length > 2;
