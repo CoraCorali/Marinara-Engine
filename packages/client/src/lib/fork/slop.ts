@@ -169,10 +169,24 @@ function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-/** Curly and straight apostrophes are the same apostrophe for matching purposes. */
+/**
+ * The stand-ins some presets have Gemini write in place of spaces (the Braille blank U+2800, and
+ * the visible-space signs). The regex pack turns them back into spaces on screen, but the stored
+ * reply keeps them, so matching treats each one as a space.
+ */
+const BLANK_CLASS = "[\\s\\u2800\\u2420\\u2423]";
+const BLANK = new RegExp(BLANK_CLASS);
+const isBlank = (char: string) => BLANK.test(char);
+
+/**
+ * Curly and straight apostrophes are the same apostrophe for matching purposes, and a space in a
+ * phrase matches any blank.
+ */
 function phrasePattern(phrase: string): string {
   // Either spelling in the list matches both: a phone's smart punctuation types the curly one.
-  return escapeRegExp(phrase.trim()).replace(/['’]/g, "['’]");
+  return escapeRegExp(phrase.trim())
+    .replace(/['’]/g, "['’]")
+    .replace(/\s+/g, `${BLANK_CLASS}+`);
 }
 
 /**
@@ -205,7 +219,7 @@ function normalizeWithMap(text: string): { normalized: string; map: number[] } {
   for (let index = 0; index < text.length; index += 1) {
     const char = text[index]!;
     if (MARKUP.has(char)) continue;
-    if (/\s/.test(char)) {
+    if (isBlank(char)) {
       if (lastWasSpace || normalized.length === 0) continue;
       normalized += " ";
       map.push(index);
@@ -293,7 +307,7 @@ function balanceMarkup(stored: string, start: number, end: number): { start: num
 export function sentenceAround(text: string, start: number, end: number): { start: number; end: number } {
   let from = start;
   while (from > 0 && !/[.!?…\n]/.test(text[from - 1]!)) from -= 1;
-  while (from < start && /\s/.test(text[from]!)) from += 1;
+  while (from < start && isBlank(text[from]!)) from += 1;
   let to = end;
   while (to < text.length && !/[.!?…\n]/.test(text[to]!)) to += 1;
   // Keep the closing punctuation and any quote or asterisk that closes the sentence with it.
@@ -348,8 +362,8 @@ export function autoFixPassages(
       if (tag.end <= match.start) start = Math.max(start, tag.end);
       else if (tag.start >= match.end) end = Math.min(end, tag.start);
     }
-    while (start < end && /\s/.test(story[start]!)) start += 1;
-    while (end > start && /\s/.test(story[end - 1]!)) end -= 1;
+    while (start < end && isBlank(story[start]!)) start += 1;
+    while (end > start && isBlank(story[end - 1]!)) end -= 1;
     const last = passages[passages.length - 1];
     if (last && start <= last.end) {
       last.end = Math.max(last.end, end);
