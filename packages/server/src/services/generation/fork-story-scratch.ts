@@ -5,10 +5,13 @@
 // ledger after it, out-of-character answers, plans in think tags, and the older GFX ledger. Those
 // are the writer's notes, not the story. Features that read messages as story (chapter recaps, the
 // Director) drop them first, so each message's character budget goes to what actually happened.
+// Thought bubbles (<thought>) are a character's private thoughts, not events, so they go too, and
+// the Braille blanks a Gemini jailbreak writes for spaces become real spaces.
 
-const SCRATCH_TAGS = /<(margin_notes|story_ledger|authors_note|think|thinking|knows)\b[^>]{0,2000}>[\s\S]*?<\/\1>/gi;
+const SCRATCH_TAGS = /<(margin_notes|story_ledger|authors_note|thought|think|thinking|knows)\b[^>]{0,2000}>[\s\S]*?<\/\1>/gi;
+const BRAILLE_BLANK = /[\u2800\u2420\u2423]/g;
 const GFX_BLOCK = /<!--\s{0,8}GFX_START\s{0,8}-->[\s\S]*?<!--\s{0,8}GFX_END\s{0,8}-->/gi;
 
 export function stripStoryScratch(text: string): string {
-  return text.replace(SCRATCH_TAGS, " ").replace(GFX_BLOCK, " ");
+  return text.replace(BRAILLE_BLANK, " ").replace(SCRATCH_TAGS, " ").replace(GFX_BLOCK, " ");
 }
